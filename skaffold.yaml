@@ -1,0 +1,44 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: agent
+build:
+  platforms:
+    - linux/amd64
+  local:
+    push: true
+  tagPolicy:
+    inputDigest: {}
+  artifacts:
+    - image: codemowers/agent
+      context: .
+      docker:
+        target: runner
+    - image: codemowers/agent-controller
+      context: .
+      docker:
+        target: controller
+manifests:
+  helm:
+    flags:
+      global:
+        - --kube-version=1.36.3
+    releases:
+      - name: agent
+        chartPath: chart
+        skipBuildDependencies: true
+        setValues:
+          host: controller
+          "allowedGroups[0]": github.com:codemowers:admins
+          env.AGENT_SHARING_MODE: public
+        setValueTemplates:
+          env.AGENT_KUBE_CONTEXT: "{{.AGENT_KUBE_CONTEXT}}"
+          image: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent_controller}}"
+          workerImage: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent}}"
+
+deploy:
+  kubectl:
+    flags:
+      # Keep labeled chart resources when Skaffold cleans up.
+      delete:
+        - --selector=skaffold.dev/keep!=true

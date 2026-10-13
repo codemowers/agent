@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codemowers Agent</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header>
+<div class="primary-navbar"><button id="sidebar-toggle" type="button" aria-label="Open task menu" aria-controls="task-sidebar" aria-expanded="false">☰</button><a href="https://github.com/codemowers/agent" target="_blank" rel="noopener noreferrer" class="brand">codemowers<span>/agent</span><small class="tagline">GitOps agent harness <span class="tagline-dot" aria-hidden="true">·</span> <span id="rotating-tagline"></span></small></a><div id="navbar-connectivity">
+<nav id="connectivity-navbar" aria-label="Startup connectivity checks" hidden>
+<a class="connection-status" id="connection-codemowers" target="_blank" rel="noopener noreferrer" title="Checking connection"><i class="state-dot gray" aria-hidden="true"></i>Codemowers MCP</a>
+<a class="connection-status" id="connection-driftmower" target="_blank" rel="noopener noreferrer" title="Checking connection"><i class="state-dot gray" aria-hidden="true"></i>Driftmower MCP</a>
+<span class="connection-status" id="connection-agent" title="Checking connection" tabindex="0"><i class="state-dot gray" aria-hidden="true"></i>Agent MCP</span>
+<a class="connection-status" id="connection-github" href="https://github.com/" target="_blank" rel="noopener noreferrer" title="Checking connection"><i class="state-dot gray" aria-hidden="true"></i>GitHub API</a>
+<span class="connection-status" id="connection-inbound-mail" title="Checking connection" tabindex="0"><i class="state-dot gray" aria-hidden="true"></i>Inbound mail</span>
+<span class="connection-status" id="connection-outbound-mail" title="Checking connection" tabindex="0"><i class="state-dot gray" aria-hidden="true"></i>Outbound mail</span>
+<a class="connection-status" id="connection-registry" target="_blank" rel="noopener noreferrer" title="Checking push credentials"><i class="state-dot gray" aria-hidden="true"></i>Artifact registry</a>
+</nav></div><button id="login" title="Sign in" aria-label="Sign in">↪</button></div></header>
+<main>
+<aside id="task-sidebar" aria-label="Task navigation"><button id="sidebar-close" type="button" aria-label="Close task menu">×</button><div class="aside-head"><h2 id="task-list-title">Tasks</h2><button id="new" disabled>＋ New</button></div><div id="tasks"></div><nav class="sidebar-tools" aria-label="Agent settings"><button id="browse-drafts" type="button">Drafts</button><button id="instructions" disabled>Instructions</button><button id="connections" disabled>Connect events</button></nav><div id="sidebar-connectivity"></div></aside>
+<div id="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize task list" aria-controls="task-sidebar" tabindex="0"></div>
+<section id="welcome"><p class="eyebrow">YOUR DEVELOPER IN A SANDBOX</p><h1 id="welcome-title">What shall we build?</h1>
+<p id="welcome-description">Describe the work, choose a model, and start your developer. Every task gets its own workspace.</p>
+<section id="drafts-section" class="drafts-section" hidden><h2>1 · Choose a starting point</h2><p>Drafts are editable. Starting the task requires login.</p><div id="draft-gallery"></div></section><section id="task-composer" hidden><button id="close-task-composer" type="button">← Back</button><p class="eyebrow">2 · Describe the task</p><h1 id="task-composer-title">New task</h1><form id="create"><textarea id="objective" placeholder="Let's implement an Etherpad clone…" required maxlength="16000"></textarea>
+<div id="reference-editor" hidden><label for="reference-content">Reference text · edit before starting</label><textarea id="reference-content" maxlength="128000" spellcheck="false"></textarea></div>
+<div class="repository-selection"><span id="draft-selection"></span><button id="clear-draft" type="button" hidden>Remove draft</button></div>
+<div class="repository-selection"><span id="repository-label">Fresh workspace · no repository selected</span><button id="clear-repository" type="button" hidden>Clear</button></div>
+<div class="model-choice"><label>Worker CLI <select id="backend"><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+<label>Model <select id="model" disabled></select></label></div>
+<button id="start-task" type="submit" disabled>Start task →</button></form><div id="new-task-resources" hidden><div class="resource-heading"><h2>Your agent's connections</h2><button id="refresh-resources" type="button">Refresh</button></div><p id="github-identity"></p><p id="resource-warning"></p>
+<div class="resource-grid">
+<section class="resource-card mcp-card"><h3>Container builds</h3><p id="build-status"></p><div id="build-configuration"></div></section>
+<section class="resource-card"><h3>Work in a repository</h3><p>Choose where this task starts.</p><div id="repository-list"></div><small id="repository-count"></small></section>
+<section class="resource-card"><h3>Create something new</h3><p>Repository-creation destinations for the agent's GitHub account.</p><div id="creation-destinations"></div><small>Token permissions may require confirmation by GitHub. These links open GitHub; no repository is created automatically.</small></section>
+</div></div></section><p id="signin-note">Sign in to create and manage tasks.</p>
+
+</section>
+<section id="detail" hidden><div class="detail-head"><div><h1 id="title"></h1><p id="task-repository"></p><p id="phase"></p></div><button id="refine-task" type="button" title="Start a codemowers/agent improvement task using this transcript">Refine this</button>
+<div id="controls"><button id="share-task" type="button" title="Share read-only task" aria-label="Share read-only task">🔗</button><button data-state="Paused" title="Pause task" aria-label="Pause task">⏸</button><button data-state="Active" title="Resume task" aria-label="Resume task" hidden>▶</button><button id="stop-prompt" type="button" title="Stop current prompt; keep Pod" aria-label="Stop current prompt; keep Pod">⏹</button><button data-state="Completed" title="Accept completion" aria-label="Accept completion">✓</button><button id="delete-task" type="button" title="Delete task and scratch workspace" aria-label="Delete task and scratch workspace">⌫</button></div></div>
+<p id="share-banner" hidden></p>
+<div id="context-controls"></div>
+<p id="worker-countdown"></p><p id="reason"></p>
+<details id="task-settings"><summary>Task settings</summary><p class="eyebrow" id="task-id"></p><p id="task-draft"></p>
+<form id="rename"><input id="task-title" aria-label="Task title" required maxlength="200"><button type="submit">Rename</button></form>
+<form id="change-model"><div class="model-choice"><label>Worker CLI <select id="task-backend"><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+<label>Model <select id="task-model"></select></label><button type="submit">Apply</button></div><small>Pause and wait for the worker to stop before changing CLI or model. Switching starts a new conversation and keeps the workspace.</small></form>
+</details><div id="timeline"></div><p id="processing-state" role="status" aria-live="polite"></p><p id="turn-elapsed"></p><form id="followup"><textarea id="message" placeholder="Add instructions or answer a question…" required maxlength="16000"></textarea><button type="submit">Send →</button></form></section>
+</main><button id="sidebar-backdrop" type="button" aria-label="Close task menu" tabindex="-1" hidden></button><div id="error" role="alert" hidden></div><script type="module" src="/app.js"></script>
+
+<dialog id="share-dialog"><button id="close-share" type="button">Close</button><h1>Share read-only task</h1>
+<p id="share-description">Anyone with this link can view this task's conversation and status without signing in. They cannot send prompts or control the task.</p>
+<input id="share-url" aria-label="Read-only share URL" readonly><small id="share-expiry"></small>
+<div class="share-actions"><button id="copy-share" type="button">Copy link</button><button id="revoke-share" type="button">Revoke all share links</button></div></dialog>
+<dialog id="instructions-dialog"><button id="close-instructions" type="button">Close</button><h1>Worker instructions</h1>
+<p>The controller's mounted ConfigMap text. Workers reread instructions before each turn. Kubernetes propagates updates asynchronously; a turn already running keeps its starting instructions.</p>
+<div class="resource-heading"><small id="instructions-source"></small><button id="refresh-instructions" type="button">Refresh</button></div><pre id="instructions-content"></pre></dialog>
+<dialog id="setup"><button id="close-setup">Close</button><h1>Connect events</h1>
+<h2>GitHub issues</h2><ol><li>Open your repository → Settings → Webhooks → Add webhook.</li>
+<li>Use the payload URL below and select <strong>application/json</strong>.</li>
+<li>Reveal the signing secret below and paste it into GitHub's Secret field. Keep SSL verification enabled.</li>
+<li>Select <strong>Issues</strong>, <strong>Issue comments</strong> and <strong>Pull requests</strong>. Workflow events are a later addition.</li>
+<li>Add the webhook and check Recent deliveries for a successful ping.</li></ol>
+<p>Repository and organization webhooks are supported. Assign an issue to the configured agent's GitHub user to start work. Issues assigned to other users are ignored. Assignment creates a Task; later eligible issue events and comments resume the same Task. The configured user must have repository access.</p>
+<p>Merges of PRs linked to a Task wake that same Task, even in a different repository. Periodic GitHub API checks cover repositories without a configured webhook.</p>
+<h2>Email threads</h2><p id="mail-status"></p><p>The agent sends task-bound email through the controller's SMTP account. Reply normally from a recipient address: In-Reply-To and References route the IMAP reply to the original Task. Replies enqueue an attributed prompt; they do not automatically post GitHub comments. Unmatched mail does not create Tasks. IMAP_HOST and SMTP_HOST configure inbound and outbound mail independently. Mail settings come from a ConfigMap and protocol credentials from separate Secrets.</p>
+<pre id="github-url"></pre><button data-credential="github">Reveal GitHub signing secret</button><pre id="github-credential"></pre>
+<h2>Alertmanager</h2><p>Add a receiver and route the desired alerts to it. Repeated fingerprints resume the same Task; resolved notifications do not mark code work complete.</p>
+<pre id="alert-example"></pre><button data-credential="alertmanager">Reveal receiver bearer token</button><pre id="alertmanager-credential"></pre>
+<h2>Basic webhook</h2><p>POST an existing Task ID or GitHub issue URL with a stable delivery ID. Authenticate with the receiver bearer token.</p>
+<pre id="wakeup-example"></pre><button data-credential="wakeup">Reveal webhook bearer token</button><pre id="wakeup-credential"></pre></dialog>
+</body></html>

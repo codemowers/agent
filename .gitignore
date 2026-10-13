@@ -1,0 +1,13 @@
+node_modules/
+public/
+skaffold.env
+/mcp.json
+/identity.env
+/mail.env
+.env
+*.log
+coverage/
+artifacts.json
+*.swp
+*.swo
+*~
