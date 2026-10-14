@@ -625,8 +625,11 @@ if (process.env.AGENT_MODE === 'worker') {
     : (await import('node:http')).createServer(app);
   server.listen(Number(process.env.PORT || 8080), '::', () => console.log(JSON.stringify({event: 'ready', namespace: config.namespace})));
   const wss = new WebSocketServer({noServer: true});
+  wss.on('error', error => console.error(JSON.stringify({level: 'error', component: 'websocket', message: error.message})));
   server.on('upgrade', (req, socket, head) => {
-    const match = /^\/devices\/([a-f0-9]{32})$/.exec(new URL(req.url, 'http://x').pathname);
+    let match;
+    try { match = /^\/devices\/([a-f0-9]{32})$/.exec(new URL(req.url, 'http://x').pathname); }
+    catch { socket.destroy(); return; }
     if (!match) { socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, ws => devices.handleConnection(match[1], ws));
   });
