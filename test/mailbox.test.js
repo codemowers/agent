@@ -321,6 +321,20 @@ test('GitHub senders use notification routing without exposing email body as tas
   assert.deepEqual(seen.map(v => v.delivery), ['validity:1', 'validity:2']);
 });
 
+test('Mailbox.close() does not throw when ImapFlow.close() raises Unexpected close during connect', t => {
+  const {store, settings} = fixture();
+  settings.imap = {host: 'mail.example.test', auth: {user: 'u', pass: 'p'}};
+  const gateway = new Mailbox(store, settings, {log: () => {}, imapFactory: () => {
+    const client = new EventEmitter();
+    client.connect = () => new Promise(() => {});
+    client.close = () => { throw Object.assign(new Error('Unexpected close'), {code: 'ECONNRESET'}); };
+    return client;
+  }});
+  gateway.lastLeader = Date.now();
+  gateway.tick();
+  assert.doesNotThrow(() => gateway.close());
+});
+
 test('routing-enabled startup recovers recent GitHub assignments from headers once', async t => {
   const f = fixture(), seen = [];
   const gateway = new Mailbox(f.store, f.settings, {log: () => {}, onGithubNotification: async (mail, delivery, options) => {
