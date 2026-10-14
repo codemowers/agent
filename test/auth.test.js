@@ -37,6 +37,34 @@ test('API validates access-token signature, type, issuer, audience, expiry and s
     'agent:read'), {status: 403});
   await assert.rejects(authenticate(request(await token({claims: {scope: 'agent:read'}})), 'agent:write'), {status: 403});
 });
+test('authentication retries transient network errors and propagates non-transient errors immediately', async t => {
+  const {privateKey, publicKey} = await generateKeyPair('RS256');
+  const jwk = {...await exportJWK(publicKey), kid: 'test-key', use: 'sig', alg: 'RS256'};
+  let issuer;
+  const server = createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(req.url === '/jwks' ? {keys: [jwk]} : {issuer, jwks_uri: issuer + 'jwks'}));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  issuer = `http://127.0.0.1:${server.address().port}/`;
+  const config = {issuer, audience: 'https://agent.example/api', namespace: 'tenant-a',
+    allowedGroups: [], allowedSubjects: []};
+  let calls = 0;
+  const transientFetch = async (...args) => {
+    if (++calls <= 2) throw Object.assign(new TypeError('fetch failed'), {cause: new Error('ECONNREFUSED')});
+    return fetch(...args);
+  };
+  const authenticate = await authentication(config, {fetchFn: transientFetch, retryDelayMs: 0});
+  assert.equal(calls, 3);
+  assert.ok(typeof authenticate === 'function');
+  let nonTransientCalls = 0;
+  await assert.rejects(
+    authentication(config, {fetchFn: async () => { nonTransientCalls++; throw new Error('OIDC discovery failed'); }, retryDelayMs: 0}),
+    {message: 'OIDC discovery failed'}
+  );
+  assert.equal(nonTransientCalls, 1);
+});
 test('explicit admins allowlist cannot be bypassed with sandbox namespace membership', () => {
   const config={namespace:'llm',allowedGroups:['github.com:codemowers:admins'],allowedSubjects:[]};
   const claims={sub:'user',iss:'https://issuer/',scope:'agent:read',
