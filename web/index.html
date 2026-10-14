@@ -5,6 +5,7 @@
 <body>
 <header>
 <div class="primary-navbar"><button id="sidebar-toggle" type="button" aria-label="Open task menu" aria-controls="task-sidebar" aria-expanded="false">☰</button><a href="https://github.com/codemowers/agent" target="_blank" rel="noopener noreferrer" class="brand">codemowers<span>/agent</span><small class="tagline">GitOps agent harness <span class="tagline-dot" aria-hidden="true">·</span> <span id="rotating-tagline"></span></small></a><div id="navbar-connectivity">
+<nav id="devices-navbar" aria-label="Connected devices"></nav>
 <nav id="connectivity-navbar" aria-label="Startup connectivity checks" hidden>
 <a class="connection-status" id="connection-codemowers" target="_blank" rel="noopener noreferrer" title="Checking connection"><i class="state-dot gray" aria-hidden="true"></i>Codemowers MCP</a>
 <a class="connection-status" id="connection-driftmower" target="_blank" rel="noopener noreferrer" title="Checking connection"><i class="state-dot gray" aria-hidden="true"></i>Driftmower MCP</a>
@@ -15,7 +16,7 @@
 <a class="connection-status" id="connection-registry" target="_blank" rel="noopener noreferrer" title="Checking push credentials"><i class="state-dot gray" aria-hidden="true"></i>Artifact registry</a>
 </nav></div><button id="login" title="Sign in" aria-label="Sign in">↪</button></div></header>
 <main>
-<aside id="task-sidebar" aria-label="Task navigation"><button id="sidebar-close" type="button" aria-label="Close task menu">×</button><div class="aside-head"><h2 id="task-list-title">Tasks</h2><button id="new" disabled>＋ New</button></div><div id="tasks"></div><nav class="sidebar-tools" aria-label="Agent settings"><button id="browse-drafts" type="button">Drafts</button><button id="instructions" disabled>Instructions</button><button id="connections" disabled>Connect events</button></nav><div id="sidebar-connectivity"></div></aside>
+<aside id="task-sidebar" aria-label="Task navigation"><button id="sidebar-close" type="button" aria-label="Close task menu">×</button><div class="aside-head"><h2 id="task-list-title">Tasks</h2><button id="new" disabled>＋ New</button></div><div id="tasks"></div><nav class="sidebar-tools" aria-label="Agent settings"><button id="browse-drafts" type="button">Drafts</button><button id="instructions" disabled>Instructions</button><button id="connections" disabled>Connect events</button><button id="manage-devices" disabled>Devices</button></nav><div id="sidebar-connectivity"></div></aside>
 <div id="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize task list" aria-controls="task-sidebar" tabindex="0"></div>
 <section id="welcome"><p class="eyebrow">YOUR DEVELOPER IN A SANDBOX</p><h1 id="welcome-title">What shall we build?</h1>
 <p id="welcome-description">Describe the work, choose a model, and start your developer. Every task gets its own workspace.</p>
@@ -66,4 +67,8 @@
 <pre id="alert-example"></pre><button data-credential="alertmanager">Reveal receiver bearer token</button><pre id="alertmanager-credential"></pre>
 <h2>Basic webhook</h2><p>POST an existing Task ID or GitHub issue URL with a stable delivery ID. Authenticate with the receiver bearer token.</p>
 <pre id="wakeup-example"></pre><button data-credential="wakeup">Reveal webhook bearer token</button><pre id="wakeup-credential"></pre></dialog>
+<dialog id="devices-dialog"><button id="close-devices" type="button">Close</button><h1>Connected devices</h1>
+<p>Devices connect by running <code>device-agent --endpoint wss://…</code> with the URL shown below. Any connected device appears in the navbar. Toggle a device into a task to give the agent <code>shell</code>, <code>file_read</code> and <code>file_write</code> access to it.</p>
+<div class="resource-heading"><button id="add-device" type="button">＋ Add device</button></div>
+<div id="device-list"></div></dialog>
 </body></html>

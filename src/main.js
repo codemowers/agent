@@ -18,6 +18,8 @@ import {SetupCatalog} from './setup.js';
 import {ConnectivityCatalog} from './connectivity.js';
 import {agentMcpInitialize, taskCommunication} from './agent-mcp.js';
 import {BuildCatalog} from './builds.js';
+import {DeviceCatalog} from './devices.js';
+import {WebSocketServer} from 'ws';
 import {SkaffoldSchema} from './skaffold-schema.js';
 import {SharedLinks} from './sharing.js';
 import {DraftCatalog} from './drafts.js';
@@ -67,6 +69,7 @@ if (process.env.AGENT_MODE === 'worker') {
   redis.on('error', error => console.error(JSON.stringify({level: 'error', component: 'redis', message: error.message})));
   await redis.connect();
   const store = new Store(redis, config.namespace, config.release), kube = new Kube(config);
+  const devices = new DeviceCatalog(kube, config);
   faults.setReporter(report => createRepairTask(store, config.namespace, report));
   const models = new ModelCatalog(config);
   config.probeAgent = async () => { await redis.ping(); return agentMcpInitialize(); };
@@ -127,6 +130,23 @@ if (process.env.AGENT_MODE === 'worker') {
     github: config.internalURL + '/hooks/github', wakeup: config.internalURL + '/hooks/wakeup',
     alertmanager: config.internalURL + '/hooks/alertmanager', mailbox: await mailbox.status()}));
   app.get('/api/mailbox', async (req, res) => res.json(await mailbox.status()));
+  app.get('/api/devices', async (req, res) => res.json({devices: await devices.list()}));
+  app.post('/api/devices', async (req, res) => {
+    const label = req.body.label ? text(req.body.label, 100) : null;
+    res.status(201).json(await devices.create(label));
+  });
+  app.delete('/api/devices/:key', async (req, res) => {
+    await devices.revoke(req.params.key);
+    res.json({ok: true});
+  });
+  app.patch('/api/tasks/:id/devices/:key', async (req, res) => {
+    const key = req.params.key;
+    res.json(publicTask(await store.mutate(id(req.params.id), requestId(req), task => {
+      if (!task.devices) task.devices = [];
+      if (req.body.included) { if (!task.devices.includes(key)) task.devices.push(key); }
+      else task.devices = task.devices.filter(k => k !== key);
+    })));
+  });
   app.post('/api/connections/:type/credential', async (req, res) => {
     const names = {github: 'GITHUB_WEBHOOK_SECRET', wakeup: 'WEBHOOK_TOKEN', alertmanager: 'ALERTMANAGER_TOKEN'};
     const name = names[req.params.type];
@@ -300,8 +320,17 @@ if (process.env.AGENT_MODE === 'worker') {
           replyToMessageId: {type: 'string'}}, required: ['to', 'subject', 'text', 'idempotencyKey'], additionalProperties: false}},
       {name: 'get_email_messages', description: 'Read email messages already routed to the current Task, including incoming replies and sent messages, plus live controller IMAP/SMTP configuration status. No unrelated inbox mail or other Tasks. Use this and get_email_status when asked about mail; do not infer live configuration from repository manifests.',
         inputSchema: {type: 'object', properties: {}, additionalProperties: false}},
-      {name: 'get_email_status', description: 'Read live controller IMAP/SMTP status and this Task’s outbound email delivery status. Credentials and other Tasks are not exposed.',
-        inputSchema: {type: 'object', properties: {}, additionalProperties: false}}]};
+      {name: ‘get_email_status’, description: ‘Read live controller IMAP/SMTP status and this Task’s outbound email delivery status. Credentials and other Tasks are not exposed.’,
+        inputSchema: {type: ‘object’, properties: {}, additionalProperties: false}},
+      ...(task.devices?.length ? [
+        {name: ‘device_shell’, description: ‘Run a shell command on a connected device included in this task. Returns stdout, stderr and exit_code.’,
+          inputSchema: {type: ‘object’, properties: {device_id: {type: ‘string’}, command: {type: ‘string’}}, required: [‘device_id’, ‘command’], additionalProperties: false}},
+        {name: ‘device_file_read’, description: ‘Read a file from a connected device included in this task.’,
+          inputSchema: {type: ‘object’, properties: {device_id: {type: ‘string’}, path: {type: ‘string’}}, required: [‘device_id’, ‘path’], additionalProperties: false}},
+        {name: ‘device_file_write’, description: ‘Write content to a file on a connected device included in this task. Creates parent directories as needed.’,
+          inputSchema: {type: ‘object’, properties: {device_id: {type: ‘string’}, path: {type: ‘string’}, content: {type: ‘string’}}, required: [‘device_id’, ‘path’, ‘content’], additionalProperties: false}},
+      ] : [])]};
+
     else if (body.method === 'tools/call' && body.params?.name === 'get_task_context') {
       const value = {controls: task.controls || {}, draft: task.draft ? {title: task.draft.title, path: '/execution/draft.md'} : null,
         identity: config.identity, namespace: config.namespace, communication: taskCommunication(task),
@@ -358,6 +387,13 @@ if (process.env.AGENT_MODE === 'worker') {
     } else if (body.method === 'tools/call' && body.params?.name === 'report_blocked') {
       await store.mutate(task.id,'blocked:'+randomUUID(),current=>blockExecution(current,task.active.id,body.params.arguments?.summary));
       result = {content:[{type:'text',text:'Blocker recorded. End this turn and wait for a reply. The worker stays warm for the idle timeout; this is not approval to proceed.'}]};
+    } else if (body.method === 'tools/call' && ['device_shell', 'device_file_read', 'device_file_write'].includes(body.params?.name)) {
+      const args = body.params.arguments || {};
+      const key = args.device_id;
+      if (!task.devices?.includes(key)) throw new Problem(400, 'Device not included in this task');
+      const cmd = {device_shell: 'shell', device_file_read: 'file_read', device_file_write: 'file_write'}[body.params.name];
+      const value = await devices.exec(key, cmd, args);
+      result = {content: [{type: 'text', text: JSON.stringify(value)}], structuredContent: value};
     } else if (body.method?.startsWith('notifications/')) { res.status(202).end(); return; }
     else { res.json({jsonrpc: '2.0', id: body.id, error: {code: -32601, message: 'Unknown method'}}); return; }
     res.json({jsonrpc: '2.0', id: body.id, result});
@@ -590,6 +626,12 @@ if (process.env.AGENT_MODE === 'worker') {
   const server = cert ? createServer({cert: await readFile(cert), key: await readFile(key)}, app)
     : (await import('node:http')).createServer(app);
   server.listen(Number(process.env.PORT || 8080), '::', () => console.log(JSON.stringify({event: 'ready', namespace: config.namespace})));
+  const wss = new WebSocketServer({noServer: true});
+  server.on('upgrade', (req, socket, head) => {
+    const match = /^\/devices\/([a-f0-9]{32})$/.exec(new URL(req.url, 'http://x').pathname);
+    if (!match) { socket.destroy(); return; }
+    wss.handleUpgrade(req, socket, head, ws => devices.handleConnection(match[1], ws));
+  });
   process.on('SIGTERM', () => {
     clearInterval(interval);
     mailbox.close();
