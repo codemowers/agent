@@ -8,7 +8,7 @@ import {Kube} from './kube.js';
 import {reconcile} from './controller.js';
 import {authentication} from './auth.js';
 import {ModelCatalog, changeModel} from './models.js';
-import {acceptsGithubEvent, githubTask, githubWakeup, closeGithubTask, reconcileGithubIssues, pullRequestReference, reconcileGithubPullRequests} from './github.js';
+import {acceptsGithubEvent, githubTask, githubWakeup, closeGithubTask, reopenGithubTask, reconcileGithubIssues, pullRequestReference, reconcileGithubPullRequests} from './github.js';
 import {Mailbox} from './mailbox.js';
 import {agentIdentity, agentActor, displayIdentity} from './identity.js';
 import {installFaultHandler, createRepairTask, faultDetails, repairContext} from './faults.js';
@@ -495,10 +495,8 @@ if (process.env.AGENT_MODE === 'worker') {
       : task.events.some(e => e.deliveryId === delivery) ? 'duplicate' : 'resumed';
     await redis.set(store.prefix + 'external:' + digest(key), task.id);
     await store.mutate(task.id, 'github:' + delivery, current => {
-      if (eventType === 'issues' && req.body.action === 'reopened' && current.githubIssueState === 'closed' && !current.deleteRequested && current.desiredState !== 'Cancelled') {
-        current.githubIssueState = 'open'; current.completionRequested = false;
-        current.desiredState = 'Active'; current.phase = current.active ? 'Running' : 'Pending'; current.reason = null;
-      }
+      if (eventType === 'issues' && req.body.action === 'reopened') reopenGithubTask(current,
+        {type: 'external', provider: 'github', subject: String(req.body.sender?.id || ''), name: req.body.sender?.login || 'GitHub'}, issue.reference.url);
       if (current.desiredState === 'Cancelled' || current.phase === 'Completed') return;
       if (current.events.some(e => e.deliveryId === delivery)) return;
       current.githubIssueUpdatedAt = issue.updatedAt;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {acceptsGithubEvent, githubTask, githubWakeup, closeGithubTask, reconcileGithubIssues, reportedPullRequests, reconcileGithubPullRequests} from '../src/github.js';
+import {acceptsGithubEvent, githubTask, githubWakeup, closeGithubTask, reopenGithubTask, reconcileGithubIssues, reportedPullRequests, reconcileGithubPullRequests} from '../src/github.js';
 import {reserve, finish, prompt, workerEvent, claimNextTurn, controllerActor} from '../src/domain.js';
 import {Kube} from '../src/kube.js';
 
@@ -63,6 +63,49 @@ test('startup reconciliation discovers missed GitHub closure without a manual we
   await reconcileGithubIssues(store,async url=>{if(url.includes('unavailable'))throw Error('Unavailable');return {state:'closed',closedAt:'2026-10-11T21:00:00Z'};});
   assert.equal(task.phase,'Completed');assert.equal(task.active,null);
   assert.equal(task.reason,'GitHubIssueClosed');
+});
+
+test('reopenGithubTask resets closure state and adds a control event; idempotent and blocked by cancel', () => {
+  const issue={content:'Task',repository:'codemowers/pitchdeck',reference:{source:'github',kind:'issue',id:'1',repository:'codemowers/pitchdeck',url:'https://github.com/codemowers/pitchdeck/issues/1'}};
+  const actor={type:'external',name:'GitHub'};
+  const task=githubTask('llm',actor,issue,'issues',issue.content,'first');
+  closeGithubTask(task,actor,issue.reference.url);
+  assert.equal(task.phase,'Completed');assert.equal(task.completionRequested,true);
+  const events=task.events.length;
+  const result=reopenGithubTask(task,actor,issue.reference.url);
+  assert.equal(result,true);
+  assert.equal(task.phase,'Pending');assert.equal(task.completionRequested,false);
+  assert.equal(task.githubIssueState,'open');assert.equal(task.desiredState,'Active');
+  assert.equal(task.events.length,events+1);
+  assert.equal(task.events.at(-1).kind,'control');
+  // idempotent when already open
+  const events2=task.events.length;
+  assert.equal(reopenGithubTask(task,actor,issue.reference.url),false);
+  assert.equal(task.events.length,events2);
+  // blocked when cancelled
+  const task2=githubTask('llm',actor,issue,'issues',issue.content,'second');
+  closeGithubTask(task2,actor,issue.reference.url); task2.desiredState='Cancelled';
+  assert.equal(reopenGithubTask(task2,actor,issue.reference.url),false);
+});
+
+test('reconciliation reopens a task when GitHub issue is reopened after a missed webhook', async () => {
+  const issue={content:'Rolled back',repository:'codemowers/pitchdeck',reference:{source:'github',kind:'issue',id:'1',repository:'codemowers/pitchdeck',url:'https://github.com/codemowers/pitchdeck/issues/1'}};
+  const task=githubTask('llm',{type:'external'},issue,'issues',issue.content,'first');
+  // Simulate initial execution consumed the prompt before the issue was closed by a merged PR.
+  task.pending=[];
+  closeGithubTask(task,controllerActor,issue.reference.url);
+  assert.equal(task.phase,'Completed');assert.equal(task.pending.length,0);
+  const store={list:async()=>[task],mutate:async(id,key,fn)=>{fn(task);}};
+  await reconcileGithubIssues(store,async()=>({state:'open',updatedAt:'2026-10-14T10:00:00Z'}));
+  assert.equal(task.phase,'Pending');assert.equal(task.completionRequested,false);
+  assert.equal(task.desiredState,'Active');assert.equal(task.pending.length,1);
+  assert.match(task.events.at(-2).content,/reopened/i);
+  // second reconcile cycle is idempotent because store receipt blocks re-mutation; simulate
+  // by checking the task is now closeable (open phase) so lookup fires exactly once
+  let lookupCalls=0;
+  const store2={list:async()=>[task],mutate:async(_id,_key,_fn)=>{}};
+  await reconcileGithubIssues(store2,async()=>{lookupCalls++;return {state:'open',updatedAt:'2026-10-14T10:00:00Z'};});
+  assert.equal(lookupCalls,1);
 });
 
 test('an initial GitHub delivery queues one controller prompt with attributed source context', () => {
