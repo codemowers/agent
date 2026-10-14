@@ -59,7 +59,7 @@ export class Mailbox {
       imap: settings.imap ? this.imapConfigured ? 'disconnected' : 'incomplete_configuration' : 'disabled',
       smtp: settings.smtp ? this.transport ? 'configured' : 'incomplete_configuration' : 'disabled'};
     this.lastLeader = 0; this.retryAt = 0; this.checks = {};
-    this.timer = setInterval(() => { if (this.client && Date.now() - this.lastLeader > 45000) this.client.close(); }, 5000);
+    this.timer = setInterval(() => { if (this.client && Date.now() - this.lastLeader > 45000) try { this.client.close(); } catch { /* close() can throw if called mid-connect */ } }, 5000);
     this.timer.unref();
   }
   async probeInbound() {
@@ -185,7 +185,7 @@ export class Mailbox {
     try {
       await client.connect(); await client.mailboxOpen(this.settings.folder, {readOnly: true});
     } catch (error) {
-      this.log({event: 'imap_connection_failed', code: safeError(error)}); client.close();
+      this.log({event: 'imap_connection_failed', code: safeError(error)}); try { client.close(); } catch { /* close() can throw if called mid-connect */ }
       if (this.client === client) this.client = null;
       this.state.imap = 'failed'; this.retryAt = Date.now() + 30000;
       this.checked('inbound-mail', false, 'IMAP authentication or inbox access failed (' + safeError(error) + ')');
@@ -208,7 +208,7 @@ export class Mailbox {
     this.log({event: 'imap_scan_failed', code: safeError(error), operation: error.agentImapOperation,
       responseStatus: /^(NO|BAD)$/.test(error.responseStatus) ? error.responseStatus : undefined});
     if (this.client === client) {
-      this.client = null; client?.close();
+      this.client = null; try { client?.close(); } catch { /* close() can throw if called mid-connect */ }
       this.state.imap = 'failed'; this.retryAt = Date.now() + 30000;
     }
     void this.onException(error, kind);
@@ -408,5 +408,5 @@ export class Mailbox {
       await this.redis.del(lockKey);
     }
   }
-  close() { clearInterval(this.timer); this.lastLeader = 0; this.client?.close(); this.transport?.close?.(); }
+  close() { clearInterval(this.timer); this.lastLeader = 0; try { this.client?.close(); } catch { /* close() can throw if called mid-connect */ } this.transport?.close?.(); }
 }
