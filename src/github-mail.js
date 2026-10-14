@@ -1,5 +1,5 @@
 import {digest, activity, prompt, controllerActor} from './domain.js';
-import {githubTask, closeGithubTask, githubWakeup} from './github.js';
+import {githubTask, closeGithubTask, reopenGithubTask, githubWakeup} from './github.js';
 
 // A notification identifies a repository/issue, but is never authority for the
 // assignment or instructions. Only the authenticated GitHub API supplies those.
@@ -53,10 +53,7 @@ export async function routeGithubIssueMail(store, namespace, issue, login, mailI
   if (options.backfill) return {outcome: 'duplicate', taskId: task.id};
   let outcome = 'duplicate';
   await store.mutate(task.id, delivery, current => {
-    if (current.githubIssueState === 'closed' && !current.deleteRequested && current.desiredState !== 'Cancelled') {
-      current.githubIssueState = 'open'; current.completionRequested = false;
-      current.desiredState = 'Active'; current.phase = current.active ? 'Running' : 'Pending'; current.reason = null;
-    }
+    reopenGithubTask(current, actor, issue.reference.url);
     if (current.deleteRequested || current.completionRequested || current.phase === 'Completed' || current.desiredState === 'Cancelled') return;
     if (current.events.some(e => e.deliveryId === delivery) || issue.updatedAt && current.githubIssueUpdatedAt === issue.updatedAt) return;
     const source = activity(current, actor, context, 'email', {kind: 'event', deliveryId: delivery, githubIssue: issue.reference.url});

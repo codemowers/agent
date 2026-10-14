@@ -77,18 +77,35 @@ export function closeGithubTask(task, actor, url) {
   activity(task, actor, `GitHub issue closed: ${url}`, 'controller', {kind: 'control'});
 }
 
+export function reopenGithubTask(task, actor, url) {
+  if (task.githubIssueState !== 'closed' || task.deleteRequested || task.desiredState === 'Cancelled') return false;
+  task.githubIssueState = 'open'; task.completionRequested = false;
+  task.desiredState = 'Active'; task.phase = task.active ? 'Running' : 'Pending'; task.reason = null;
+  activity(task, actor, `GitHub issue reopened: ${url}`, 'controller', {kind: 'control'});
+  return true;
+}
+
 export async function reconcileGithubIssues(store, lookup) {
   for (const task of await store.list()) {
-    if (task.deleteRequested || task.desiredState === 'Cancelled' || task.phase === 'Completed' || task.completionRequested) continue;
     const reference = task.references?.find(r => r.source === 'github' && r.kind === 'issue');
     if (!reference) continue;
+    const closeable = !task.deleteRequested && task.desiredState !== 'Cancelled' && task.phase !== 'Completed' && !task.completionRequested;
+    const reopenable = task.githubIssueState === 'closed' && !task.deleteRequested && task.desiredState !== 'Cancelled';
+    if (!closeable && !reopenable) continue;
     try {
       const issue = await lookup(reference.url);
-      if (issue.state !== 'closed') continue;
-      await store.mutate(task.id, `github-closed:${reference.repository}:${reference.id}:${issue.closedAt || 'closed'}`,
-        current => closeGithubTask(current, controllerActor, reference.url));
-      console.log(JSON.stringify({event: 'github_issue_reconciled', taskId: task.id,
-        repository: reference.repository, issue: reference.id, state: 'closed'}));
+      if (closeable && issue.state === 'closed') {
+        await store.mutate(task.id, `github-closed:${reference.repository}:${reference.id}:${issue.closedAt || 'closed'}`,
+          current => closeGithubTask(current, controllerActor, reference.url));
+        console.log(JSON.stringify({event: 'github_issue_reconciled', taskId: task.id,
+          repository: reference.repository, issue: reference.id, state: 'closed'}));
+      } else if (reopenable && issue.state !== 'closed') {
+        await store.mutate(task.id, `github-reopened:${reference.repository}:${reference.id}:${issue.updatedAt || 'open'}`,
+          current => { if (reopenGithubTask(current, controllerActor, reference.url))
+            prompt(current, controllerActor, githubWakeup('issues', reference.url), 'controller'); });
+        console.log(JSON.stringify({event: 'github_issue_reconciled', taskId: task.id,
+          repository: reference.repository, issue: reference.id, state: 'open'}));
+      }
     } catch {
       // One inaccessible repository must not prevent other task/Pod reconciliation.
       console.error(JSON.stringify({event: 'github_issue_reconcile_failed', taskId: task.id,
