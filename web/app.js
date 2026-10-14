@@ -469,7 +469,7 @@ async function select(id) {
   if (id !== selected?.id) modelDirty = false;
   selected = await api('/tasks/' + id);
   history.replaceState({}, '', '/?task=' + encodeURIComponent(id));
-  renderList(); renderDetail();
+  renderList(); renderDetail(); renderDeviceNavbar();
 }
 async function refresh() {
   const listing = await api('/tasks'); tasks = listing.tasks;
@@ -633,6 +633,60 @@ $('#followup').onsubmit = async event => {
   catch (error) { failure(error); }
   finally { sending = false; renderDetail(); }
 };
+let knownDevices = [];
+async function refreshDevices() {
+  if (!user || user.expired) return;
+  const data = await api('/devices');
+  knownDevices = data.devices;
+  renderDeviceNavbar();
+}
+function renderDeviceNavbar() {
+  const nav = $('#devices-navbar'); nav.replaceChildren();
+  for (const device of knownDevices.filter(d => d.connected)) {
+    const included = selected?.devices?.includes(device.id);
+    const btn = node('button', '', 'device-badge' + (included ? ' device-included' : ''));
+    btn.type = 'button';
+    btn.title = (device.hostname || device.label || device.id.slice(0, 8)) + (included ? ' · included in task (click to remove)' : ' · click to include in task');
+    btn.setAttribute('aria-pressed', String(Boolean(included)));
+    const dot = node('i', '', 'state-dot ' + (included ? 'green' : 'gray')); dot.setAttribute('aria-hidden', 'true');
+    btn.append(dot, node('span', device.hostname || device.label || device.id.slice(0, 8)));
+    btn.onclick = () => toggleDevice(device.id, !included);
+    nav.append(btn);
+  }
+}
+async function toggleDevice(deviceId, include) {
+  if (!selected) return;
+  try { selected = await api(`/tasks/${selected.id}/devices/${encodeURIComponent(deviceId)}`, 'PATCH', {included: include}); renderDeviceNavbar(); renderDetail(); }
+  catch (error) { failure(error); }
+}
+function renderDeviceList() {
+  const list = $('#device-list'); list.replaceChildren();
+  if (!knownDevices.length) { list.append(node('p', 'No devices registered yet.', 'empty-resource')); return; }
+  for (const device of knownDevices) {
+    const row = node('div', '', 'resource-row');
+    const label = node('strong', device.hostname || device.label || device.id.slice(0, 8));
+    const status = node('small', device.connected ? `Connected since ${new Date(device.connectedAt).toLocaleString()}` : 'Disconnected');
+    const url = node('code', device.url); url.style.display = 'block'; url.style.fontSize = '11px'; url.style.overflowWrap = 'anywhere';
+    const copyBtn = node('button', 'Copy URL', 'copy-url-btn'); copyBtn.type = 'button';
+    copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(device.url); copyBtn.textContent = 'Copied'; setTimeout(() => { copyBtn.textContent = 'Copy URL'; }, 2000); } catch { copyBtn.textContent = 'Copy failed'; } };
+    const revokeBtn = node('button', 'Revoke', 'revoke-device-btn'); revokeBtn.type = 'button';
+    revokeBtn.onclick = async () => { revokeBtn.disabled = true; try { await api('/devices/' + encodeURIComponent(device.id), 'DELETE', {}); await refreshDevices(); renderDeviceList(); } catch (error) { failure(error); revokeBtn.disabled = false; } };
+    row.append(label, status, url, copyBtn, revokeBtn);
+    list.append(row);
+  }
+}
+$('#manage-devices').onclick = async () => {
+  try { await refreshDevices(); renderDeviceList(); $('#devices-dialog').showModal(); }
+  catch (error) { failure(error); }
+};
+$('#close-devices').onclick = () => $('#devices-dialog').close();
+$('#add-device').onclick = async () => {
+  const btn = $('#add-device'); btn.disabled = true;
+  try { await api('/devices', 'POST', {}); await refreshDevices(); renderDeviceList(); }
+  catch (error) { failure(error); }
+  finally { btn.disabled = false; }
+};
+
 for (const textarea of [$('#objective'), $('#message')]) {
   textarea.title = 'Enter to send; Shift+Enter for a new line';
   textarea.addEventListener('keydown', event => {
@@ -684,11 +738,13 @@ try {
     const actor = await api('/me'); currentActor = actor;
     $('#connectivity-navbar').hidden = false;
     void loadConnectivity();
+    void refreshDevices();
     $('#login').textContent = '⏻'; $('#login').title = 'Sign out · ' + actor.name;
     $('#login').setAttribute('aria-label', 'Sign out');
     $('#new').disabled = false; $('#start-task').disabled = false; $('#signin-note').hidden = true;
     $('#connections').disabled = false;
     $('#instructions').disabled = false;
+    $('#manage-devices').disabled = false;
     await refreshModels(); await refresh();
     void refreshResources();
     const taskId = new URLSearchParams(location.search).get('task');
@@ -711,7 +767,7 @@ try {
         $('#clear-draft').hidden = false;
       }
     }
-    setInterval(() => refresh().catch(failure), 5000);
+    setInterval(() => { refresh().catch(failure); refreshDevices().catch(failure); }, 5000);
   } else if (cfg.sharingMode === 'public') {
     await refreshSharedDirectory();
     setInterval(() => { if (publicDirectory) refreshSharedDirectory().catch(failure); }, 10000);
