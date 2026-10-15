@@ -18,6 +18,14 @@ build:
       context: .
       docker:
         target: controller
+    - image: codemowers/agent-webhook
+      context: .
+      docker:
+        target: webhook
+    - image: codemowers/agent-operator
+      context: .
+      docker:
+        target: operator
 manifests:
   helm:
     flags:
