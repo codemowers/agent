@@ -20,7 +20,10 @@ export async function reconcile(store, kube, config) {
           await kube.run(['delete', 'pod', old.metadata.name, '--ignore-not-found', '--wait=false']);
         }
       }
-      await kube.run(['delete', 'configmap', initial.lastExecution.podName + '-input', '--ignore-not-found']);
+      await kube.run(['delete', 'configmap', initial.lastExecution.podName + '-input', '--ignore-not-found']).catch(error => {
+        if (!/Forbidden/.test(error.message)) throw error;
+        console.error(JSON.stringify({level: 'warn', component: 'reconcile', message: 'Cannot delete stale input ConfigMap (RBAC missing delete on configmaps): ' + error.message.slice(0, 300)}));
+      });
     }
     if (initial.deleteRequested && !initial.active) {
       // Failed executions can outlive lastExecution when a Task is retried.
@@ -109,7 +112,10 @@ export async function reconcile(store, kube, config) {
       if (finalResult.exitCode === 0 && pod.status.phase !== 'Failed') {
         await kube.run(['delete', 'pod', execution.podName, '--ignore-not-found', '--wait=false']);
       }
-      await kube.run(['delete', 'configmap', execution.podName + '-input', '--ignore-not-found']);
+      await kube.run(['delete', 'configmap', execution.podName + '-input', '--ignore-not-found']).catch(error => {
+        if (!/Forbidden/.test(error.message)) throw error;
+        console.error(JSON.stringify({level: 'warn', component: 'reconcile', message: 'Cannot delete input ConfigMap (RBAC missing delete on configmaps): ' + error.message.slice(0, 300)}));
+      });
       continue;
     }
     if (pod?.metadata.deletionTimestamp) continue;
