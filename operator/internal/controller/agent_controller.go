@@ -25,8 +25,6 @@ type AgentReconciler struct {
 }
 
 func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	var agent agentsv1alpha1.Agent
 	if err := r.Get(ctx, req.NamespacedName, &agent); err != nil {
 		if errors.IsNotFound(err) {
@@ -49,7 +47,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("reconciled agent", "tasks", agent.Status.TaskCount)
+	log.FromContext(ctx).Info("reconciled agent", "tasks", agent.Status.TaskCount)
 	return ctrl.Result{}, nil
 }
 
@@ -68,8 +66,6 @@ type TaskReconciler struct {
 }
 
 func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	var task agentsv1alpha1.Task
 	if err := r.Get(ctx, req.NamespacedName, &task); err != nil {
 		if errors.IsNotFound(err) {

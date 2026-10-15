@@ -1,10 +1,11 @@
 package v1alpha1
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
+
 
 var (
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
@@ -16,8 +17,9 @@ func init() {
 	SchemeBuilder.Register(&Task{}, &TaskList{})
 }
 
-// DeepCopyObject implementations required by runtime.Object.
-func (in *Agent) DeepCopyObject() runtime.Object {
+// --- Agent ---
+
+func (in *Agent) DeepCopy() *Agent {
 	if in == nil {
 		return nil
 	}
@@ -26,7 +28,49 @@ func (in *Agent) DeepCopyObject() runtime.Object {
 	return out
 }
 
-func (in *AgentList) DeepCopyObject() runtime.Object {
+func (in *Agent) DeepCopyObject() runtime.Object {
+	return in.DeepCopy()
+}
+
+func (in *Agent) DeepCopyInto(out *Agent) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
+	*out = *in
+	if in.GitProviders != nil {
+		out.GitProviders = make([]GitProvider, len(in.GitProviders))
+		copy(out.GitProviders, in.GitProviders)
+	}
+	if in.SlackWorkspaces != nil {
+		out.SlackWorkspaces = make([]SlackWorkspace, len(in.SlackWorkspaces))
+		copy(out.SlackWorkspaces, in.SlackWorkspaces)
+	}
+	if in.CredentialRefs != nil {
+		out.CredentialRefs = make([]string, len(in.CredentialRefs))
+		copy(out.CredentialRefs, in.CredentialRefs)
+	}
+	if in.MCPEndpoints != nil {
+		out.MCPEndpoints = make([]MCPEndpoint, len(in.MCPEndpoints))
+		copy(out.MCPEndpoints, in.MCPEndpoints)
+	}
+}
+
+func (in *AgentStatus) DeepCopyInto(out *AgentStatus) {
+	*out = *in
+	if in.Conditions != nil {
+		out.Conditions = make([]metav1.Condition, len(in.Conditions))
+		copy(out.Conditions, in.Conditions)
+	}
+}
+
+// --- AgentList ---
+
+func (in *AgentList) DeepCopy() *AgentList {
 	if in == nil {
 		return nil
 	}
@@ -35,7 +79,25 @@ func (in *AgentList) DeepCopyObject() runtime.Object {
 	return out
 }
 
-func (in *Task) DeepCopyObject() runtime.Object {
+func (in *AgentList) DeepCopyObject() runtime.Object {
+	return in.DeepCopy()
+}
+
+func (in *AgentList) DeepCopyInto(out *AgentList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		out.Items = make([]Agent, len(in.Items))
+		for i := range in.Items {
+			in.Items[i].DeepCopyInto(&out.Items[i])
+		}
+	}
+}
+
+// --- Task ---
+
+func (in *Task) DeepCopy() *Task {
 	if in == nil {
 		return nil
 	}
@@ -44,7 +106,59 @@ func (in *Task) DeepCopyObject() runtime.Object {
 	return out
 }
 
-func (in *TaskList) DeepCopyObject() runtime.Object {
+func (in *Task) DeepCopyObject() runtime.Object {
+	return in.DeepCopy()
+}
+
+func (in *Task) DeepCopyInto(out *Task) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+func (in *TaskSpec) DeepCopyInto(out *TaskSpec) {
+	*out = *in
+	if in.ExternalReferences != nil {
+		out.ExternalReferences = make([]ExternalReference, len(in.ExternalReferences))
+		copy(out.ExternalReferences, in.ExternalReferences)
+	}
+	if in.CompletionPolicy != nil {
+		cp := *in.CompletionPolicy
+		if in.CompletionPolicy.RequiredChecks != nil {
+			cp.RequiredChecks = make([]string, len(in.CompletionPolicy.RequiredChecks))
+			copy(cp.RequiredChecks, in.CompletionPolicy.RequiredChecks)
+		}
+		out.CompletionPolicy = &cp
+	}
+	if in.Model != nil {
+		m := *in.Model
+		out.Model = &m
+	}
+}
+
+func (in *TaskStatus) DeepCopyInto(out *TaskStatus) {
+	*out = *in
+	if in.Progress != nil {
+		p := *in.Progress
+		out.Progress = &p
+	}
+	if in.Outputs != nil {
+		out.Outputs = make(map[string]string, len(in.Outputs))
+		for k, v := range in.Outputs {
+			out.Outputs[k] = v
+		}
+	}
+	if in.Conditions != nil {
+		out.Conditions = make([]metav1.Condition, len(in.Conditions))
+		copy(out.Conditions, in.Conditions)
+	}
+}
+
+// --- TaskList ---
+
+func (in *TaskList) DeepCopy() *TaskList {
 	if in == nil {
 		return nil
 	}
@@ -53,5 +167,18 @@ func (in *TaskList) DeepCopyObject() runtime.Object {
 	return out
 }
 
-// Ensure GroupVersionKind is set on typed objects.
-var _ = schema.GroupVersion{}
+func (in *TaskList) DeepCopyObject() runtime.Object {
+	return in.DeepCopy()
+}
+
+func (in *TaskList) DeepCopyInto(out *TaskList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		out.Items = make([]Task, len(in.Items))
+		for i := range in.Items {
+			in.Items[i].DeepCopyInto(&out.Items[i])
+		}
+	}
+}
