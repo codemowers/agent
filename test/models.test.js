@@ -65,7 +65,8 @@ test('new workers mount kubectl matching the live API version and retain other i
   const task = newTask('tenant-a', actor, 'Build software'); reserve(task);
   const kube = new Kube({release: 'agent', namespace: 'tenant-a', githubSecret: 'github', image: 'runner',
     toolImages: [{name: 'kubectl', image: 'outdated', binPath: 'bin'}, {name: 'utils', image: 'utilities', binPath: 'usr/bin'},
-      {name: 'go', image: 'golang:1.27.2-bookworm', binPath: 'usr/local/go', mountPath: '/opt/tools/go'}]});
+      {name: 'go', image: 'golang:1.27.2-bookworm', binPath: 'usr/local/go', mountPath: '/opt/tools/go'},
+      {name: 'helm', image: 'alpine/helm:3.22.0', binPath: 'usr/bin'}]});
   let gitVersion = 'v1.36.3';
   kube.run = async args => {
     assert.deepEqual(args, ['version', '-o', 'json']);
@@ -81,8 +82,10 @@ test('new workers mount kubectl matching the live API version and retain other i
     assert.equal(container.volumeMounts.find(mount => mount.name === 'tool-kubectl').subPath, 'bin');
     assert.deepEqual(container.volumeMounts.find(mount => mount.name === 'tool-go'),
       {name: 'tool-go', mountPath: '/opt/tools/go', subPath: 'usr/local/go', readOnly: true});
-    assert.match(container.env.find(env => env.name === 'PATH').value, /^\/opt\/tools\/kubectl\/bin:/);
-    assert.match(container.env.find(env => env.name === 'PATH').value, /:\/opt\/tools\/go\/bin:/);
+    const paths = container.env.find(env => env.name === 'PATH').value.split(':');
+    assert.equal(paths[0], '/opt/tools/kubectl/bin');
+    assert.ok(paths.indexOf('/usr/bin') < paths.indexOf('/opt/tools/helm/bin'));
+    assert.ok(paths.includes('/opt/tools/go/bin'));
     assert.equal(container.env.find(env => env.name === 'GOROOT').value, '/opt/tools/go');
     assert.equal(container.env.find(env => env.name === 'GOPATH').value, '/workspace/home/go');
     assert.equal(container.env.find(env => env.name === 'GOTOOLCHAIN').value, 'local');

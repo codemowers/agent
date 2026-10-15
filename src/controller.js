@@ -12,13 +12,20 @@ export async function reconcile(store, kube, config) {
     if (initial.lastExecution?.podName && initial.lastExecution.id !== initial.active?.id) {
       const old = await kube.get('pod', initial.lastExecution.podName);
       if (old && ['Failed', 'Succeeded'].includes(old.status?.phase)) {
-        const finalizers = (old.metadata.finalizers || []).filter(f => f !== 'agents.codemowers.io/result-recorded');
-        await kube.run(['patch', 'pod', old.metadata.name, '--type=merge', '-p', JSON.stringify({metadata: {finalizers}})]);
-        await kube.run(['delete', 'pod', old.metadata.name, '--ignore-not-found', '--wait=false']);
+        if (old.metadata.finalizers?.includes('agents.codemowers.io/result-recorded')) {
+          const finalizers = old.metadata.finalizers.filter(f => f !== 'agents.codemowers.io/result-recorded');
+          await kube.run(['patch', 'pod', old.metadata.name, '--type=merge', '-p', JSON.stringify({metadata: {finalizers}})]);
+        }
+        if (initial.deleteRequested || initial.lastExecution.state !== 'Failed') {
+          await kube.run(['delete', 'pod', old.metadata.name, '--ignore-not-found', '--wait=false']);
+        }
       }
       await kube.run(['delete', 'configmap', initial.lastExecution.podName + '-input', '--ignore-not-found']);
     }
     if (initial.deleteRequested && !initial.active) {
+      // Failed executions can outlive lastExecution when a Task is retried.
+      await kube.run(['delete', 'pod,configmap', '-l', `agents.codemowers.io/task-id=${initial.id}`,
+        '--ignore-not-found', '--wait=false']);
       const pvcName = `${config.release}-task-${initial.id}`;
       await kube.run(['delete', 'pvc', pvcName, '--ignore-not-found', '--wait=false']);
       if (!await kube.get('pvc', pvcName)) { await config.cleanupTask?.(initial); await store.remove(initial.id); }
@@ -90,12 +97,18 @@ export async function reconcile(store, kube, config) {
         }
       }
       if (result) result.exitCode = exited?.exitCode ?? (pod.status.phase === 'Failed' ? 1 : result.exitCode);
+      const finalResult = result || {exitCode: exited?.exitCode ?? (pod.status.phase === 'Succeeded' ? 0 : 1),
+        summary: 'Worker stopped without a final result; inspect execution logs.'};
       await store.mutate(task.id, 'finish:' + execution.id, current => {
-        if (current.active?.id === execution.id) finish(current, execution.id,
-          result || {exitCode: exited?.exitCode ?? 1, summary: 'Worker stopped without a final result; inspect execution logs.'});
+        if (current.active?.id === execution.id) finish(current, execution.id, finalResult);
       });
-      await kube.run(['patch', 'pod', execution.podName, '--type=merge', '-p', '{"metadata":{"finalizers":[]}}']);
-      await kube.run(['delete', 'pod', execution.podName, '--ignore-not-found', '--wait=false']);
+      if (pod.metadata.finalizers?.includes('agents.codemowers.io/result-recorded')) {
+        const finalizers = pod.metadata.finalizers.filter(f => f !== 'agents.codemowers.io/result-recorded');
+        await kube.run(['patch', 'pod', execution.podName, '--type=merge', '-p', JSON.stringify({metadata: {finalizers}})]);
+      }
+      if (finalResult.exitCode === 0 && pod.status.phase !== 'Failed') {
+        await kube.run(['delete', 'pod', execution.podName, '--ignore-not-found', '--wait=false']);
+      }
       await kube.run(['delete', 'configmap', execution.podName + '-input', '--ignore-not-found']);
       continue;
     }

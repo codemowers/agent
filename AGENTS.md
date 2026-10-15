@@ -210,7 +210,9 @@ runtime support before combining confinement mechanisms.
 Persist the execution/envelope before creating its Pod, then record the actual
 Pod UID. On controller startup reconcile all unfinished durable Tasks and adopt
 matching live workers. Persist terminal results before releasing the Pod
-finalizer and deleting Pod/input ConfigMap. Actual container exit code overrides
+finalizer. Delete successful Pods and execution input ConfigMaps; retain failed
+Pods for logs and exit status until Task deletion, including across retries.
+Actual container exit code overrides
 a worker claim. A disappeared or reused Pod pauses the Task for review. Do not
 replace an unreachable worker against the same PVC until termination/fencing is
 confirmed. A deletion request or expired Lease alone is insufficient.
@@ -293,7 +295,9 @@ v2.18.0 from its binary release. Workers do not apt-install tools at startup.
 The controller image contains Node, application code, schema and SPA; kubectl is
 provided by an OCI image volume.
 
-Kubectl and Go come from OCI image volumes. Kubectl uses upstream
+Kubectl, Helm and Go come from OCI image volumes. Workers mount pinned
+`docker.io/alpine/helm:3.22.0` at `/opt/tools/helm/bin`; Helm is not embedded
+in the runner image. Kubectl uses upstream
 `registry.k8s.io/kubectl:v<server-version>`. The controller Deployment uses Helm
 `.Capabilities.KubeVersion.Version`; Skaffold explicitly renders with 1.36.3.
 Immediately before creating a worker Pod, query the Kubernetes API server version

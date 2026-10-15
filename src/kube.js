@@ -76,6 +76,7 @@ export class Kube {
     const toolMounts = toolImages.map(tool => ({name: 'tool-' + tool.name,
       mountPath: tool.mountPath || '/opt/tools/' + tool.name + '/bin', subPath: tool.binPath, readOnly: true}));
     const toolVolumes = toolImages.map(tool => ({name: 'tool-' + tool.name, image: {reference: tool.image, pullPolicy: 'IfNotPresent'}}));
+    const toolPath = tool => tool.mountPath ? tool.mountPath + '/bin' : '/opt/tools/' + tool.name + '/bin';
     const model = execution.model || task.model;
     const backend = model?.backend || 'claude';
     if (model && model.provider !== (backend === 'codex' ? 'openai' : 'anthropic')) {
@@ -94,8 +95,9 @@ export class Kube {
       AGENT_MODEL: model ? model.model : cfg.model, AGENT_MCP_CONFIG_FILE: '/mcp/mcp.json',
       AGENT_USERNAME: identity.username, AGENT_NAME: identity.name, AGENT_EMAIL: identity.email,
       KUBECONFIG: '/config/kubeconfig',
-      PATH: [...toolImages.map(tool => tool.mountPath ? tool.mountPath + '/bin' : '/opt/tools/' + tool.name + '/bin'),
-        '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'].join(':'),
+      PATH: [...toolImages.filter(tool => tool.name === 'kubectl').map(toolPath),
+        '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin',
+        ...toolImages.filter(tool => tool.name !== 'kubectl').map(toolPath)].join(':'),
       ...(toolImages.some(tool => tool.name === 'go') ? {
         GOROOT: toolImages.find(tool => tool.name === 'go').mountPath || '/opt/tools/go',
         GOPATH: '/workspace/home/go', GOCACHE: '/workspace/home/.cache/go-build', GOTOOLCHAIN: 'local',

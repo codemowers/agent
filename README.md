@@ -84,6 +84,8 @@ the checkout, uncommitted changes, artifacts and saved CLI conversation.
 Codemowers Agent keeps that state on a PVC and task/event state in Redis. Pause
 stops the worker; resume starts a new Pod with the same files and session. It
 requires no PostgreSQL, process-memory snapshots or additional sandbox scheduler.
+Failed worker Pods remain available for `kubectl logs` and status inspection until
+their Task is deleted; successful worker Pods are cleaned up.
 Choose it when workspace persistence is enough for your workflow.
 
 ## Run on your cluster
@@ -430,7 +432,8 @@ volume and prepend its `bin` directory to PATH. Helm selects the controller vers
 from `.Capabilities.KubeVersion.Version`; Skaffold supplies 1.36.3 for rendering.
 The controller reads the live API server version before spawning each worker and
 selects a matching kubectl image for it.
-Workers also mount a pinned Go toolchain image at `/opt/tools/go`. Go build caches
+Workers mount `docker.io/alpine/helm:3.22.0` at `/opt/tools/helm/bin` and a
+pinned Go toolchain image at `/opt/tools/go`. Go build caches
 and module downloads stay on the Task PVC. Python 3 includes pip and venv support;
 install project packages into a virtual environment under `/workspace`.
 Use Skaffold's cluster builder for Kaniko builds and deployments.
