@@ -7,6 +7,16 @@ function sanitizeHostname(raw) {
   return validHostname.test(s) ? s : 'device';
 }
 
+function deviceInfo(message) {
+  const source = message.info && typeof message.info === 'object' ? message.info
+    : message.system && typeof message.system === 'object' ? message.system
+      : message.systemInfo && typeof message.systemInfo === 'object' ? message.systemInfo : message;
+  const fields = /^(?:os|os[_-]?version|platform|arch|architecture|kernel|kernel[_-]?version|distro|distribution|release|version|cpu|cpus|memory)$/i;
+  return Object.fromEntries(Object.entries(source).filter(([key, value]) => fields.test(key)
+    && (typeof value === 'string' || typeof value === 'number')).slice(0, 20)
+    .map(([key, value]) => [key, String(value).slice(0, 100)]));
+}
+
 export class DeviceCatalog {
   constructor(kube, config) {
     this.kube = kube;
@@ -35,24 +45,31 @@ export class DeviceCatalog {
   }
 
   handleConnection(key, ws) {
+    const conn = {ws, hostname: 'unknown', connectedAt: new Date().toISOString(), pending: new Map()};
+    let closed = false;
+    ws.on('message', raw => {
+      try {
+        const msg = JSON.parse(raw);
+        if (msg.type === 'hello') {
+          conn.hostname = sanitizeHostname(msg.hostname);
+          conn.info = deviceInfo(msg);
+        } else if (this._connections.get(key) === conn && msg.id && conn.pending.has(msg.id)) {
+          const {resolve} = conn.pending.get(msg.id);
+          conn.pending.delete(msg.id);
+          resolve(msg);
+        }
+      } catch { /* ignore malformed device messages */ }
+    });
+    ws.on('close', () => { closed = true; if (this._connections.get(key) === conn) this._connections.delete(key); });
+    ws.on('error', () => {
+      closed = true;
+      if (this._connections.get(key) === conn) this._connections.delete(key);
+      try { ws.close(); } catch { /* already closed */ }
+    });
     this.readDevices().then(devices => {
       if (!devices[key]) { ws.close(4001, 'Unknown device key'); return; }
-      const conn = {ws, hostname: 'unknown', connectedAt: new Date().toISOString(), pending: new Map()};
+      if (closed) return;
       this._connections.set(key, conn);
-      ws.on('message', raw => {
-        try {
-          const msg = JSON.parse(raw);
-          if (msg.type === 'hello') {
-            conn.hostname = sanitizeHostname(msg.hostname);
-          } else if (msg.id && conn.pending.has(msg.id)) {
-            const {resolve} = conn.pending.get(msg.id);
-            conn.pending.delete(msg.id);
-            resolve(msg);
-          }
-        } catch { /* ignore malformed device messages */ }
-      });
-      ws.on('close', () => this._connections.delete(key));
-      ws.on('error', () => { this._connections.delete(key); try { ws.close(); } catch { /* already closed */ } });
     }).catch(() => { try { ws.close(4002, 'Configuration error'); } catch { /* ignore */ } });
   }
 
@@ -78,7 +95,17 @@ export class DeviceCatalog {
       const conn = this._connections.get(key);
       return {id: key, label: meta.label || null, createdAt: meta.createdAt,
         hostname: conn?.hostname || null, connectedAt: conn?.connectedAt || null,
-        connected: Boolean(conn), url: this.connectURL(key)};
+        connected: Boolean(conn), info: conn?.info || {}, url: this.connectURL(key)};
+    });
+  }
+
+  async taskContext(keys = []) {
+    const registered = new Map((await this.list()).map(device => [device.id, device]));
+    return [...new Set(keys)].map(id => {
+      const device = registered.get(id);
+      return {id, label: device?.label || null,
+        hostname: device?.hostname === 'unknown' ? null : device?.hostname || null,
+        connected: Boolean(device?.connected)};
     });
   }
 

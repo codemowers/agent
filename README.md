@@ -35,11 +35,16 @@ Note we will shortly add knob there to turn on the agent just like that.
 - **Keep working.** Follow progress in the browser, queue prompts, and pause or
   resume with the workspace intact. Waiting for confirmation keeps the worker
   warm for 60 minutes after its last response; explicit Pause stops it.
-- **Delegate from GitHub.** Assign an issue to the configured agent user to start
-  work. Comments resume the same task; closing the issue completes it. GitHub
+- **Delegate from GitHub.** Assign an issue or PR to the configured agent user to start
+  work. Updates reuse the task even after unassignment; closing an issue completes
+  it. Startup and periodic assignment discovery recover missed webhooks. GitHub
   notification email can discover assignments in repositories without a webhook.
 - **Connect events.** Configure GitHub, Alertmanager, and authenticated webhooks
   in **Connections**.
+- **Handle notifications promptly.** The first automatic wakeup starts immediately.
+  Follow-up automatic notifications within three minutes do not start another turn,
+  including a notification email for the same Git event. UI prompts and participant
+  email replies also run immediately.
 - **Follow linked pull requests.** PR merges wake the original task, including
   across repositories.
 - **Check connectivity.** After sign-in, badges show startup checks for Codemowers,
@@ -52,8 +57,9 @@ Note we will shortly add knob there to turn on the agent just like that.
   tasks, the GitHub issue is the main thread for results, blockers and confirmation
   questions; mail and chat are secondary.
 - **Report harness failures.** Controller and worker exceptions create attributed
-  repair tasks for `codemowers/agent`. Reports are rate-limited and deduplicated;
-  fixes follow normal review and deployment.
+  repair tasks for `codemowers/agent`. One active repair Task per component collects
+  keyed exception fingerprints; a new fingerprint queues a follow-up, while repeats
+  only update the occurrence count. Fixes follow normal review and deployment.
 
 ## Why choose codemowers/agent over OpenClaw or Hermes?
 
@@ -114,6 +120,7 @@ Populate the local `skaffold.env` in the project root:
 SKAFFOLD_KUBE_CONTEXT=your-kubeconfig-context
 SKAFFOLD_NAMESPACE=your-agent-namespace
 AGENT_KUBE_CONTEXT=your-cluster-name/your-agent-namespace
+AGENT_API_RESOURCE=https://your-public-controller-host/api
 SKAFFOLD_DEFAULT_REPO=registry.example.com/your-project
 SKAFFOLD_CLEANUP=false
 ```
@@ -121,12 +128,22 @@ SKAFFOLD_CLEANUP=false
 Skaffold reads this file automatically; it is gitignored. `SKAFFOLD_CLEANUP=false`
 keeps deployed resources when you stop the development loop.
 
-Helm values configure `host` (default `controller`) and `allowedGroups`. Skaffold
-injects images and runtime settings; deployment defaults live in the chart. The
+Helm values configure `host` (default `controller`), `allowedGroups`,
+`allowedUsers` and the required `apiResource`. The controller reads the generated
+OIDC `allowedUsers` list as its subject allowlist, so provider and API checks
+agree. Set `AGENT_API_RESOURCE` to the public controller origin
+followed by `/api`, matching the OIDC owner's `OIDC_CLIENT_ORIGIN` plus `/api`.
+OIDC hostname admission expands the short `host` in redirect and CORS URLs, but
+does not expand `allowedResources`; a short API resource makes sign-in fail with
+`invalid_target`. Skaffold injects images and runtime settings; deployment
+defaults live in the chart. The
 deployment namespace comes from local configuration and is supplied through the
 Pod namespace fieldRef. `AGENT_KUBE_CONTEXT` names the prepared controller/worker
 context; it uses the in-cluster API and ServiceAccount authentication rather than
 the human credentials selected by `SKAFFOLD_KUBE_CONTEXT`.
+
+The `dev-test` Skaffold profile activates for the `dev-test` kube context. It
+allows only the `laurivosandi` account and sets the verified public API resource.
 
 The application needs Redis, persistent volumes, and an OIDC public client using
 Authorization Code with PKCE. The bundled [chart](chart/) integrates with
@@ -135,6 +152,8 @@ and certificates. On another cluster, install compatible operators or adapt thos
 chart resources to your existing services. Configure Ingress, DNS, and TLS for
 your hostname. Workers currently use `hostUsers: false`, so the cluster runtime
 must support Pod user namespaces.
+The browser stores its OIDC session in localStorage and renews access tokens with
+Passmower refresh tokens; signing out clears the stored session.
 
 Provision the [credentials](#provider-credentials), then start the build, deploy
 and log-streaming loop:
@@ -314,8 +333,14 @@ wiring and private-repository cloning to become profile-specific.
 
 ## Provider credentials
 
-Create the GitHub and selected model-provider credentials using your current
-kubectl context:
+Create the selected model-provider credentials using your current kubectl context.
+Worker model Secret references are optional at Pod creation. The worker exits
+with a recorded failure if its selected Claude or Codex API key is unavailable;
+it does not switch providers. Provision the matching Secret before retrying.
+Create the Git provider token when Git integration is needed. Without it, prompt-only
+Tasks still run, while Git discovery, issue/PR routing and authenticated repository
+operations are unavailable. The controller and workers can start without
+`agent-worker-github-token`.
 
 ```sh
 kubectl create secret generic agent-worker-github-token \
@@ -347,6 +372,22 @@ Agent identity comes from an optional `agent-identity` ConfigMap. Without it, th
 agent is **Agent Smith**, username `agent-smith`, email `agent.smith@system.gov`.
 Set `AGENT_USERNAME` to the GitHub bot account and configure its display/Git name
 and email. The controller passes this identity to workers and the UI.
+
+The same ConfigMap can select a Git server with `AGENT_FORGE_PROVIDER` (`github`
+or `gitea`) and `AGENT_FORGE_URL`. GitHub Enterprise defaults to the server's
+`/api/v3`; Gitea defaults to `/api/v1`. Set `AGENT_FORGE_API_URL` only when a
+different API endpoint is needed. When configured, the Git token Secret must contain
+a token for that server. Public GitHub remains the default. Gitea routing has fixture
+coverage; live Gitea validation and notification-email parsing remain future work.
+
+Issue and PR keys include provider, server, repository, number and kind. Webhooks
+and notification mail reuse the same task. Assignment gates creation; existing
+tasks keep receiving updates after unassignment, with no automatic deletion or
+tracking of which comments the model has read. Self-authored comments are ignored
+to prevent loops. Pause keeps updates queued; Cancel prevents reactivation.
+Assignment discovery runs at startup and every five minutes. Deleting a task for
+an open, still-assigned item can recreate it on the next scan; close/unassign the
+item or cancel its task to stop processing.
 
 ```sh
 kubectl create configmap agent-identity \
@@ -389,6 +430,9 @@ volume and prepend its `bin` directory to PATH. Helm selects the controller vers
 from `.Capabilities.KubeVersion.Version`; Skaffold supplies 1.36.3 for rendering.
 The controller reads the live API server version before spawning each worker and
 selects a matching kubectl image for it.
+Workers also mount a pinned Go toolchain image at `/opt/tools/go`. Go build caches
+and module downloads stay on the Task PVC. Python 3 includes pip and venv support;
+install project packages into a virtual environment under `/workspace`.
 Use Skaffold's cluster builder for Kaniko builds and deployments.
 
 New Task opens an inline wizard: choose Start from scratch or an editable draft,
@@ -403,6 +447,13 @@ documents them; populated `skaffold.env` is gitignored. User edits are preserved
 Git uses `AGENT_NAME`/`AGENT_EMAIL` and `pull.rebase=true`.
 
 The configured USD cap applies to Claude; use provider billing limits for Codex.
+Set `env.AGENT_MCP_PAYLOADS_ENABLED: "true"` in Helm values to enable the
+authenticated MCP request/response JSON viewer. It is off by default. The worker
+records bounded, redacted payloads in Task history, and the UI fetches them only
+when a tool call is expanded. Shared Task links never include these payloads.
+Restart the controller and workers after changing this setting; existing calls
+made while it was off have no payloads to display. Payloads can still contain
+sensitive task data, so enable this only where Task API readers may see it.
 Task files and CLI sessions persist on PVCs; configure Redis persistence for task
 and event recovery.
 
@@ -420,8 +471,8 @@ sharing, drafts and future operator design.
 - **Slack chat:** route conversations and follow-up messages to persistent tasks,
   with authenticated events and workspace/channel/thread identity. Start with the
   customer-support profile and its restricted permissions.
-- **Gitea:** support agent identities, repository access, issue assignments,
-  comments, pull requests and merge events alongside GitHub. Preserve human PR
+- **Gitea:** validate the configured-server routing end to end and add notification
+  email parsing and richer repository-creation discovery. Preserve human PR
   review and instance-scoped credentials.
 - **Local llama.cpp:** add local-model execution with reliable tool calls,
   streaming and session resumption. The planned kube-admin local-model profile

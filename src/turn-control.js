@@ -1,5 +1,7 @@
-export async function watchTurnControl({endpoint, token, promptIds, interrupt, request = fetch, intervalMs = 1000}) {
-  let closed = false, busy = false, interrupted = false;
+import {agentFetch} from './http.js';
+
+export async function watchTurnControl({endpoint, token, promptIds, interrupt, request = agentFetch, intervalMs = 1000}) {
+  let closed = false, busy = false, interrupted = false, unavailable = false;
   const matches = values => Array.isArray(values) && values.length === promptIds.length && new Set(values).size === promptIds.length
     && values.every(id => promptIds.includes(id));
   async function poll() {
@@ -8,10 +10,17 @@ export async function watchTurnControl({endpoint, token, promptIds, interrupt, r
     try {
       const response = await request(endpoint + '/control', {headers: {Authorization: `Bearer ${token}`},
         signal: AbortSignal.timeout(3000), redirect: 'error'});
-      if (!response.ok) return;
+      if (!response.ok) {
+        if (!unavailable) console.warn(JSON.stringify({event: 'turn_control_unavailable', status: response.status}));
+        unavailable = true; return;
+      }
+      unavailable = false;
       const control = await response.json();
-      if (!closed && matches(control.interrupt?.promptIds)) { interrupted = true; interrupt(); }
-    } catch { /* A temporary controller outage must not abort the prompt. */ }
+      if (!closed && matches(control.interrupt?.promptIds)) { interrupted = true; console.log(JSON.stringify({event: 'turn_control_interrupt'})); interrupt(); }
+    } catch (error) {
+      if (!unavailable) console.warn(JSON.stringify({event: 'turn_control_unavailable', reason: error?.name || 'request_failed'}));
+      unavailable = true;
+    }
     finally { busy = false; }
   }
   await poll();

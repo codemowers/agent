@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {reserve, finish, activity, controllerActor, terminal, workerEvent} from './domain.js';
+import {reserve, finish, activity, controllerActor, terminal, workerEvent, promptsReady} from './domain.js';
 import {BuildCatalog} from './builds.js';
 
 export async function reconcile(store, kube, config) {
@@ -26,7 +26,7 @@ export async function reconcile(store, kube, config) {
     }
     if (terminal.has(initial.phase) && !initial.active) continue;
     let task = initial;
-    if (!task.active && task.pending.length && task.desiredState === 'Active') {
+    if (!task.active && promptsReady(task) && task.desiredState === 'Active') {
       task = await store.mutate(task.id, randomUUID(), reserve);
     }
     if (!task.active) continue;

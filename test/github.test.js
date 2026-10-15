@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {acceptsGithubEvent, githubTask, githubWakeup, closeGithubTask, reopenGithubTask, reconcileGithubIssues, reportedPullRequests, reconcileGithubPullRequests} from '../src/github.js';
-import {reserve, finish, prompt, workerEvent, claimNextTurn, controllerActor} from '../src/domain.js';
+import {githubTask, githubWakeup, closeGithubTask, reopenGithubTask, reconcileGithubIssues, reportedPullRequests, reconcileGithubPullRequests, restoreGithubIssue} from '../src/github.js';
+import {reserve, finish, prompt, workerEvent, claimNextTurn, controllerActor, activity, changeState} from '../src/domain.js';
 import {Kube} from '../src/kube.js';
 
-test('issue comments reuse a warm worker and reset idle time from the last reply', () => {
+test('issue comments reuse a warm worker and reset idle time from the last reply', t => {
+  t.mock.timers.enable({apis: ['Date'], now: Date.now()});
   const issue = {content: 'Implement feature', repository: 'codemowers/pitchdeck',
     reference: {source: 'github', repository: 'codemowers/pitchdeck', kind: 'issue', id: '1'}};
   const task = githubTask('llm', {type: 'external', name: 'alexriver'}, issue, 'issues', issue.content, 'assignment');
   assert.equal(task.origin, 'webhook');
+  t.mock.timers.tick(300000);
   const run = reserve(task), podName = run.podName;
   assert.equal(run.idleTimeoutSeconds, 3600);
   const kube = new Kube({release: 'agent', namespace: 'llm', image: 'runner', internalURL: 'http://controller'});
@@ -28,22 +30,12 @@ test('issue comments reuse a warm worker and reset idle time from the last reply
   assert.equal(reserve(task).idleTimeoutSeconds, 3600);
 });
 
-test('organization webhooks dispatch assignments only to the configured bot', () => {
-  const event = {action: 'assigned', sender: {login: 'alexriver'}, issue: {assignees: [{login: 'agent-smith'}]}};
-  assert.equal(acceptsGithubEvent('issues', event, 'agent-smith'), true);
-  assert.equal(acceptsGithubEvent('issues', {...event, issue: {assignees: [{login: 'someone-else'}]}}, 'agent-smith'), false);
-  assert.equal(acceptsGithubEvent('issues', {...event, sender: {login: 'agent-smith'}}, 'agent-smith'), true);
-  assert.equal(acceptsGithubEvent('issue_comment', {...event, action: 'created', sender: {login: 'agent-smith'}}, 'agent-smith'), false);
-  assert.equal(acceptsGithubEvent('issues', {...event, action: 'unassigned'}, 'agent-smith'), false);
-  assert.equal(acceptsGithubEvent('issue_comment', {...event, action: 'created'}, 'agent-smith'), true);
-  assert.equal(acceptsGithubEvent('issue_comment', {...event, action: 'edited'}, 'agent-smith'), false);
-  assert.equal(acceptsGithubEvent('issues', {...event, issue: {...event.issue, pull_request: {}}}, 'agent-smith'), false);
-});
-
-test('GitHub closure is business completion, survives late worker exit, and blocks new prompts', () => {
+test('GitHub closure is business completion, survives late worker exit, and blocks new prompts', t => {
+  t.mock.timers.enable({apis: ['Date'], now: Date.now()});
   const issue={content:'Task',repository:'codemowers/pitchdeck',reference:{source:'github',kind:'issue',id:'1',repository:'codemowers/pitchdeck',url:'https://github.com/codemowers/pitchdeck/issues/1'}};
   const actor={type:'external',name:'GitHub'};
   const task=githubTask('llm',actor,issue,'issues',issue.content,'first');
+  t.mock.timers.tick(300000);
   const execution=reserve(task);
   closeGithubTask(task,actor,issue.reference.url);
   assert.equal(task.phase,'Stopping');assert.equal(task.active.stopRequested,true);
@@ -108,6 +100,42 @@ test('reconciliation reopens a task when GitHub issue is reopened after a missed
   assert.equal(lookupCalls,1);
 });
 
+test('a missing repository retires issue and related PR polling without claiming completion', async () => {
+  const issue = {content: 'Delete the repository', repository: 'example/deleted', reference: {
+    source: 'github', kind: 'issue', repository: 'example/deleted', id: '1', url: 'https://github.com/example/deleted/issues/1'}};
+  const task = githubTask('tenant', {type: 'external'}, issue, 'issues', issue.content, 'created');
+  task.references.push({source: 'github', kind: 'pr', repository: issue.repository, id: '2', url: 'https://github.com/example/deleted/pull/2'});
+  task.pending = [];
+  activity(task, {type: 'agent'}, 'https://github.com/example/deleted/pull/3', 'controller', {kind: 'progress'});
+  let issueCalls = 0, prCalls = 0;
+  const store = {list: async () => [task], mutate: async (id, receipt, fn) => { assert.equal(id, task.id); fn(task); }};
+  const missing = async () => { issueCalls++; throw Object.assign(new Error('private upstream body'), {status: 404, repositoryUnavailable: true}); };
+  await reconcileGithubIssues(store, missing);
+  await reconcileGithubIssues(store, missing);
+  await reconcileGithubPullRequests(store, async () => { prCalls++; }, 'agent-smith');
+  assert.equal(issueCalls, 1); assert.equal(prCalls, 0);
+  assert.equal(task.reason, 'GitHubRepositoryUnavailable'); assert.equal(task.githubIssueState, 'unavailable');
+  assert.equal(task.completionRequested, undefined); assert.notEqual(task.phase, 'Completed');
+  assert.equal(task.events.filter(event => event.kind === 'recovery').length, 1);
+  assert.ok(!JSON.stringify(task).includes('private upstream body'));
+  changeState(task, 'Active', {type: 'user'});
+  assert.ok(task.references.every(reference => !reference.unavailable));
+  await reconcileGithubIssues(store, missing); assert.equal(issueCalls, 2);
+  restoreGithubIssue(task, {...issue, state: 'open'});
+  assert.equal(task.githubIssueState, 'open'); assert.equal(task.reason, null);
+  assert.ok(task.references.every(reference => !reference.unavailable));
+});
+
+test('an unavailable issue does not retire PRs in an accessible repository', async () => {
+  const task = githubTask('tenant', {}, {content: 'Work', repository: 'example/available', reference: {
+    source: 'github', kind: 'issue', repository: 'example/available', id: '1', url: 'https://github.com/example/available/issues/1'}}, 'issues', 'Work', 'created');
+  task.references.push({source: 'github', kind: 'pr', repository: task.repository, id: '2', url: 'https://github.com/example/available/pull/2'});
+  const store = {list: async () => [task], mutate: async (id, receipt, fn) => fn(task)};
+  await reconcileGithubIssues(store, async () => { throw Object.assign(new Error(), {status: 410}); });
+  assert.equal(task.reason, 'GitHubIssueUnavailable');
+  assert.equal(task.references[0].unavailable.status, 410); assert.equal(task.references[1].unavailable, undefined);
+});
+
 test('an initial GitHub delivery queues one controller prompt with attributed source context', () => {
   const issue = {content: 'Yeet video-1min.md', repository: 'codemowers/pitchdeck',
     reference: {source: 'github', repository: 'codemowers/pitchdeck', kind: 'issue', id: '1'}};
@@ -123,11 +151,13 @@ test('an initial GitHub delivery queues one controller prompt with attributed so
   assert.deepEqual(task.pending, [task.events[1].id]);
 });
 
-test('cross-repository merged PR wakes its issue task once on startup, without replaying older merges', async () => {
+test('cross-repository merged PR wakes its issue task once on startup, without replaying older merges', async t => {
+  t.mock.timers.enable({apis: ['Date'], now: Date.now()});
   const issue = {content: 'Project objective', repository: 'codemowers/kube',
     reference: {source: 'github', repository: 'codemowers/kube', kind: 'issue', id: '121'}};
   const task = githubTask('llm', {type: 'external'}, issue, 'issues', issue.content, 'first');
   task.pending = [];
+  t.mock.timers.tick(180000);
   task.lastExecution = {finishedAt: '2026-10-12T12:14:00Z', result: {completedAt: '2026-10-12T12:14:00Z'}};
   task.events.push({actor: {type: 'agent'}, kind: 'result', createdAt: '2026-10-12T12:13:00Z',
     content: 'Already merged https://github.com/passmower/passmower/pull/304; opened https://github.com/passmower/passmower/pull/305'});
@@ -142,10 +172,12 @@ test('cross-repository merged PR wakes its issue task once on startup, without r
   assert.equal(task.pending.length, 1);
 });
 
-test('PR notifications preserve pauses and ignore unowned transcript links and completed tasks', async () => {
+test('PR notifications preserve pauses and ignore unowned transcript links and completed tasks', async t => {
+  t.mock.timers.enable({apis: ['Date'], now: Date.now()});
   const issue = {content: 'Project objective', repository: 'org/source',
     reference: {source: 'github', repository: 'org/source', kind: 'issue', id: '1'}};
   const task = githubTask('llm', {}, issue, 'issues', issue.content, 'first'); task.pending = []; task.desiredState = 'Paused'; task.phase = 'Paused';
+  t.mock.timers.tick(180000);
   task.events.push({actor: {type: 'agent'}, kind: 'progress', createdAt: '2026-10-12T12:00:00Z',
     content: 'Created https://github.com/elsewhere/output/pull/2'});
   task.createdAt = '2026-10-12T11:00:00Z';

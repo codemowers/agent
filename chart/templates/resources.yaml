@@ -6,6 +6,7 @@
   "AGENT_OPENAI_SECRET" "agent-worker-openai-api-token"
   "AGENT_GITHUB_SECRET" "agent-worker-github-token"
   "AGENT_MODEL" "claude-sonnet-4-6"
+  "AGENT_TOOL_IMAGES" (toJson (list (dict "name" "go" "image" "docker.io/library/golang:1.27.2-bookworm" "binPath" "usr/local/go" "mountPath" "/opt/tools/go")))
 ) -}}
 {{- $context := get $runtime "AGENT_KUBE_CONTEXT" -}}
 {{- $cluster := first (splitList "/" $context) -}}
@@ -218,19 +219,23 @@ spec:
   allowedCORSOrigins:
     - {{ printf "https://%s" .Values.host | quote }}
   allowedResources:
-    - {{ printf "https://%s/api" .Values.host | quote }}
+    - {{ required "apiResource must be the public controller origin followed by /api" .Values.apiResource | quote }}
   grantTypes:
     - authorization_code
+    - refresh_token
   responseTypes:
     - code
   allowedGroups:
     {{- toYaml .Values.allowedGroups | nindent 4 }}
+  allowedUsers:
+    {{- toYaml .Values.allowedUsers | nindent 4 }}
   availableScopes:
     - openid
     - profile
     - email
     - groups
     - namespaces
+    - offline_access
     - agent:read
     - agent:write
 ---
@@ -262,9 +267,11 @@ data:
     You are a GitOps developer agent running in a Kubernetes sandbox with user namespace isolation.
     Your harness is codemowers/agent, served by codemowers/agent-controller. Read your username, display name and email from AGENT_USERNAME, AGENT_NAME and AGENT_EMAIL or agent.get_task_context; you are not OpenClaw. Repository manifests (including templates for other agents) describe source configuration, not your identity or verified live deployments. Never infer that a service is deployed, enabled, reachable, or credentialed merely because its template exists. Verify live claims through the relevant MCP. Do not redirect users to a historical agent URL or claim another agent has mailbox access based on repository files.
     Implement the Task objective. Inspect code and run relevant tests.
+    Assume your collaborators are senior engineers. Keep messages brief and direct: outcome, blocker or decision needed. Give detailed explanations, plans and logs when requested. Report progress only for meaningful changes or blockers; skip routine step-by-step narration, acknowledgements and repeated summaries. Final reports should briefly state the result, relevant validation and any material limitation.
     GitHub notifications provide event context. Read the current thread and use your judgment about what to do.
     Communication priority: for a Task linked to a GitHub issue, that issue is the main anchor. Post meaningful results, blockers and confirmation questions there, including when mail or chat woke the Task. Email and chat are secondary. Before calling agent.report_blocked or ending a turn awaiting confirmation, post a concise comment with the blocker and specific question to the primary issue. Read existing comments to avoid duplicates. If posting fails, include that failure in your blocker report. agent.report_progress and agent.report_blocked record UI state; they do not post GitHub comments. Summarize relevant decisions from mail/chat on the issue without copying private messages or credentials.
     Work in topic branches; do not push directly to main/master or force push.
+    If direct push to codemowers/agent is denied, advise creating a fork under the configured Git account and opening a pull request from that fork. Ask before creating a remote or fork; do not change repository visibility to work around permissions.
     You run inside a Kubernetes worker Pod. There is no Docker daemon or Docker socket here. Do not suggest or run docker build, docker run, Docker Compose or Docker-in-Docker as a sandbox workflow. Skaffold and kubectl are available. Prefer invoking Kaniko through Skaffold's cluster builder using the project's verified configuration: skaffold build for image builds and skaffold run for build-and-deploy. If the project lacks skaffold.yaml, obtain agent.get_skaffold_example and the relevant schema, adapt and validate the configuration before building. Do not handcraft Kaniko Pods or Jobs as an automatic fallback when Skaffold fails or infrastructure is unclear; report the blocker. A direct Kaniko invocation requires an explicitly requested, verified workflow.
     On this platform, Kaniko Pod metadata must include the skaffold-kaniko label (also on Job spec.template.metadata.labels), with a container named kaniko. Admission selects the executor image, OCI format, hostUsers false and builder capabilities. Omit securityContext and hostUsers from build templates; missing the label makes Kaniko run as an unprivileged user unable to unpack base layers.
     Kubernetes operations are scoped to your sandbox; respect its existing policies.
@@ -365,11 +372,17 @@ spec:
                   name: oidc-client-{{ $.Release.Name }}-owner-secrets
                   key: {{ $name }}
             {{- end }}
+            - name: OIDC_ALLOWED_SUBJECTS
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-{{ .Release.Name }}-owner-secrets
+                  key: OIDC_ALLOWED_USERS
             - name: GH_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ get $runtime "AGENT_GITHUB_SECRET" }}
                   key: token
+                  optional: true
             - name: REDIS_URL
               value: rediss://{{ .Release.Name }}-redis.{{ .Release.Namespace }}.svc:6379
             {{- range $credential := $controllerCredentials }}

@@ -113,7 +113,16 @@ and signed-link scope use namespace name and release. No namespace UID field,
 lookup, labels or environment variable, and no additional Namespace RBAC.
 Pod UID remains necessary for execution identity and safe adoption.
 
-`chart/values.yaml` exposes generic `host` and `allowedGroups` defaults.
+`chart/values.yaml` exposes generic `host`, `allowedGroups` and `allowedUsers`
+defaults and
+requires an explicit public `apiResource` for OIDC `allowedResources`.
+`skaffold.yaml` reads it from `AGENT_API_RESOURCE` in local `skaffold.env`.
+The `dev-test` profile binds `laurivosandi` as its sole allowed account and
+sets that cluster's verified public API resource. Map the generated
+`OIDC_ALLOWED_USERS` owner Secret key to controller `OIDC_ALLOWED_SUBJECTS` so
+both Passmower and the Task API enforce the individual allowlist.
+Do not use the short host for this resource: OIDC admission expands URI,
+redirect and CORS fields but does not expand `allowedResources`.
 `skaffold.yaml` injects image references/runtime env. `AGENT_KUBE_CONTEXT` comes
 from local `skaffold.env`; there is no separate cluster values file. Storage,
 operator and tool-image defaults live in the chart. Controller updates use
@@ -124,9 +133,10 @@ while replicas overlap.
 
 | Configuration | Contract |
 | --- | --- |
-| `AGENT_USERNAME`, `AGENT_NAME`, `AGENT_EMAIL` | GitHub bot, displayed worker identity, Git and default mail identity |
+| `AGENT_USERNAME`, `AGENT_NAME`, `AGENT_EMAIL` | Git bot, displayed worker identity, Git and default mail identity |
+| `AGENT_FORGE_PROVIDER`, `AGENT_FORGE_URL`, optional `AGENT_FORGE_API_URL` | GitHub/GHE or Gitea server and API endpoints |
 | `AGENT_NAMESPACE`, `AGENT_RELEASE` | Installation scope, supplied by deployment |
-| `AGENT_WORKER_IMAGE`, provider Secret references | Approved worker image and selected CLI credentials |
+| `AGENT_WORKER_IMAGE`, provider Secret references | Approved worker image and selected CLI credentials; Git token Secret may be absent for prompt-only Tasks |
 | `AGENT_KUBE_CONTEXT`, `AGENT_TOOL_IMAGES` | Prepared kubeconfig context and image-volume tools |
 | `AGENT_STORAGE_CLASS`, `AGENT_WORKSPACE_SIZE` | Workspace provisioning defaults under platform policy |
 | `AGENT_MODEL`, `AGENT_CODEX_MODEL`, `AGENT_BUDGET_USD` | Hosted model defaults; USD cap currently applies to Claude |
@@ -227,7 +237,7 @@ Pause/Cancel do not require a stale UI revision; Resume/Accept retain revision a
 terminal guards. Signals try the native process group, then the child PID on
 EACCES/EPERM. Expected denial/disappearance must not escape signal handlers.
 
-Web UI and GitHub issue Tasks keep workers warm for 60 minutes after the last
+Web UI and Git issue/PR Tasks keep workers warm for 60 minutes after the last
 completed CLI response, including issue-comment replies. Active turns do not
 consume idle time. Worker/controller use the same completedAt-based deadline.
 `report_blocked` sets Waiting/AwaitingConfirmation without changing desired state
@@ -256,6 +266,9 @@ for a scratch Task. Configure global Git user.name/email from agent identity and
 `pull.rebase=true`. Work on topic branches; do not force-push or push directly
 to main/master. Creating a local checkout does not create a remote; ask before
 selecting/creating one unless the Task already authorizes it.
+If direct push to `codemowers/agent` is denied, advise a fork under the configured
+Git account and a pull request from that fork; ask before creating the fork or
+remote. Do not change repository visibility as a permission workaround.
 
 Seed `specs/<draft-or-task>-<task-prefix>.md`, workspace `AGENTS.md` with relevant
 specification/MCP references, and safe `skaffold.env.example`. Populate actual
@@ -274,23 +287,31 @@ and history. Full process-memory restore and filesystem snapshots are not needed
 ## Runner, models and project builds
 
 The runner uses Ubuntu 24.04 with Node 24.18.0, Git, SSH, Bash, coreutils, find,
-tar, unzip, ripgrep, jq, curl, gh, Python, make and C++ build tools. Preinstall
+tar, unzip, ripgrep, jq, curl, gh, Python with venv/pip, make and C++ build tools. Preinstall
 both pinned npm CLIs: Claude Code 2.1.296 and Codex 0.162.1. Install Skaffold
 v2.18.0 from its binary release. Workers do not apt-install tools at startup.
 The controller image contains Node, application code, schema and SPA; kubectl is
 provided by an OCI image volume.
 
-Only kubectl currently comes from an OCI image volume: upstream
+Kubectl and Go come from OCI image volumes. Kubectl uses upstream
 `registry.k8s.io/kubectl:v<server-version>`. The controller Deployment uses Helm
 `.Capabilities.KubeVersion.Version`; Skaffold explicitly renders with 1.36.3.
 Immediately before creating a worker Pod, query the Kubernetes API server version
 and select the matching upstream kubectl image, preserving additional tool images.
 Mount its whole `bin` directory and prepend `/opt/tools/kubectl/bin` to PATH in
 both Pod types; image subpaths must be directories. Neither image embeds kubectl.
+Workers also mount the official Go image's `/usr/local/go` tree at `/opt/tools/go`;
+set GOROOT and PATH for that tree, keep Go caches under the Task PVC and disable
+automatic toolchain downloads. Python project dependencies belong in workspace
+virtual environments, not the read-only runner root filesystem.
 
 Tasks select hosted Claude or Codex in the UI. Freeze choices per execution.
 Use Anthropic credentials for Claude and OpenAI credentials for Codex; provider
-and CLI selection must agree. Local-model execution is a roadmap item only;
+and CLI selection must agree.
+Selected provider Secret references are optional for Pod creation. A worker
+without a usable API key for its selected CLI records a failure and exits
+nonzero before workspace setup; it never switches to the other provider.
+Local-model execution is a roadmap item only;
 there is no discovery, API adapter or compatibility proxy in this release.
 
 ### Namespace build contract
@@ -348,16 +369,29 @@ Both Pod types always project their own Driftmower token at
 `type`, `url`, optional `tokenFile` and optional `siteURL` for browser links;
 worker CLI configuration excludes display metadata. Restart consumers to apply
 MCP configuration changes and refresh the startup connectivity snapshot.
+Harness-owned HTTP requests identify as `codemowers-agent (+https://github.com/codemowers/agent)`;
+native Claude/Codex and Kubernetes API requests retain their own user agents.
 
 | Implemented Agent MCP tool | Purpose |
 | --- | --- |
-| `get_task_context`, `declare_context_controls` | Current controls, primary communication channel, reference draft and repair context; add user-requested controls without overriding choices |
+| `get_task_context`, `declare_context_controls` | Current controls, included device IDs/status, primary communication channel, reference draft and repair context; add user-requested controls without overriding choices |
 | `get_namespace_context` | Namespace/build references fixed by execution binding |
 | `get_skaffold_schema`, `validate_skaffold_config`, `get_skaffold_example` | Pinned schema, offline validation and namespace-specific example |
 | `report_progress` | Bounded semantic progress/question, not completion |
 | `report_blocked` | Record a blocker/question after notifying the primary issue; end the turn and retain the warm worker |
 | `register_github_pull_request` | Verify and associate a PR, including another repository |
 | `send_email`, `get_email_status`, `get_email_messages` | Authorized Task-bound mail, delivery state and routed messages only |
+
+Device shell and file tools appear in Agent MCP only for Tasks with included
+devices. Supply selected IDs and connection status in each worker turn and in
+`get_task_context`; exclude device URLs and unrelated registered devices.
+Exclusion rejects subsequent device calls immediately. Including a device does
+not enqueue a prompt by itself. The Devices dialog shows a per-device systemd
+user service setup snippet using that device's WebSocket endpoint.
+The navbar shows registered devices as Offline, Online or Included, and keeps
+inclusion visible when a device disconnects. Prefix displayed hostnames with
+`Device`. Connected device tooltips show bounded OS details from the hello
+message; do not put those details into worker context unless requested.
 
 Workers authenticate through execution-scoped controller HTTP, never direct Redis.
 Reject stale/cross-Task reporting; namespace and Task identity come from the
@@ -381,16 +415,65 @@ accepted events before acknowledgement. Payloads cannot choose tenant, credentia
 or arbitrary repositories. Exact references route deterministically to canonical
 Tasks; do not run a routing LLM in the current controller.
 
-### GitHub, basic webhooks and alerts
+The Git token Secret is optional. Without `GH_TOKEN`, skip Git discovery, issue/PR
+reconciliation and GitHub notification-mail routing; allow prompt-only Tasks and
+workers to start without Git authentication. Git API actions report unavailable.
 
-GitHub supports repository/organization hooks for Issues, Issue comments and Pull
-requests. Dispatch eligible open/assigned/reopened/labeled issue events and new
-comments only for issues assigned to the configured token's GitHub user; ignore
-other agent-authored chatter and unassigned issues. Self-assignment starts work.
-API-verify issue/repository access and allowlists. First delivery atomically stores
-one source event and one controller prompt; later deliveries reuse Task/PVC.
-Issue-backed titles use only issue titles, with body/details in the original
-source, objective and workspace specification, not duplicated controller bubbles.
+### Git issues, pull requests, basic webhooks and alerts
+
+The Git receiver supports issue updates, timeline comments (including PR comments),
+pull request updates and review events. Verify signing credentials, the configured
+server's API, repository access and allowlists. Routing has three rules:
+
+- An existing Task receives updates even after the agent is unassigned.
+- Without an existing Task, create one only for an open issue/PR currently assigned
+  to the authenticated token's account. Self-assignment starts work.
+- Ignore the agent's own comments/reviews to prevent reply loops.
+
+Mail and webhooks use the same reference key: provider, server URL, kind (issue
+or PR), repository and number. Issue and PR identities are distinct, as are
+identical repository/number pairs on different servers. Missing indexes rebuild
+from durable Task references. Deliveries retain transport idempotency, without
+model-read cursors, comment catch-up state or updatedAt-based prompt suppression.
+The first automatic wakeup starts immediately. Store a fixed three-minute
+notificationSuppressUntil deadline per Task from that wakeup so controller
+restarts retain it. Git notifications, basic webhook deliveries and Alertmanager
+events share the deadline. Follow-up automatic notifications during the window
+record their source events but do not queue another prompt, including notification
+email for the same Git event. Later arrivals do not extend the deadline. Direct UI
+prompts and participant email replies dispatch immediately. Pause/Cancel/Delete
+retain their normal authority.
+Queued controller notifications for the same thread may fold into one pending
+prompt; preserve each source event and link it through the prompt's causedBy list,
+bounded to retained history. Coalescing uses the same
+provider/server/kind/repository/number key and persists inside the Task mutation.
+Never alter claimed/running prompts or fold human messages. Once the deadline
+expires, the next automatic notification starts a new immediate turn.
+First delivery stores one source event and controller prompt; later updates reuse
+Task/PVC. Unassignment never deletes the Task automatically. The model assesses
+updates; Pause queues them, and Cancel/Delete prevents automatic reactivation.
+Titles use issue/PR titles, with body/details kept in the original source,
+objective and workspace specification rather than duplicated controller bubbles.
+
+The elected controller discovers assigned open issues and PRs on startup and
+every five minutes, using the configured server's assigned-issue search. API-verify
+missing assignments before creating Tasks; process at most 20 new candidates per
+pass, with at most ten pages of 100 search results and a logged incomplete flag.
+Existing Tasks do not gain prompts merely because they appear in assignment search.
+Deleting an open, still-assigned remote item can cause discovery to recreate its
+Task; close/unassign it or retain a cancelled Task to stop processing.
+
+Optional identity ConfigMap keys select `AGENT_FORGE_PROVIDER` (`github` default
+or `gitea`) and `AGENT_FORGE_URL` (default `https://github.com`). GitHub Enterprise
+uses `/api/v3`; Gitea uses `/api/v1`; `AGENT_FORGE_API_URL` can override the API.
+Pass resolved endpoints to workers and UI; authenticated requests stay on that
+configured API and reject redirects. `GH_TOKEN` and the existing Git credential
+Secret supply the selected server's token. GitHub/GHE workers use gh, Gitea workers
+use its API and a server-scoped Git authorization header held in the environment.
+The receiver keeps `/hooks/github` for both providers, validating GitHub's prefixed
+signature or Gitea's hexadecimal signature and provider-specific delivery headers.
+Gitea routing/API behavior is covered by fixtures; live end-to-end validation remains
+necessary before claiming production support.
 
 Issue/comment/mail/PR-merge prompts contain just the event type, thread URL and
 an instruction to read the latest updates and decide what to do. The model uses
@@ -398,8 +481,15 @@ its judgment about action and communication; do not add long response restrictio
 or copy issue/comment bodies into these prompts. Mounted instructions use the
 same brief guidance.
 
-For issue-backed Tasks, the original GitHub issue is the primary communication
-anchor. Mail and chat are secondary, even when they trigger the next turn.
+Assume collaborators are senior engineers. Keep communication brief and direct,
+focused on outcomes, blockers and decisions requiring input. Give detailed plans,
+explanations and logs when requested. Progress updates cover meaningful changes
+or blockers; skip routine narration, acknowledgements and repeated summaries.
+Final reports briefly state the result, relevant validation and material limitations.
+
+For issue-backed Tasks, the original Git issue is the primary communication
+anchor. For standalone PR Tasks, that PR is the primary thread. Mail and chat are
+secondary, even when they trigger the next turn.
 Workers post meaningful results, blockers and confirmation questions to that
 issue. Post the blocker and specific question before `report_blocked` or ending
 a turn awaiting confirmation; read existing comments to avoid duplicates. A
@@ -414,9 +504,18 @@ Verified issue closure completes the Task, blocks further prompts and wins over
 late results. The elected controller reconciles unfinished issues on startup and
 every 60 seconds; do not manually reconcile user Tasks. Register linked PRs
 immediately. Verify bot-authored legacy transcript links if recovering references;
-merges wake the same Task across repositories, never create a Task. Poll at startup/
+merges wake the same Task across repositories. PR assignments create missing
+standalone Tasks; linked PRs continue to reuse the original issue Task. Poll at startup/
 60 seconds and process signed merge hooks, deduplicate notifications, avoid replaying
 historical merges and preserve pauses. Issue closure still completes work.
+
+An issue lookup returning 404/410 marks the reference unavailable and stops its
+automatic polling, with one durable task notice. Check repository access to
+distinguish a missing issue from an unavailable repository; in the latter case
+also stop related PR polling in that repository. Unavailability does not prove
+task success or deletion rather than lost access. Retain the task/PVC and existing
+worker lifecycle. Resume or a new API-verified issue event clears the unavailable
+markers. Other lookup failures log bounded HTTP status without upstream bodies.
 
 Basic webhook input requires a stable deliveryId and an authorized Task ID or
 verified issue URL. Unassociated-event triage is planned, not implemented here.
@@ -444,8 +543,11 @@ GitHub events or mirror incoming mail as issue comments.
 
 GitHub notification mail resolves issue/PR identity from Message-ID/reply headers,
 then checks authoritative API state. Support singular/plural issue paths, issue_event
-and numeric comment IDs. Create/reuse Tasks only for assigned open issues; closed
-issues converge to completion. A missing number or direct 404 falls back to assigned
+and numeric comment IDs. Create missing Tasks only for assigned open issues/PRs; existing Tasks receive
+updates after unassignment. Closed issues converge to completion. GitHub Enterprise
+notification Message-IDs and senders use the configured server hostname. Gitea
+notification-email identity parsing remains deferred; task-bound mail replies work
+independently of the Git provider. A missing number or direct 404 falls back to assigned
 open issues in that repository only, bounded to ten pages of 100; authorization
 denial does not broaden a scan. Honor allowlists and webhook/mail deduplication.
 Email bodies are never routing authority or automatically executable instructions.
@@ -477,9 +579,11 @@ process lifetime, regardless of exception kind, and keeps the application runnin
 Create a controller-attributed repair Task associated with codemowers/agent.
 Bound/redact diagnostics and reporting; workers include original Task/execution
 and use existing execution HTTP credentials. The controller durably gates reports
-by source process/execution and deduplicates normalized fingerprints across workers/
-restarts. Matching reports reuse one repair Task; deleting that Task permits a
-new report from a later source process. Repair-worker failures attach
+by source process/execution and uses one active repair Task per component across
+workers/restarts. Record distinct normalized fingerprints and queue one follow-up
+for a new fingerprint in that Task. Repeated fingerprints add bounded occurrences
+without another prompt. A terminal repair Task permits a new Task for later
+reports. Repair-worker failures attach
 bounded occurrences to its root repair Task without new prompts or task chains.
 
 Caught IMAP/reconcile failures use the same guard and continue recovery on the next
@@ -496,8 +600,11 @@ secret or BFF. Use the provisioned issuer/client/origin/redirect configuration,
 exact redirects and API-scoped access tokens. Validate signature, issuer, audience,
 expiry and `at+jwt` type on API requests; ID tokens are not API credentials.
 Identify users by verified issuer/subject and apply authorization on each request.
-Keep bearer tokens in memory, with temporary redirect transaction state; never
-put tokens in URLs, persistent localStorage, history or workers.
+Persist the OIDC client's user record, including its refresh token, in browser
+localStorage so a signed-in session survives reloads. Keep redirect transaction
+state in sessionStorage, clear the stored user on sign-out, and renew API-scoped
+access tokens with the configured resource. Never put tokens in URLs, history or
+workers. The API still validates every bearer token and its current authorization.
 
 This instance permits `github.com:codemowers:admins` in OIDCClient and API. Explicit
 subject/group allowlists override namespace membership; namespace membership is
@@ -527,7 +634,11 @@ credentials. Anonymous public draft/shared views are separately scoped below.
 - Merge consecutive progress/result chunks for one execution, with sanitized
   Markdown. Links/bare URLs/URL-only inline code open new tabs with noopener/noreferrer;
   fenced code stays code. Show bounded tool routing/file/command metadata and states,
-  never raw results or credential commands. Preserve expanded boxes across refreshes.
+  never raw results or credential commands in normal timelines or shared views.
+  When `AGENT_MCP_PAYLOADS_ENABLED=true`, authorized API users may expand
+  bounded, redacted MCP request/response JSON through a separate Task API.
+  Keep the payload API and UI hidden when disabled; never expose payloads in
+  shared links. Preserve expanded boxes across refreshes.
 - Render controller lifecycle/control events as compact icon lines with metadata
   tooltips. Removed prompts show their disposition without duplicate audit bubbles.
 - Keep Pause/Resume mutually exclusive; icon actions share a row. Enter submits,
@@ -638,7 +749,7 @@ The triage conversation stays separate and bounded. CI/review completion policie
 may target PR creation, verified checks, approval or merge; tie evidence to the
 current PR head and required checks, not a successful CLI turn or stale commit.
 
-Slack/Gitea, direct CI/review connectors and unassociated-event triage are planned.
+Slack, expanded Gitea connectors, direct CI connectors and unassociated-event triage are planned.
 For Slack, key by installation/team, channel and root thread, authenticate/deduplicate
 events, ignore self/bot chatter and acknowledge durable receipt. Multiple threads
 may link one Task. Preserve reply destinations and pending questions; channel

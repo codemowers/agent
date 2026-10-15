@@ -72,7 +72,7 @@ select {
 .state-dot.green { background: var(--accent); }
 .state-dot.amber { background: #e5b454; }
 .state-dot.red { background: #e97878; }
-.state-dot.gray { background: #356341; }
+.state-dot.gray { background: #808b92; }
 #error {
   position: fixed;
   bottom: 18px;
@@ -114,6 +114,10 @@ header { display: block; height: auto; min-height: 76px; border-bottom: 1px soli
 .device-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: 11px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; cursor: pointer; }
 .device-badge:hover { background: var(--hover); }
 .device-badge.device-included { color: var(--accent); border-color: var(--accent); }
+.device-badge.device-online { color: #efd297; border-color: #a47d3b; }
+.device-badge.device-offline { color: var(--muted); opacity: .7; }
+.device-badge[aria-disabled="true"] { cursor: default; }
+.device-badge small { font-size: 10px; font-weight: 650; }
 .device-badge .state-dot { width: 7px; height: 7px; flex-basis: 7px; }
 #connectivity-navbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 14px; }
 .connection-status {
@@ -211,6 +215,11 @@ main {
 .resource-card > small { margin-top: 12px; }
 .resource-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .resource-row small { white-space: nowrap; }
+.device-entry { margin: 10px 0; }
+.device-setup { margin: 4px 0 12px; }
+.device-setup summary { cursor: pointer; }
+.device-setup p { color: var(--muted); font-size: 12px; }
+.device-setup pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .repository-choice { background: transparent; border-color: transparent; padding: 5px 0; min-width: 0; flex: 1; text-align: left; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .repository-choice.selected { color: var(--bright); background: var(--hover); padding-left: 8px; }
 .external-link, .destination-row a { color: var(--text); text-decoration: none; }
@@ -260,6 +269,7 @@ main {
 .entry.agent { align-self: flex-end; border-right: 3px solid var(--accent); }
 .entry.controller { align-self: center; width: 92%; background: transparent; border-left: 2px solid #94794b; padding-left: 16px; }
 .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.source-link { color: var(--accent); font-size: 11px; }
 .avatar { border-radius: 50%; background: var(--line); flex: 0 0 28px; }
 .prompt-status { display: inline-block; margin-left: 0; color: var(--text); font-size: 11px; }
 .prompt-context { font-size: 12px; color: var(--muted); }
@@ -282,6 +292,13 @@ main {
 .tool-call { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
 .tool-heading { font-size: 12px; }
 .tool-call pre { font: 12px/1.6 ui-monospace, monospace; white-space: pre-wrap; background: var(--background); padding: 10px; border-radius: 5px; margin: 6px 0; }
+.mcp-payload { margin-top: 8px; }
+.mcp-payload summary { color: var(--bright); }
+.mcp-payload-content h4 { margin: 10px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.mcp-payload-content .mcp-json { max-height: 320px; overflow: auto; white-space: pre; font-size: 11px; line-height: 1.5; }
+.json-key { color: #9cdcfe; }
+.json-string { color: #ce9178; }
+.json-value { color: #b5cea8; }
 
 /* Rendered Markdown */
 .markdown { font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; min-width: 0; }

@@ -1,2 +1,4 @@
 host: "controller"
+apiResource: ""
 allowedGroups: []
+allowedUsers: []

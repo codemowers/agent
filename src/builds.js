@@ -1,6 +1,7 @@
 import {agentIdentity} from './identity.js';
 import {probeRegistry} from './registry.js';
 import {checkConnection} from './connectivity.js';
+import {agentFetch} from './http.js';
 
 class ConfigurationError extends Error {}
 
@@ -8,7 +9,7 @@ const secretName = 'zot-registry-cluster-push-kaniko';
 
 // Only the verified destination and Secret reference leave the controller.
 export class BuildCatalog {
-  constructor(kube, env = process.env, request = fetch) {
+  constructor(kube, env = process.env, request = agentFetch) {
     this.kube = kube; this.request = request;
     this.prefix = env.AGENT_REGISTRY_PREFIX ?? agentIdentity(env).username;
   }

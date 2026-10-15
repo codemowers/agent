@@ -2,6 +2,9 @@ import {Problem} from './domain.js';
 import {mcpRequest, readMcpConfig} from './mcp-auth.js';
 import {checkConnection} from './connectivity.js';
 import {agentMcpInitialize} from './agent-mcp.js';
+import {githubReference} from './github.js';
+import {forgeConfiguration} from './forge.js';
+import {agentFetch} from './http.js';
 
 function probeFailure(error) {
   const code = error.cause?.code || error.code;
@@ -14,13 +17,14 @@ function probeFailure(error) {
 }
 
 export class SetupCatalog {
-  constructor(config, request = fetch, mcpConfig = async () => JSON.stringify(await readMcpConfig())) {
-    this.config = config; this.request = request; this.mcpConfig = mcpConfig;
+  constructor(config, request = agentFetch, mcpConfig = async () => JSON.stringify(await readMcpConfig())) {
+    this.config = config; this.forge = config.forge || forgeConfiguration(); this.request = request; this.mcpConfig = mcpConfig;
   }
   async github(path) {
-    const response = await this.request('https://api.github.com' + path, {
-      headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json'},
-      signal: AbortSignal.timeout(10000)});
+    if (this.config.githubEnabled === false) throw new Problem(503, 'Git provider token not configured');
+    const response = await this.request(this.forge.apiURL + path, {
+      headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: this.forge.provider === 'github' ? 'application/vnd.github+json' : 'application/json'},
+      signal: AbortSignal.timeout(10000), redirect: 'error'});
     if (!response.ok) throw Object.assign(new Problem(502, `GitHub discovery returned HTTP ${response.status}`), {upstreamStatus: response.status});
     return {data: await response.json(), scopes: (response.headers.get('x-oauth-scopes') || '').split(',').map(s => s.trim())};
   }
@@ -31,17 +35,40 @@ export class SetupCatalog {
     const {data} = await this.github('/repos/' + name);
     return data.full_name;
   }
+  async assignedReferences(login) {
+    const references = new Map(), allow = (process.env.GIT_ALLOWED_REPOSITORIES || '').split(',').filter(Boolean);
+    let incomplete = false;
+    for (let page = 1; page <= 10; page++) {
+      const query = new URLSearchParams(this.forge.provider === 'github'
+        ? {q: 'is:open assignee:' + login, sort: 'updated', order: 'desc', per_page: '100', page: String(page)}
+        : {state: 'open', assigned: 'true', limit: '100', page: String(page)});
+      const {data} = await this.github((this.forge.provider === 'github' ? '/search/issues?' : '/repos/issues/search?') + query);
+      const items = Array.isArray(data) ? data : data.items || [];
+      incomplete ||= Boolean(data.incomplete_results || data.total_count > 1000);
+      for (const item of items) {
+        const reference = githubReference(item.pull_request?.html_url || item.html_url, this.forge);
+        if (reference && (!allow.length || allow.includes(reference.repository))) references.set(reference.url, reference);
+      }
+      if (items.length < 100) break;
+      if (page === 10) incomplete = true;
+    }
+    return {references: [...references.values()], incomplete};
+  }
   async githubOverview() {
     const {data: account, scopes} = await this.github('/user');
     const repositories = []; let clipped = false;
     for (let page = 1; page <= 20; page++) {
-      const {data} = await this.github(`/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner,collaborator,organization_member`);
+      const {data} = await this.github(`/user/repos?${this.forge.provider === 'gitea' ? 'limit' : 'per_page'}=100&page=${page}&sort=pushed&affiliation=owner,collaborator,organization_member`);
       repositories.push(...data);
       if (data.length < 100) break;
       if (page === 20) clipped = true;
     }
     const allow = (process.env.GIT_ALLOWED_REPOSITORIES || '').split(',').filter(Boolean);
     const visible = repositories.filter(r => !allow.length || allow.includes(r.full_name));
+    if (this.forge.provider === 'gitea') return {login: account.login || account.username, repositoryCount: visible.length, clipped,
+      repositories: visible.slice(0, 10).map(r => ({name: r.full_name, url: `${this.forge.serverURL}/${r.full_name}`,
+        writable: Boolean(r.permissions?.push), archived: Boolean(r.archived), private: Boolean(r.private)})),
+      destinations: [{owner: account.login || account.username, kind: 'user', policy: 'unknown', tokenPermission: 'unknown'}]};
     const classicCreation = scopes.includes('repo') || scopes.includes('public_repo');
     const destinations = [{owner: account.login, kind: 'user', policy: 'allowed',
       tokenPermission: classicCreation ? 'confirmed' : 'unknown', visibility: scopes.includes('repo') ? 'public/private' : 'public'}];
@@ -61,7 +88,7 @@ export class SetupCatalog {
     }));
     destinations.sort((a,b) => (a.kind === b.kind ? a.owner.localeCompare(b.owner) : a.kind === 'user' ? -1 : 1));
     return {login: account.login, repositoryCount: visible.length, clipped,
-      repositories: visible.slice(0, 10).map(r => ({name: r.full_name, url: `https://github.com/${r.full_name}`,
+      repositories: visible.slice(0, 10).map(r => ({name: r.full_name, url: `${this.forge.serverURL}/${r.full_name}`,
         writable: Boolean(r.permissions?.push), archived: Boolean(r.archived), private: Boolean(r.private)})), destinations};
   }
   async probeMcps() {
@@ -120,7 +147,7 @@ export class SetupCatalog {
   async list(force = false) {
     if (!force && this.cached && Date.now() < this.expires) return this.cached;
     this.expires = Date.now() + 60000;
-    this.cached = Promise.allSettled([this.githubOverview(), this.mcps()]).then(([github, mcps]) => ({
+    this.cached = Promise.allSettled([this.config.githubEnabled === false ? null : this.githubOverview(), this.mcps()]).then(([github, mcps]) => ({
       github: github.status === 'fulfilled' ? github.value : null,
       mcps: mcps.status === 'fulfilled' ? mcps.value : [],
       warnings: [...(github.status === 'rejected' ? ['GitHub discovery unavailable.'] : []), ...(mcps.status === 'rejected' ? ['MCP configuration unavailable.'] : [])],

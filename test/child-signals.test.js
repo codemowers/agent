@@ -17,5 +17,10 @@ test('signal denial and disappearing children do not throw or trigger recursive 
   assert.equal(signalChild(child(), 'SIGTERM', {kill() { throw Object.assign(new Error('denied'), {code: 'EPERM'}); }, denied: value => denied.push(value)}), false);
   assert.equal(denied.length, 1);
   assert.equal(signalChild(child(), 'SIGTERM', {kill() { throw Object.assign(new Error('gone'), {code: 'ESRCH'}); }}), false);
+  const calls = [];
+  assert.equal(signalChild(child(), 'SIGINT', {kill(pid) {
+    calls.push(pid); if (pid < 0) throw Object.assign(new Error('group missing'), {code: 'ESRCH'});
+  }}), true);
+  assert.deepEqual(calls, [-123, 123]);
   assert.equal(signalChild({...child(), exitCode: 0}, 'SIGKILL', {kill() { throw Error('must not signal'); }}), false);
 });

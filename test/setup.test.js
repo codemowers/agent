@@ -2,6 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {SetupCatalog} from '../src/setup.js';
 
+test('Git provider discovery is disabled without a token', async () => {
+  const catalog = new SetupCatalog({githubEnabled: false}, async () => { throw new Error('Unexpected Git request'); },
+    async () => '{"mcpServers":{}}');
+  const setup = await catalog.list();
+  assert.equal(setup.github, null);
+  await assert.rejects(catalog.repository('codemowers/agent'), {status: 503});
+});
+
 test('setup clips repositories, distinguishes org policy from token grants, and probes configured MCP without exposing secrets', async () => {
   let requests = 0;
   const request = async url => {

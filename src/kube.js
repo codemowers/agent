@@ -1,3 +1,4 @@
+import {forgeConfiguration} from './forge.js';
 import {spawn} from 'node:child_process';
 import {workerIdleTimeoutSeconds} from './domain.js';
 import {driftmowerTokenProjection} from './mcp-auth.js';
@@ -71,9 +72,9 @@ export class Kube {
   }
   pod(task, infrastructure, toolImages = this.config.toolImages || []) {
     const cfg = this.config, execution = task.active;
-    const identity = cfg.identity || agentIdentity({});
+    const identity = cfg.identity || agentIdentity({}), forge = cfg.forge || forgeConfiguration({});
     const toolMounts = toolImages.map(tool => ({name: 'tool-' + tool.name,
-      mountPath: '/opt/tools/' + tool.name + '/bin', subPath: tool.binPath, readOnly: true}));
+      mountPath: tool.mountPath || '/opt/tools/' + tool.name + '/bin', subPath: tool.binPath, readOnly: true}));
     const toolVolumes = toolImages.map(tool => ({name: 'tool-' + tool.name, image: {reference: tool.image, pullPolicy: 'IfNotPresent'}}));
     const model = execution.model || task.model;
     const backend = model?.backend || 'claude';
@@ -82,9 +83,9 @@ export class Kube {
     }
     const secrets = [
       backend === 'codex'
-        ? {name: 'OPENAI_API_KEY', valueFrom: {secretKeyRef: {name: cfg.openaiSecret, key: 'token'}}}
-        : {name: 'ANTHROPIC_API_KEY', valueFrom: {secretKeyRef: {name: cfg.anthropicSecret, key: 'token'}}},
-      {name: 'GH_TOKEN', valueFrom: {secretKeyRef: {name: cfg.githubSecret, key: 'token'}}},
+        ? {name: 'OPENAI_API_KEY', valueFrom: {secretKeyRef: {name: cfg.openaiSecret, key: 'token', optional: true}}}
+        : {name: 'ANTHROPIC_API_KEY', valueFrom: {secretKeyRef: {name: cfg.anthropicSecret, key: 'token', optional: true}}},
+      {name: 'GH_TOKEN', valueFrom: {secretKeyRef: {name: cfg.githubSecret, key: 'token', optional: true}}},
     ];
     const env = {
       HOME: '/workspace/home', AGENT_MODE: 'worker', AGENT_TASK_ID: task.id,
@@ -93,13 +94,19 @@ export class Kube {
       AGENT_MODEL: model ? model.model : cfg.model, AGENT_MCP_CONFIG_FILE: '/mcp/mcp.json',
       AGENT_USERNAME: identity.username, AGENT_NAME: identity.name, AGENT_EMAIL: identity.email,
       KUBECONFIG: '/config/kubeconfig',
-      PATH: [...toolImages.map(tool => '/opt/tools/' + tool.name + '/bin'),
+      PATH: [...toolImages.map(tool => tool.mountPath ? tool.mountPath + '/bin' : '/opt/tools/' + tool.name + '/bin'),
         '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'].join(':'),
+      ...(toolImages.some(tool => tool.name === 'go') ? {
+        GOROOT: toolImages.find(tool => tool.name === 'go').mountPath || '/opt/tools/go',
+        GOPATH: '/workspace/home/go', GOCACHE: '/workspace/home/.cache/go-build', GOTOOLCHAIN: 'local',
+      } : {}),
       SKAFFOLD_NAMESPACE: cfg.namespace,
       ...(cfg.kubeContext ? {SKAFFOLD_KUBE_CONTEXT: cfg.kubeContext, AGENT_KUBE_CONTEXT: cfg.kubeContext} : {}),
       ...(infrastructure?.status === 'available' ? {SKAFFOLD_DEFAULT_REPO: infrastructure.skaffold.defaultRepo} : {}),
       AGENT_BACKEND: backend,
-      AGENT_NAMESPACE: cfg.namespace, GH_HOST: 'github.com', GIT_TERMINAL_PROMPT: '0',
+      AGENT_MCP_PAYLOADS_ENABLED: String(cfg.mcpPayloadsEnabled === true),
+      AGENT_NAMESPACE: cfg.namespace, GH_HOST: new URL(forge.serverURL).host,
+      AGENT_FORGE_PROVIDER: forge.provider, AGENT_FORGE_URL: forge.serverURL, AGENT_FORGE_API_URL: forge.apiURL, GIT_TERMINAL_PROMPT: '0',
       AGENT_INSTRUCTIONS_FILE: '/config/instructions.md', AGENT_BUDGET_USD: String(cfg.budget),
       AGENT_ENVELOPE_FILE: '/execution/envelope.json',
       AGENT_IDLE_TIMEOUT_SECONDS: String(execution.idleTimeoutSeconds ?? workerIdleTimeoutSeconds(task)),

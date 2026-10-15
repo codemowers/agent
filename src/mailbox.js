@@ -1,3 +1,4 @@
+import {forgeConfiguration} from './forge.js';
 import {ImapFlow} from 'imapflow';
 import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer';
@@ -7,6 +8,12 @@ import {checkConnection, unconfiguredConnection} from './connectivity.js';
 import {Problem, text, digest, activity, prompt, controllerActor, terminal} from './domain.js';
 import {agentIdentity} from './identity.js';
 import {taskCommunication} from './agent-mcp.js';
+
+function isGithubSender(from) {
+  const forge = forgeConfiguration();
+  const host = new URL(forge.serverURL).hostname;
+  return forge.provider === 'github' && ['notifications@' + host, 'noreply@' + host].includes(from);
+}
 
 const address = value => typeof value === 'string' && /^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(value) && value.length <= 254;
 const messageId = value => typeof value === 'string' && /^<[^<>\s]{1,990}>$/.test(value);
@@ -236,7 +243,7 @@ export class Mailbox {
           if (!item.headers) continue;
           const mail = await this.parse(item.headers, {skipTextToHtml: true});
           const from = mail.from?.value?.[0]?.address?.toLowerCase();
-          if (['notifications@github.com', 'noreply@github.com'].includes(from) && githubNotificationReference(mail))
+          if (isGithubSender(from) && githubNotificationReference(mail, forgeConfiguration()))
             await this.githubNotification(mail, `${uidValidity}:${item.uid}`, {backfill: true});
         }
         await this.redis.set(this.prefix + 'github-routing-v1', '1');
@@ -278,7 +285,7 @@ export class Mailbox {
     const taskIds = [...new Set(candidates.map(value => value.taskId))];
     if (taskIds.length > 1) { this.log({event: 'imap_message_ignored', reason: 'ambiguous_thread'}); return; }
     if (!taskIds.length) {
-      if (['notifications@github.com', 'noreply@github.com'].includes(from) && this.onGithubNotification) {
+      if (isGithubSender(from) && this.onGithubNotification) {
         await this.githubNotification(mail, delivery); return;
       }
       this.log({event: 'imap_message_ignored', reason: 'unmatched_thread'}); return;

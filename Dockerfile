@@ -17,7 +17,7 @@ FROM ubuntu:24.04 AS toolchain
 COPY --from=node-runtime /usr/local /usr/local
 ARG CLAUDE_VERSION=2.1.296
 ARG SKAFFOLD_VERSION=v2.18.0
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git openssh-client bash coreutils findutils tar unzip ripgrep jq curl gh python3 make g++ \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git openssh-client bash coreutils findutils tar unzip ripgrep jq curl gh python3 python3-venv python3-pip make g++ \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://storage.googleapis.com/skaffold/releases/${SKAFFOLD_VERSION}/skaffold-linux-amd64 -o /usr/local/bin/skaffold \
     && chmod 0755 /usr/local/bin/skaffold \

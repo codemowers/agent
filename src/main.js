@@ -1,3 +1,4 @@
+import {forgeConfiguration, forgeReference, threadKey, findThreadTask, forgeWebhook} from './forge.js';
 import {createClient} from 'redis';
 import express from 'express';
 import {readFile} from 'node:fs/promises';
@@ -8,7 +9,7 @@ import {Kube} from './kube.js';
 import {reconcile} from './controller.js';
 import {authentication} from './auth.js';
 import {ModelCatalog, changeModel} from './models.js';
-import {acceptsGithubEvent, githubTask, githubWakeup, closeGithubTask, reopenGithubTask, reconcileGithubIssues, pullRequestReference, reconcileGithubPullRequests} from './github.js';
+import {routeGithubIssueEvent, reconcileGithubIssues, pullRequestReference, reconcileGithubPullRequests, routeGithubPullRequest, reconcileGithubAssignments} from './github.js';
 import {Mailbox} from './mailbox.js';
 import {agentIdentity, agentActor, displayIdentity} from './identity.js';
 import {installFaultHandler, createRepairTask, faultDetails, repairContext} from './faults.js';
@@ -22,17 +23,19 @@ import {DeviceCatalog} from './devices.js';
 import {WebSocketServer} from 'ws';
 import {SkaffoldSchema} from './skaffold-schema.js';
 import {SharedLinks} from './sharing.js';
+import {mcpPayloadEnabled} from './mcp-payload.js';
+import {agentFetch} from './http.js';
 import {DraftCatalog} from './drafts.js';
 import {transcriptDraft} from './refinement.js';
 import {refinementRepository, refinementPrompt} from './refinement-defaults.js';
 import {Problem, text, id, newTask, prompt, activity, controllerActor, publicTask, changeState, digest, tokenMatches,
   workerEvent, claimNextTurn, renameTask, deleteTask, removeQueuedPrompt, stateRevision, blockExecution, interruptPrompt,
-  normalizeControls, controlsFromMarkdown, setControl} from './domain.js';
+  normalizeControls, controlsFromMarkdown, setControl, promptsReady} from './domain.js';
 
 const faults = installFaultHandler();
 if (process.env.AGENT_MODE === 'worker') {
   faults.setReporter(async report => {
-    const response = await fetch(`${process.env.AGENT_SERVICE_URL}/executions/${process.env.AGENT_TASK_ID}/fault`, {
+    const response = await agentFetch(`${process.env.AGENT_SERVICE_URL}/executions/${process.env.AGENT_TASK_ID}/fault`, {
       method: 'POST', headers: {'Content-Type': 'application/json', Authorization: `Bearer ${process.env.AGENT_REPORT_TOKEN}`},
       body: JSON.stringify(report), signal: AbortSignal.timeout(8000), redirect: 'error'});
     if (!response.ok) throw new Error('Exception report rejected');
@@ -49,7 +52,7 @@ if (process.env.AGENT_MODE === 'worker') {
     namespace: required('AGENT_NAMESPACE'),
     release: required('AGENT_RELEASE'), image: required('AGENT_WORKER_IMAGE'),
     instance: process.env.HOSTNAME || randomUUID(),
-    identity: agentIdentity(),
+    identity: agentIdentity(), forge: forgeConfiguration(), githubEnabled: Boolean(process.env.GH_TOKEN),
     issuer: required('OIDC_IDP_URI'), origin: required('OIDC_CLIENT_ORIGIN'),
     audience: required('OIDC_CLIENT_ORIGIN') + '/api',
     clientId: required('OIDC_CLIENT_ID'), redirectURI: required('OIDC_REDIRECT_URIS').split(/[ ,\n]+/)[0],
@@ -63,6 +66,7 @@ if (process.env.AGENT_MODE === 'worker') {
     toolImages: JSON.parse(process.env.AGENT_TOOL_IMAGES || '[]'),
     openaiSecret: process.env.AGENT_OPENAI_SECRET, codexModel: process.env.AGENT_CODEX_MODEL || '',
     sharingMode: process.env.AGENT_SHARING_MODE || 'disabled',
+    mcpPayloadsEnabled: mcpPayloadEnabled(),
   };
   config.namespaceIdentity = {name: config.namespace, source: 'Pod metadata.namespace fieldRef'};
   const redis = createClient({url: required('REDIS_URL'), password: process.env.REDIS_PASSWORD});
@@ -78,7 +82,7 @@ if (process.env.AGENT_MODE === 'worker') {
   const skaffold = new SkaffoldSchema();
   const drafts = new DraftCatalog();
   const mailbox = new Mailbox(store, undefined, {onException: (error, kind) => faults.report(error, kind),
-    onGithubNotification: handleGithubMail});
+    onGithubNotification: config.githubEnabled ? handleGithubMail : undefined});
   const connectivity = new ConnectivityCatalog(setup, mailbox, builds);
   void connectivity.start().then(({connections}) => console.log(JSON.stringify({event: 'connectivity_checked',
     checks: connections.map(({name, status, detail, checkedAt, probeReference}) => ({name, status, detail, checkedAt, ...(probeReference ? {probeReference} : {})}))})));
@@ -107,7 +111,8 @@ if (process.env.AGENT_MODE === 'worker') {
   app.get('/drafts/:id', async (req, res) => res.json(await drafts.get(req.params.id)));
   app.get('/config', (req, res) => res.json({issuer: config.issuer, clientId: config.clientId,
     audience: config.audience, redirectURI: config.redirectURI, namespace: config.namespace, sharingMode: config.sharingMode,
-    identity: displayIdentity(), scopes: 'openid profile email groups namespaces agent:read agent:write'}));
+    mcpPayloadsEnabled: config.mcpPayloadsEnabled,
+    identity: displayIdentity(), forge: config.forge, scopes: 'openid profile email groups namespaces offline_access agent:read agent:write'}));
   app.use('/api', async (req, res, next) => {
     req.actor = await authenticate(req, req.method === 'GET' ? 'agent:read' : 'agent:write');
     next();
@@ -181,6 +186,14 @@ if (process.env.AGENT_MODE === 'worker') {
     res.status(201).json(publicTask(await store.create(task, req.actor.issuer + ':' + req.actor.subject + ':' + requestId(req))));
   });
   app.get('/api/tasks/:id', async (req, res) => res.json(publicTask(await store.get(id(req.params.id)))));
+  app.get('/api/tasks/:id/tools/:eventId/payload', async (req, res) => {
+    if (!config.mcpPayloadsEnabled) throw new Problem(404, 'MCP payload view disabled');
+    const task = await store.get(id(req.params.id));
+    const event = task.events.find(item => item.id === id(req.params.eventId) && item.kind === 'tool'
+      && item.toolName?.startsWith('mcp__'));
+    if (!event || (event.mcpRequest === undefined && event.mcpResponse === undefined)) throw new Problem(404, 'MCP payload unavailable');
+    res.json({request: event.mcpRequest, response: event.mcpResponse});
+  });
   app.post('/api/tasks/:id/share', async (req, res) => {
     const link = await shares.create(id(req.params.id));
     res.status(201).json({url: new URL('/#share=' + link.token, config.origin).href});
@@ -255,6 +268,7 @@ if (process.env.AGENT_MODE === 'worker') {
     const task = await execution(req);
     res.json({infrastructure: await builds.list(), controls: task.controls || {},
       identity: config.identity, email: mailbox.context(), communication: taskCommunication(task),
+      devices: await devices.taskContext(task.devices),
       repair: repairContext(task),
       draft: task.draft ? {id: task.draft.id, title: task.draft.title, path: '/execution/draft.md'} : null});
   });
@@ -264,9 +278,15 @@ if (process.env.AGENT_MODE === 'worker') {
     if (task.active.lastTurnSequence !== req.body.afterSequence) {
       res.json({desiredState: task.desiredState, prompts: []}); return;
     }
-    if (task.active.state === 'Idle' && task.pending.length && task.desiredState === 'Active') {
+    if (task.active.state === 'Idle' && promptsReady(task) && task.desiredState === 'Active') {
       task = await store.mutate(task.id, 'next:' + task.active.id + ':' + text(req.body.id, 200),
-        current => claimNextTurn(current, task.active.id));
+        current => {
+          // A prompt can be removed between the readiness check and CAS retry.
+          // Do not consume the resident worker's retry receipt for an empty wait.
+          if (current.active?.id !== task.active.id || current.active.state !== 'Idle'
+            || current.desiredState !== 'Active' || !promptsReady(current)) throw new Problem(409, 'No prompt ready for this execution');
+          claimNextTurn(current, task.active.id);
+        });
       res.json({desiredState: task.desiredState, session: task.session,
         prompts: task.events.filter(e => task.active.currentPrompts?.includes(e.id))});
     } else res.json({desiredState: task.desiredState, session: task.session,
@@ -294,7 +314,7 @@ if (process.env.AGENT_MODE === 'worker') {
     let result;
     if (body.method === 'initialize') result = agentMcpInitialize();
     else if (body.method === 'tools/list') result = {tools: [{name: 'get_task_context',
-      description: 'Read current task controls, reference draft and communication priority, including the primary GitHub issue URL. Use before governed actions and when choosing where to communicate; values may change during the turn.',
+      description: 'Read current task controls, included device IDs and connection status, reference draft and communication priority. Use before governed actions and when choosing where to communicate; values may change during the turn.',
       inputSchema: {type: 'object', properties: {}, additionalProperties: false}},
       {name: 'declare_context_controls', description: 'Declare named on/off controls explicitly requested by the user. Adds new controls only; never overrides existing user settings. IDs, labels and descriptions are task-specific, not a fixed tests/CI list.',
         inputSchema: {type: 'object', properties: {controls: {type: 'object', additionalProperties: {type: 'object', properties: {
@@ -320,20 +340,21 @@ if (process.env.AGENT_MODE === 'worker') {
           replyToMessageId: {type: 'string'}}, required: ['to', 'subject', 'text', 'idempotencyKey'], additionalProperties: false}},
       {name: 'get_email_messages', description: 'Read email messages already routed to the current Task, including incoming replies and sent messages, plus live controller IMAP/SMTP configuration status. No unrelated inbox mail or other Tasks. Use this and get_email_status when asked about mail; do not infer live configuration from repository manifests.',
         inputSchema: {type: 'object', properties: {}, additionalProperties: false}},
-      {name: ‘get_email_status’, description: ‘Read live controller IMAP/SMTP status and this Task’s outbound email delivery status. Credentials and other Tasks are not exposed.’,
-        inputSchema: {type: ‘object’, properties: {}, additionalProperties: false}},
+      {name: 'get_email_status', description: 'Read live controller IMAP/SMTP status and this Task’s outbound email delivery status. Credentials and other Tasks are not exposed.',
+        inputSchema: {type: 'object', properties: {}, additionalProperties: false}},
       ...(task.devices?.length ? [
-        {name: ‘device_shell’, description: ‘Run a shell command on a connected device included in this task. Returns stdout, stderr and exit_code.’,
-          inputSchema: {type: ‘object’, properties: {device_id: {type: ‘string’}, command: {type: ‘string’}}, required: [‘device_id’, ‘command’], additionalProperties: false}},
-        {name: ‘device_file_read’, description: ‘Read a file from a connected device included in this task.’,
-          inputSchema: {type: ‘object’, properties: {device_id: {type: ‘string’}, path: {type: ‘string’}}, required: [‘device_id’, ‘path’], additionalProperties: false}},
-        {name: ‘device_file_write’, description: ‘Write content to a file on a connected device included in this task. Creates parent directories as needed.’,
-          inputSchema: {type: ‘object’, properties: {device_id: {type: ‘string’}, path: {type: ‘string’}, content: {type: ‘string’}}, required: [‘device_id’, ‘path’, ‘content’], additionalProperties: false}},
+        {name: 'device_shell', description: 'Run a shell command on a connected device included in this task. Returns stdout, stderr and exit_code.',
+          inputSchema: {type: 'object', properties: {device_id: {type: 'string'}, command: {type: 'string'}}, required: ['device_id', 'command'], additionalProperties: false}},
+        {name: 'device_file_read', description: 'Read a file from a connected device included in this task.',
+          inputSchema: {type: 'object', properties: {device_id: {type: 'string'}, path: {type: 'string'}}, required: ['device_id', 'path'], additionalProperties: false}},
+        {name: 'device_file_write', description: 'Write content to a file on a connected device included in this task. Creates parent directories as needed.',
+          inputSchema: {type: 'object', properties: {device_id: {type: 'string'}, path: {type: 'string'}, content: {type: 'string'}}, required: ['device_id', 'path', 'content'], additionalProperties: false}},
       ] : [])]};
 
     else if (body.method === 'tools/call' && body.params?.name === 'get_task_context') {
       const value = {controls: task.controls || {}, draft: task.draft ? {title: task.draft.title, path: '/execution/draft.md'} : null,
         identity: config.identity, namespace: config.namespace, communication: taskCommunication(task),
+        devices: await devices.taskContext(task.devices),
         repair: repairContext(task),
         email: mailbox.context()};
       result = {content: [{type: 'text', text: JSON.stringify(value)}], structuredContent: value};
@@ -348,7 +369,7 @@ if (process.env.AGENT_MODE === 'worker') {
       const value = await mailbox.taskMessages(task.id);
       result = {content: [{type: 'text', text: JSON.stringify(value)}], structuredContent: value};
     } else if (body.method === 'tools/call' && body.params?.name === 'register_github_pull_request') {
-      const reference = pullRequestReference(body.params.arguments?.url);
+      const reference = pullRequestReference(body.params.arguments?.url, config.forge);
       if (!reference) throw new Problem(400, 'Expected GitHub pull request URL');
       const pull = await githubPullRequest(reference.url);
       await store.mutate(task.id, 'register-pr:' + reference.url, current => {
@@ -402,144 +423,141 @@ if (process.env.AGENT_MODE === 'worker') {
   let githubLogin;
   async function githubIdentity() {
     if (githubLogin) return githubLogin;
-    const response = await fetch('https://api.github.com/user', {
-      headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json'},
-      signal: AbortSignal.timeout(10000)});
-    if (!response.ok) throw new Problem(400, 'Configured GitHub user credential is unavailable');
-    githubLogin = (await response.json()).login;
+    const {data} = await setup.github('/user');
+    githubLogin = data.login || data.username;
     return githubLogin;
   }
   async function githubIssue(url) {
-    const match = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+)$/.exec(url || '');
-    if (!match) throw new Problem(400, 'Expected GitHub issue URL');
-    const repository = `${match[1]}/${match[2]}`;
+    if (!config.githubEnabled) throw new Problem(503, 'Git provider token not configured');
+    const reference = forgeReference(url, config.forge);
+    if (!reference || reference.kind !== 'issue') throw new Problem(400, 'Expected an issue URL on the configured Git server');
+    const repository = reference.repository;
     const allow = (process.env.GIT_ALLOWED_REPOSITORIES || '').split(',').filter(Boolean);
     if (allow.length && !allow.includes(repository)) throw new Problem(403, 'Repository not authorized');
-    const response = await fetch(`https://api.github.com/repos/${repository}/issues/${match[3]}`, {
-      headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json'},
-      signal: AbortSignal.timeout(10000)});
-    if (!response.ok) throw new Problem(response.status, 'Issue is inaccessible to the configured GitHub user');
+    const response = await agentFetch(`${config.forge.apiURL}/repos/${repository}/issues/${reference.id}`, {
+      headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: config.forge.provider === 'github' ? 'application/vnd.github+json' : 'application/json'},
+      signal: AbortSignal.timeout(10000), redirect: 'error'});
+    if (!response.ok) {
+      await response.body?.cancel();
+      const error = new Problem(response.status, 'Issue is inaccessible to the configured GitHub user');
+      if ([404, 410].includes(response.status)) {
+        const repo = await agentFetch(`${config.forge.apiURL}/repos/${repository}`, {
+          headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: config.forge.provider === 'github' ? 'application/vnd.github+json' : 'application/json'},
+          signal: AbortSignal.timeout(10000), redirect: 'error'});
+        error.repositoryUnavailable = [404, 410].includes(repo.status);
+        await repo.body?.cancel();
+      }
+      throw error;
+    }
     const issue = await response.json();
-    return {reference: {source: 'github', repository, kind: 'issue', id: match[3], url},
+    return {reference,
       repository, state: issue.state, closedAt: issue.closed_at,
-      updatedAt: issue.updated_at, assignees: (issue.assignees || []).map(user => user.login), isPullRequest: Boolean(issue.pull_request),
+      updatedAt: issue.updated_at, assignees: (issue.assignees || []).map(user => user.login), isPullRequest: Boolean(issue.pull_request || issue.is_pull),
       title: issue.title,
       content: `${issue.title}\n\n${issue.body || ''}`};
   }
   async function repositoryAssignedIssues(repository, login) {
+    if (!config.githubEnabled) throw new Problem(503, 'Git provider token not configured');
     const allow = (process.env.GIT_ALLOWED_REPOSITORIES || '').split(',').filter(Boolean);
     if (allow.length && !allow.includes(repository)) throw new Problem(403, 'Repository not authorized');
     const issues = [];
     for (let page = 1; page <= 10; page++) {
-      const response = await fetch(`https://api.github.com/repos/${repository}/issues?assignee=${encodeURIComponent(login)}&state=open&per_page=100&page=${page}`, {
-        headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json'},
+      const response = await agentFetch(`${config.forge.apiURL}/repos/${repository}/issues?assignee=${encodeURIComponent(login)}&state=open&${config.forge.provider === 'gitea' ? 'limit' : 'per_page'}=100&page=${page}`, {
+        headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: config.forge.provider === 'github' ? 'application/vnd.github+json' : 'application/json'},
         signal: AbortSignal.timeout(10000), redirect: 'error'});
       if (!response.ok) throw new Problem(response.status, 'Repository issue lookup unavailable');
       const entries = await response.json();
-      for (const issue of entries.filter(value => !value.pull_request)) issues.push({repository, state: issue.state,
+      for (const issue of entries) issues.push({repository, state: issue.state, isPullRequest: Boolean(issue.pull_request || issue.is_pull),
         title: issue.title,
         closedAt: issue.closed_at, updatedAt: issue.updated_at, assignees: (issue.assignees || []).map(user => user.login),
-        content: `${issue.title}\n\n${issue.body || ''}`, reference: {source: 'github', repository, kind: 'issue',
-          id: String(issue.number), url: `https://github.com/${repository}/issues/${issue.number}`}});
+        content: `${issue.title}\n\n${issue.body || ''}`, reference: {source: config.forge.provider, serverURL: config.forge.serverURL, repository, kind: 'issue',
+          id: String(issue.number), url: `${config.forge.serverURL}/${repository}/issues/${issue.number}`}});
       if (entries.length < 100) break;
     }
     return issues;
   }
   async function handleGithubMail(mail, delivery, options = {}) {
-    const reference = githubNotificationReference(mail);
+    const reference = githubNotificationReference(mail, config.forge);
     if (!reference) return {outcome: 'ignored', reason: 'no_github_reference'};
     const login = await githubIdentity();
     if (reference.kind === 'pr') {
-      const ids = await reconcileGithubPullRequests(store, githubPullRequest, login, reference.url);
-      return {outcome: ids.length ? 'resumed' : 'ignored', taskIds: ids};
+      const pull = await githubPullRequest(reference.url);
+      return routeGithubPullRequest(store, config.namespace, pull, login, {actor: {type: 'external', provider: config.forge.provider, name: 'GitHub notification'},
+        deliveryId: 'github-mail:' + digest(mail.messageId || delivery), discovery: Boolean(options.backfill)});
     }
     const issues = await resolveGithubMailIssues(reference, login, githubIssue, repositoryAssignedIssues);
     const outcomes = [];
-    for (const issue of issues) outcomes.push(await routeGithubIssueMail(store, config.namespace, issue, login,
-      mail.messageId || 'imap:' + delivery, options));
+    for (const issue of issues) {
+      if (issue.isPullRequest) {
+        const pull = await githubPullRequest(issue.reference.url.replace('/issues/', config.forge.provider === 'gitea' ? '/pulls/' : '/pull/'));
+        const routed = await routeGithubPullRequest(store, config.namespace, pull, login, {actor: {type: 'external', provider: config.forge.provider, name: 'GitHub notification'},
+          deliveryId: 'github-mail:' + digest(mail.messageId || delivery), discovery: Boolean(options.backfill)});
+        outcomes.push(routed);
+      } else outcomes.push(await routeGithubIssueMail(store, config.namespace, issue, login, mail.messageId || 'imap:' + delivery, options));
+    }
     return {outcome: outcomes.some(value => ['created', 'resumed', 'queued', 'completed'].includes(value.outcome)) ? 'routed' : 'ignored',
-      repository: reference.repository, issue: reference.id, taskIds: outcomes.filter(value => value.taskId).map(value => value.taskId)};
+      repository: reference.repository, issue: reference.id, taskIds: outcomes.flatMap(value => value.taskIds || (value.taskId ? [value.taskId] : []))};
   }
   async function githubPullRequest(url) {
-    const reference = pullRequestReference(url);
+    if (!config.githubEnabled) throw new Problem(503, 'Git provider token not configured');
+    const reference = pullRequestReference(url, config.forge);
     if (!reference) throw new Problem(400, 'Expected GitHub pull request URL');
     const allow = (process.env.GIT_ALLOWED_REPOSITORIES || '').split(',').filter(Boolean);
     if (allow.length && !allow.includes(reference.repository)) throw new Problem(403, 'Repository not authorized');
-    const response = await fetch(`https://api.github.com/repos/${reference.repository}/pulls/${reference.id}`, {
-      headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json'},
+    const response = await agentFetch(`${config.forge.apiURL}/repos/${reference.repository}/pulls/${reference.id}`, {
+      headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: config.forge.provider === 'github' ? 'application/vnd.github+json' : 'application/json'},
       signal: AbortSignal.timeout(10000), redirect: 'error'});
-    if (!response.ok) throw new Problem(502, 'GitHub PR lookup failed');
+    if (!response.ok) throw new Problem(response.status, 'GitHub PR lookup failed');
     const pull = await response.json();
-    return {title: pull.title, state: pull.state, author: pull.user?.login, merged: Boolean(pull.merged), mergedAt: pull.merged_at};
+    return {reference, repository: reference.repository, title: pull.title, content: `${pull.title}\n\n${pull.body || ''}`,
+      state: pull.state, author: pull.user?.login, assignees: (pull.assignees || []).map(user => user.login),
+      merged: Boolean(pull.merged), mergedAt: pull.merged_at};
   }
   app.post('/hooks/github', async (req, res) => {
-    const signature = req.headers['x-hub-signature-256'];
-    const expected = 'sha256=' + createHmac('sha256', process.env.GITHUB_WEBHOOK_SECRET || '').update(req.rawBody).digest('hex');
-    if (!process.env.GITHUB_WEBHOOK_SECRET || !tokenMatches(signature, expected)) {
+    const hook = forgeWebhook(req.headers, req.rawBody, config.forge, process.env.GITHUB_WEBHOOK_SECRET);
+    if (!hook.authenticated) {
       res.locals.webhookReason = 'invalid_signature'; throw new Problem(401, 'Invalid GitHub signature');
     }
     res.locals.webhookAuthenticated = true;
-    const delivery = text(req.headers['x-github-delivery'], 200);
-    const eventType = req.headers['x-github-event'];
+    const delivery = text(hook.deliveryId, 200), eventType = hook.eventType;
     if (eventType === 'ping') { res.locals.webhookOutcome = 'ping'; res.json({ok: true}); return; }
-    if (eventType === 'pull_request') {
-      if (req.body.action !== 'closed' || !req.body.pull_request?.merged) {
-        res.locals.webhookOutcome = 'ignored'; res.locals.webhookReason = 'not_merged'; res.status(202).json({ignored: true}); return;
-      }
-      const reference = pullRequestReference(req.body.pull_request.html_url);
+    const prComment = eventType === 'issue_comment' && Boolean(req.body.issue?.pull_request || req.body.is_pull || req.body.issue && req.body.pull_request);
+    if (['pull_request', 'pull_request_review', 'pull_request_review_comment'].includes(eventType) || prComment) {
+      const reference = pullRequestReference(prComment ? req.body.pull_request?.html_url || req.body.issue.pull_request?.html_url || req.body.issue.html_url : req.body.pull_request?.html_url, config.forge);
       if (!reference) throw new Problem(400, 'Expected GitHub PR reference');
-      const ids = await reconcileGithubPullRequests(store, githubPullRequest, await githubIdentity(), reference.url);
-      res.locals.webhookTaskIds = ids; res.locals.webhookOutcome = ids.length ? 'resumed' : 'ignored';
-      if (!ids.length) res.locals.webhookReason = 'no_new_linked_merge';
-      res.status(202).json({taskIds: ids}); return;
-    }
-    if (!['issues', 'issue_comment'].includes(eventType) || !req.body.issue || req.body.issue.pull_request) {
-      res.locals.webhookOutcome = 'ignored'; res.locals.webhookReason = 'unsupported_event';
-      res.status(202).json({ignored: true}); return;
-    }
-    if (eventType === 'issues' && req.body.action === 'closed') {
-      const issue = await githubIssue(req.body.issue.html_url);
-      const mapped = await redis.get(store.prefix + 'external:' + digest(`github:${issue.repository}:${issue.reference.id}`));
-      if (!mapped || issue.state !== 'closed') {
-        res.locals.webhookOutcome = 'ignored'; res.locals.webhookReason = !mapped ? 'no_existing_task' : 'issue_not_closed';
-        res.status(202).json({ignored: true}); return;
+      const login = await githubIdentity();
+      if (eventType === 'pull_request' && req.body.action === 'closed' && req.body.pull_request?.merged) {
+        const ids = await reconcileGithubPullRequests(store, githubPullRequest, login, reference.url);
+        res.locals.webhookTaskIds = ids; res.locals.webhookOutcome = ids.length ? 'resumed' : 'ignored';
+        if (!ids.length) res.locals.webhookReason = 'no_new_linked_merge';
+        res.status(202).json({taskIds: ids}); return;
       }
-      await store.mutate(mapped, 'github:' + delivery, current => closeGithubTask(current,
-        {type: 'external', provider: 'github', subject: String(req.body.sender?.id || ''), name: req.body.sender?.login || 'GitHub'}, issue.reference.url));
-      res.locals.webhookTaskId = mapped; res.locals.webhookOutcome = 'completed';
-      res.status(202).json({taskId: mapped}); return;
+      const pull = await githubPullRequest(reference.url);
+      const routed = await routeGithubPullRequest(store, config.namespace, pull, login, {
+        actor: {type: 'external', provider: config.forge.provider, subject: String(req.body.sender?.id || ''), name: req.body.sender?.login || 'GitHub'},
+        deliveryId: config.forge.provider + ':' + delivery, assignment: eventType === 'pull_request' && req.body.action === 'assigned',
+        comment: req.body.comment?.body || req.body.review?.body,
+        commentURL: req.body.comment?.html_url || req.body.review?.html_url,
+        commentAction: prComment || eventType.startsWith('pull_request_review') ? req.body.action : undefined,
+      });
+      res.locals.webhookTaskIds = routed.taskIds; res.locals.webhookOutcome = routed.outcome; res.locals.webhookReason = routed.reason;
+      res.status(202).json(routed); return;
+    }
+    if (!['issues', 'issue_comment'].includes(eventType) || !req.body.issue) {
+      res.locals.webhookOutcome = 'ignored'; res.locals.webhookReason = !req.body.issue ? 'missing_issue' : 'unsupported_event';
+      res.status(202).json({ignored: true}); return;
     }
     const login = await githubIdentity();
-    if (!acceptsGithubEvent(eventType, req.body, login)) {
-      res.locals.webhookOutcome = 'ignored'; res.locals.webhookReason = !req.body.issue.assignees?.some(a => a.login === login)
-        ? 'not_assigned_to_agent' : req.body.sender?.login === login ? 'agent_authored_event' : 'unsupported_action';
-      res.status(202).json({ignored: true}); return;
-    }
     const issue = await githubIssue(req.body.issue.html_url);
-    if (issue.state === 'closed') {
-      res.locals.webhookOutcome = 'ignored'; res.locals.webhookReason = 'issue_closed';
-      res.status(202).json({ignored: true}); return;
-    }
-    const key = `github:${issue.repository}:${issue.reference.id}`;
-    const context = req.body.comment?.body || issue.content;
-    const proposed = githubTask(config.namespace, {type: 'external', provider: 'github',
-      subject: String(req.body.sender?.id || ''), name: req.body.sender?.login || 'GitHub'}, issue, eventType, context, delivery);
-    proposed.githubIssueUpdatedAt = issue.updatedAt;
-    const task = await store.create(proposed, 'external:' + key);
-    res.locals.webhookTaskId = task.id;
-    res.locals.webhookOutcome = task.id === proposed.id ? 'created'
-      : task.events.some(e => e.deliveryId === delivery) ? 'duplicate' : 'resumed';
-    await redis.set(store.prefix + 'external:' + digest(key), task.id);
-    await store.mutate(task.id, 'github:' + delivery, current => {
-      if (eventType === 'issues' && req.body.action === 'reopened') reopenGithubTask(current,
-        {type: 'external', provider: 'github', subject: String(req.body.sender?.id || ''), name: req.body.sender?.login || 'GitHub'}, issue.reference.url);
-      if (current.desiredState === 'Cancelled' || current.phase === 'Completed') return;
-      if (current.events.some(e => e.deliveryId === delivery)) return;
-      current.githubIssueUpdatedAt = issue.updatedAt;
-      const source = activity(current, proposed.creator, text(context), 'webhook', {kind: 'event', deliveryId: delivery});
-      prompt(current, controllerActor, githubWakeup(eventType, issue.reference.url), 'controller', {causedBy: [source.id]});
+    const routed = await routeGithubIssueEvent(store, config.namespace, issue, login, {
+      actor: {type: 'external', provider: config.forge.provider, subject: String(req.body.sender?.id || ''),
+        name: req.body.sender?.login || 'Git'},
+      eventType, action: req.body.action, deliveryId: config.forge.provider + ':' + delivery,
+      comment: req.body.comment?.body, commentURL: req.body.comment?.html_url,
     });
-    res.status(202).json({taskId: task.id});
+    res.locals.webhookTaskId = routed.taskId; res.locals.webhookOutcome = routed.outcome;
+    res.locals.webhookReason = routed.reason;
+    res.status(202).json(routed);
   });
   app.post('/hooks/wakeup', async (req, res) => {
     if (!tokenMatches(req.headers.authorization?.replace(/^Bearer /, ''), process.env.WEBHOOK_TOKEN)) {
@@ -551,9 +569,9 @@ if (process.env.AGENT_MODE === 'worker') {
     if (req.body.taskId) task = await store.get(id(req.body.taskId));
     else {
       const issue = await githubIssue(req.body.issueURL);
-      const key = `github:${issue.repository}:${issue.reference.id}`;
-      const mapped = await redis.get(store.prefix + 'external:' + digest(key));
-      if (mapped) task = await store.get(mapped);
+      const key = threadKey(issue.reference);
+      const existing = await findThreadTask(store, issue.reference);
+      if (existing) task = existing;
       else {
         const proposed = newTask(config.namespace, {type: 'external', name: 'Authenticated webhook'}, issue.content, 'webhook', [issue.reference]);
         proposed.repository = issue.repository;
@@ -563,7 +581,7 @@ if (process.env.AGENT_MODE === 'worker') {
     }
     const updated = await store.mutate(task.id, 'webhook:' + delivery, current => {
       const source = activity(current, {type: 'external', name: 'Authenticated webhook'}, context, 'webhook', {kind: 'event'});
-      prompt(current, controllerActor, `Process webhook follow-up:\n${context}`, 'controller', {causedBy: [source.id]});
+      prompt(current, controllerActor, `Process webhook follow-up:\n${context}`, 'controller', {automatic: true, causedBy: [source.id]});
     });
     res.locals.webhookTaskId = updated.id;
     res.status(202).json({taskId: updated.id});
@@ -585,7 +603,7 @@ if (process.env.AGENT_MODE === 'worker') {
       await store.mutate(task.id, 'alert:' + digest(JSON.stringify(alert)), current => {
         if (current.desiredState === 'Cancelled' || current.phase === 'Completed') return;
         const event = activity(current, {type: 'external', name: 'Alertmanager'}, content, 'alertmanager', {kind: 'event'});
-        prompt(current, controllerActor, content, 'controller', {causedBy: [event.id]});
+        prompt(current, controllerActor, content, 'controller', {automatic: true, causedBy: [event.id]});
       });
       ids.push(task.id);
     }
@@ -601,12 +619,25 @@ if (process.env.AGENT_MODE === 'worker') {
     res.status(error.status || 500).json({error: error instanceof Problem ? error.message : 'Request failed'});
   });
   let busy = false;
-  let nextGithubSync = 0;
+  let nextGithubSync = 0, nextAssignmentScan = 0;
   config.syncGithub = async () => {
+    if (!config.githubEnabled) return;
     if (Date.now() < nextGithubSync) return;
     nextGithubSync = Date.now() + 60000;
     await reconcileGithubIssues(store, githubIssue);
-    await reconcileGithubPullRequests(store, githubPullRequest, await githubIdentity());
+    const login = await githubIdentity();
+    await reconcileGithubPullRequests(store, githubPullRequest, login);
+    if (Date.now() >= nextAssignmentScan) {
+      nextAssignmentScan = Date.now() + 300000;
+      try {
+        const catalog = await setup.assignedReferences(login);
+        const result = await reconcileGithubAssignments(store, config.namespace, catalog.references,
+          reference => reference.kind === 'pr' ? githubPullRequest(reference.url) : githubIssue(reference.url), login);
+        console.log(JSON.stringify({event: 'github_assignment_scan_complete', ...result, incomplete: catalog.incomplete}));
+      } catch (error) {
+        console.error(JSON.stringify({event: 'github_assignment_scan_failed', status: error.upstreamStatus || error.status}));
+      }
+    }
   };
   const tick = async () => {
     if (busy) return;

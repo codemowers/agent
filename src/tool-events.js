@@ -1,4 +1,6 @@
-export function toolEvents(backend, event, secrets = []) {
+import {safeMcpPayload} from './mcp-payload.js';
+
+export function toolEvents(backend, event, secrets = [], includeMcpPayloads = false, mcpToolIds = new Set()) {
   function command(value) {
     if (typeof value !== 'string') return undefined;
     // Credential operations may contain newly generated or encoded secrets.
@@ -33,7 +35,9 @@ export function toolEvents(backend, event, secrets = []) {
   if (backend === 'codex' && ['item.started','item.completed'].includes(event.type) && event.item?.type === 'mcp_tool_call') {
     const item = event.item, name = `mcp__${item.server}__${item.tool}`;
     return [{kind: 'tool', toolId: item.id, name, detail: detail(name, item.arguments),
-      toolState: event.type === 'item.started' ? 'running' : item.error || item.result?.isError || item.status === 'failed' ? 'failed' : 'completed'}];
+      toolState: event.type === 'item.started' ? 'running' : item.error || item.result?.isError || item.status === 'failed' ? 'failed' : 'completed',
+      ...(includeMcpPayloads ? {[event.type === 'item.started' ? 'mcpRequest' : 'mcpResponse']:
+        safeMcpPayload(event.type === 'item.started' ? item.arguments : item.error || item.result, secrets)} : {})}];
   }
   if (backend === 'codex' && ['item.started','item.completed'].includes(event.type) && event.item?.type === 'command_execution') {
     return [{kind:'tool',toolId:event.item.id,name:'Shell',command:command(event.item.command),
@@ -44,11 +48,13 @@ export function toolEvents(backend, event, secrets = []) {
     return (event.message?.content||[]).filter(block=>block.type==='tool_use').map(block=>({
       kind:'tool',toolId:block.id,name:block.name,toolState:'running',
       detail: detail(block.name, block.input),
+      ...(includeMcpPayloads && block.name?.startsWith('mcp__') ? {mcpRequest: safeMcpPayload(block.input, secrets)} : {}),
       ...(block.name==='Bash'?{command:command(block.input?.command)}:{})}));
   }
   if (backend === 'claude' && event.type === 'user') {
     return (event.message?.content||[]).filter(block=>block.type==='tool_result').map(block=>({
-      kind:'tool',toolId:block.tool_use_id,toolState:block.is_error?'failed':'completed'}));
+      kind:'tool',toolId:block.tool_use_id,toolState:block.is_error?'failed':'completed',
+      ...(includeMcpPayloads && mcpToolIds.has(block.tool_use_id) ? {mcpResponse: safeMcpPayload(block.content, secrets)} : {})}));
   }
   return [];
 }

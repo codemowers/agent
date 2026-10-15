@@ -2,8 +2,10 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {toolEvents} from '../src/tool-events.js';
 
-import {newTask,reserve,workerEvent,activity} from '../src/domain.js';
+import {newTask,reserve,workerEvent,activity,publicTask} from '../src/domain.js';
 import {groupAgentMessages} from '../web/conversation.js';
+import {sharedTask} from '../src/sharing.js';
+import {mcpPayloadEnabled} from '../src/mcp-payload.js';
 
 test('Claude tool requests/completions retain commands without tool output or credentials', () => {
   const event = {type:'assistant',message:{content:[{type:'tool_use',id:'call',name:'Bash',input:{command:'kubectl get pods -n llm'}}]}};
@@ -44,4 +46,33 @@ test('native Read/Write metadata identifies the file without forwarding its cont
   const [hidden] = toolEvents('claude', {type: 'assistant', message: {content: [{type: 'tool_use', id: 'write', name: 'Write',
     input: {file_path: '/tmp/sensitive-value', content: 'private content'}}]}}, ['sensitive-value']);
   assert.equal(hidden.detail, undefined);
+});
+
+test('MCP payloads require explicit enablement and stay out of normal and shared Task responses', () => {
+  assert.equal(mcpPayloadEnabled('false'), false);
+  assert.equal(mcpPayloadEnabled('true'), true);
+  const task = newTask('ns', {type: 'user'}, 'Inspect'); const run = reserve(task);
+  const request = {type: 'item.started', item: {id: 'mcp-1', type: 'mcp_tool_call', server: 'driftmower', tool: 'query_logs',
+    arguments: {namespace: 'demo', token: 'private-token', query: '{"password":"hidden-value","limit":3}'}}};
+  assert.equal(toolEvents('codex', request)[0].mcpRequest, undefined);
+  workerEvent(task, run.id, toolEvents('codex', request, [], true)[0]);
+  workerEvent(task, run.id, toolEvents('codex', {type: 'item.completed', item: {...request.item,
+    result: {content: [{type: 'text', text: 'Bearer private-token'}]}}}, ['private-token'], true)[0]);
+  const event = task.events.find(item => item.toolName === 'mcp__driftmower__query_logs');
+  assert.equal(event.mcpRequest.token, '[REDACTED]');
+  assert.equal(event.mcpRequest.query.password, '[REDACTED]');
+  assert.doesNotMatch(JSON.stringify(event.mcpResponse), /private-token/);
+  assert.equal(publicTask(task).events.find(item => item.id === event.id).mcpPayloadAvailable, true);
+  assert.ok(!JSON.stringify(publicTask(task)).includes('mcpRequest'));
+  assert.ok(!JSON.stringify(sharedTask(task)).includes('mcpResponse'));
+});
+
+test('Claude MCP results are captured only for known MCP tool IDs', () => {
+  const ids = new Set(['mcp-call']);
+  const results = toolEvents('claude', {type: 'user', message: {content: [
+    {type: 'tool_result', tool_use_id: 'mcp-call', content: [{type: 'text', text: '{"ok":true}'}]},
+    {type: 'tool_result', tool_use_id: 'shell-call', content: 'private shell output'},
+  ]}}, [], true, ids);
+  assert.deepEqual(results[0].mcpResponse, [{type: 'text', text: {ok: true}}]);
+  assert.equal(results[1].mcpResponse, undefined);
 });

@@ -7,8 +7,9 @@ function identifier(value, pattern = /^[\w.-]+$/, max = 200) {
 }
 function metadata(provider, body) {
   if (!body || typeof body !== 'object') return {};
-  if (provider === 'github') return {
+  if (['github', 'gitea'].includes(provider)) return {
     action: identifier(body.action), repository: identifier(body.repository?.full_name, /^[\w.-]+\/[\w.-]+$/),
+    isPullRequest: Boolean(body.issue?.pull_request || body.is_pull || body.pull_request),
     issue: Number.isSafeInteger(body.issue?.number) ? body.issue.number : undefined,
     pullRequest: Number.isSafeInteger(body.pull_request?.number) ? body.pull_request.number : undefined,
     merged: typeof body.pull_request?.merged === 'boolean' ? body.pull_request.merged : undefined,
@@ -26,11 +27,11 @@ function metadata(provider, body) {
 export function webhookLog(write = entry => console.log(JSON.stringify(entry))) {
   return (req, res, next) => {
     req.webhookLogged = true;
-    const provider = {'/hooks/github': 'github', '/hooks/wakeup': 'wakeup', '/hooks/alertmanager': 'alertmanager'}[req.baseUrl + req.path] || 'unknown';
+    const provider = {'/hooks/github': req.headers['x-gitea-event'] ? 'gitea' : 'github', '/hooks/wakeup': 'wakeup', '/hooks/alertmanager': 'alertmanager'}[req.baseUrl + req.path] || 'unknown';
     const started = Date.now();
     const common = {component: 'webhook', requestId: randomUUID(), provider, method: req.method,
-      deliveryId: provider === 'github' ? identifier(req.headers['x-github-delivery']) : undefined,
-      eventType: provider === 'github' ? identifier(req.headers['x-github-event']) : undefined};
+      deliveryId: ['github', 'gitea'].includes(provider) ? identifier(req.headers['x-gitea-delivery'] || req.headers['x-github-delivery']) : undefined,
+      eventType: ['github', 'gitea'].includes(provider) ? identifier(req.headers['x-gitea-event'] || req.headers['x-github-event']) : undefined};
     write({...common, event: 'webhook_received'});
     res.once('finish', () => write({...common, event: 'webhook_completed', status: res.statusCode,
       durationMs: Date.now() - started, authenticated: Boolean(res.locals.webhookAuthenticated),

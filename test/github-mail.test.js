@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {githubMessageReference, githubNotificationReference, resolveGithubMailIssues, routeGithubIssueMail} from '../src/github-mail.js';
+import {threadKey} from '../src/forge.js';
 import {githubTask} from '../src/github.js';
 import {changeState, digest} from '../src/domain.js';
 
@@ -10,7 +11,7 @@ const issue = {repository: 'codemowers/kube', state: 'open', assignees: ['agent-
 function fixture() {
   const values = new Map(), tasks = new Map(), receipts = new Set(), creations = new Map();
   const store = {prefix: 'agent:ns:test:', redis: {get: async key => values.get(key) || null, set: async (key, value) => values.set(key, value)},
-    get: async id => tasks.get(id),
+    get: async id => tasks.get(id), list: async () => [...tasks.values()],
     create: async (task, key) => { if (creations.has(key)) return tasks.get(creations.get(key)); tasks.set(task.id, task); creations.set(key, task.id); return task; },
     mutate: async (id, key, fn) => { const task = tasks.get(id); if (!receipts.has(id + key)) { fn(task); receipts.add(id + key); } return task; }};
   return {store, tasks};
@@ -49,16 +50,17 @@ test('email discovery creates one issue task and deduplicates subsequent emails 
   assert.equal(task.title, 'Implement feature'); assert.equal(task.events[1].content.includes('Private issue specification'), false);
   assert.equal(task.events[0].actor.provider, 'github'); assert.equal(task.events[1].actor.type, 'controller');
   assert.equal((await routeGithubIssueMail(f.store, 'ns', issue, 'agent-smith', messageId)).outcome, 'duplicate');
-  assert.equal((await routeGithubIssueMail(f.store, 'ns', issue, 'agent-smith', '<another@github.com>')).outcome, 'duplicate');
+  assert.equal((await routeGithubIssueMail(f.store, 'ns', issue, 'agent-smith', '<another@github.com>')).outcome, 'resumed');
+  assert.equal(task.events.find(entry => entry.deliveryId === 'github-mail:' + digest('<another@github.com>')).content.includes('Private issue specification'), false);
   const webhook = githubTask('ns', {}, issue, 'issues', issue.content, 'signed-hook');
-  assert.equal((await f.store.create(webhook, 'external:github:codemowers/kube:122')).id, task.id);
+  assert.equal((await f.store.create(webhook, 'external:' + threadKey(issue.reference))).id, task.id);
   assert.equal(f.tasks.size, 1);
   changeState(task, 'Paused', {type: 'user'});
   const changed = {...issue, updatedAt: '2026-10-12T16:01:00Z'};
   assert.equal((await routeGithubIssueMail(f.store, 'ns', changed, 'agent-smith', '<changed@github.com>')).outcome, 'queued');
-  assert.equal(task.desiredState, 'Paused'); assert.equal(task.pending.length, 2);
+  assert.equal(task.desiredState, 'Paused'); assert.equal(task.pending.length, 1);
   await routeGithubIssueMail(f.store, 'ns', {...changed, updatedAt: '2026-10-12T16:02:00Z'}, 'agent-smith', '<older@github.com>', {backfill: true});
-  assert.equal(task.pending.length, 2);
+  assert.equal(task.pending.length, 1);
 });
 
 test('API assignment and issue state decide routing; unrelated email content cannot create work', async () => {

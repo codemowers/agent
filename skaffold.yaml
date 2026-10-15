@@ -32,6 +32,7 @@ manifests:
           "allowedGroups[0]": github.com:codemowers:admins
           env.AGENT_SHARING_MODE: public
         setValueTemplates:
+          apiResource: "{{.AGENT_API_RESOURCE}}"
           env.AGENT_KUBE_CONTEXT: "{{.AGENT_KUBE_CONTEXT}}"
           image: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent_controller}}"
           workerImage: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent}}"
@@ -42,3 +43,20 @@ deploy:
       # Keep labeled chart resources when Skaffold cleans up.
       delete:
         - --selector=skaffold.dev/keep!=true
+
+profiles:
+  - name: dev-test
+    activation:
+      - kubeContext: dev-test
+    patches:
+      - op: remove
+        path: /manifests/helm/releases/0/setValues/allowedGroups[0]
+      - op: add
+        path: /manifests/helm/releases/0/setValues/allowedUsers[0]
+        value: laurivosandi
+      - op: replace
+        path: /manifests/helm/releases/0/setValueTemplates/apiResource
+        value: https://controller.codemowers-agent-system.dev.sensusq.com/api
+      - op: replace
+        path: /manifests/helm/releases/0/setValueTemplates/env.AGENT_KUBE_CONTEXT
+        value: dev-test/codemowers-agent-system

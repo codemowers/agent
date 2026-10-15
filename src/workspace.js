@@ -1,3 +1,4 @@
+import {forgeConfiguration} from './forge.js';
 import {mkdir, readFile, writeFile, appendFile, lstat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {command} from './kube.js';
@@ -12,7 +13,7 @@ export async function initializeRepository(cwd, repository) {
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (repository) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error('Invalid repository');
-    await command('git', ['clone', `https://github.com/${repository}.git`, cwd]);
+    await command('git', ['clone', `${forgeConfiguration().serverURL}/${repository}.git`, cwd]);
   } else {
     await mkdir(cwd, {recursive: true});
     await command('git', ['init', '--initial-branch=main', cwd]);
@@ -71,7 +72,7 @@ export async function prepareWorkspace(cwd, envelope, infrastructure, draft, mcp
     + '- Validate skaffold.yaml with agent.validate_skaffold_config. Read agent.get_task_context before actions governed by user controls.\n'
     + '- Prefer Kaniko through Skaffold cluster builds: skaffold build or skaffold run. If configuration is missing, adapt agent.get_skaffold_example and validate it first. Report failed/unclear infrastructure instead of improvising Kaniko Pods or Jobs; direct invocation requires an explicitly requested, verified workflow.\n'
     + '- Infrastructure uncertainty is a blocker: report it through agent.report_blocked. Do not guess builders, registries, credentials, privileges or public visibility.\n'
-    + '- Work in topic branches. Do not push directly to main/master, force-push, or create a remote without user direction.\n';
+    + '- Work in topic branches. Do not push directly to main/master, force-push, or create a remote without user direction. If codemowers/agent denies push, advise a fork under the configured Git account and a pull request from it.\n';
   const agents = join(cwd, 'AGENTS.md');
   await seed(agents, '# Agent instructions\n');
   if (!(await readFile(agents, 'utf8')).includes(marker)) await appendFile(agents, '\n' + instructions);

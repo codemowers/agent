@@ -1,6 +1,7 @@
-import {UserManager, WebStorageStateStore, InMemoryWebStorage} from 'oidc-client-ts';
+import {UserManager, WebStorageStateStore} from 'oidc-client-ts';
 import {groupAgentMessages} from './conversation.js';
 import {markdown} from './markdown.js';
+import {formattedJson} from './json-view.js';
 import {responseJson} from './http.js';
 import {refinementPrompt, refinementRepository, transcriptText} from '../src/refinement-defaults.js';
 import {githubUsername} from '../src/profiles.js';
@@ -46,10 +47,20 @@ document.title = `${cfg.identity?.name || 'Coding agent'} · codemowers/agent`;
 const auth = new UserManager({authority: cfg.issuer, client_id: cfg.clientId,
   redirect_uri: cfg.redirectURI, response_type: 'code', scope: cfg.scopes,
   extraQueryParams: {resource: cfg.audience}, extraTokenParams: {resource: cfg.audience},
-  userStore: new WebStorageStateStore({store: new InMemoryWebStorage()}),
+  userStore: new WebStorageStateStore({store: localStorage}),
   stateStore: new WebStorageStateStore({store: sessionStorage}),
   automaticSilentRenew: false, loadUserInfo: false});
 let user, currentActor, selected, tasks = [], modelOptions = [], modelDirty = false, sending = false, selectedRepository = null, setupData;
+let renewal;
+async function renewUser() {
+  renewal ||= auth.signinSilent({resource: cfg.audience}).finally(() => { renewal = null; });
+  user = await renewal;
+  return user;
+}
+auth.events.addUserLoaded(loaded => { user = loaded; });
+auth.events.addAccessTokenExpiring(() => {
+  if (user?.refresh_token) void renewUser().catch(() => {});
+});
 const shareToken = new URLSearchParams(location.hash.slice(1)).get('share');
 const sharedTaskId = new URLSearchParams(location.search).get('sharedTask');
 let readOnly = Boolean(shareToken || sharedTaskId);
@@ -81,6 +92,9 @@ $('#task-model').onchange = () => { modelDirty = true; };
 function failure(error) { $('#error').hidden = false; $('#error').textContent = error.message; $('#error').dataset.transient = String(Boolean(error.transient)); }
 async function api(path, method = 'GET', body) {
   if (readOnly) throw new Error('This shared task is read-only.');
+  if (user?.expired && user.refresh_token) {
+    try { await renewUser(); } catch {}
+  }
   if (!user || user.expired) { $('#connectivity-navbar').hidden = true; throw new Error('Session expired. Sign in again.'); }
   const response = await fetch('/api' + path, {method, headers: {Authorization: `Bearer ${user.access_token}`,
     'Content-Type': 'application/json', ...(method !== 'GET' ? {'Idempotency-Key': crypto.randomUUID()} : {})},
@@ -116,7 +130,7 @@ function renderResources() {
   }
   $('#new-task-resources').hidden = false;
   const github = setupData.github;
-  $('#github-identity').textContent = github ? `GitHub · ${github.login}` : 'GitHub unavailable';
+  $('#github-identity').textContent = github ? `${cfg.forge?.provider === 'gitea' ? 'Gitea' : 'GitHub'} · ${github.login}` : 'Git server unavailable';
   $('#resource-warning').textContent = (setupData.warnings || []).join(' · ');
   const repositories = $('#repository-list'); repositories.replaceChildren();
   for (const repo of github?.repositories || []) {
@@ -133,7 +147,7 @@ function renderResources() {
   const destinations = $('#creation-destinations'); destinations.replaceChildren();
   for (const destination of github?.destinations || []) {
     const row = node('div', '', 'destination-row');
-    const link = node('a', destination.owner); link.href = `https://github.com/new?owner=${encodeURIComponent(destination.owner)}`;
+    const link = node('a', destination.owner); link.href = (cfg.forge?.serverURL || 'https://github.com') + (cfg.forge?.provider === 'gitea' ? '/repo/create' : `/new?owner=${encodeURIComponent(destination.owner)}`);
     link.target = '_blank'; link.rel = 'noopener noreferrer';
     const status = destination.policy === 'restricted' ? 'Organization policy restricts creation' : destination.policy === 'unknown'
       ? 'Creation policy unknown' : destination.tokenPermission === 'confirmed' ? `Creation allowed${destination.visibility ? ' · ' + destination.visibility : ''}` : 'Policy allows creation · token permission unknown';
@@ -158,6 +172,10 @@ function renderConnectivity(connections = []) {
     badge.title = `${status?.source === 'operation' ? 'Last operation' : 'Startup check'} ${online ? 'passed' : 'failed'} · ${status?.detail || 'Not configured or unavailable'}\nLast check: ${status?.checkedAt ? new Date(status.checkedAt).toLocaleString() : 'Unavailable'}\n${mail ? 'Updated by normal IMAP/SMTP activity; no additional probes.' : 'Checked once per controller startup; not continuously monitored.'}`;
     if (status?.probeReference) badge.title += '\nProbe image: ' + status.probeReference;
     badge.setAttribute('aria-label', badge.textContent.trim() + ' · ' + (online ? 'check passed' : 'check failed'));
+    if (name === 'github') {
+      badge.href = cfg.forge?.serverURL || 'https://github.com';
+      badge.lastChild.textContent = cfg.forge?.provider === 'gitea' ? 'Gitea API' : 'GitHub API';
+    }
     if (['codemowers', 'driftmower', 'registry'].includes(name)) {
       badge.removeAttribute('href');
       try {
@@ -222,7 +240,7 @@ function avatar(actor) {
     avatarHashes.get(identity).then(hash => { image.src = `https://www.gravatar.com/avatar/${hash}?s=56&d=${actor.type === 'agent' ? 'robohash' : 'identicon'}&f=y`; });
   };
   const login = githubUsername(actor, cfg.identity);
-  if (login) {
+  if (login && (actor.type === 'agent' || actor.provider === cfg.forge?.provider ? cfg.forge?.serverURL || 'https://github.com' : 'https://github.com') === 'https://github.com') {
     image.onerror = () => { image.onerror = null; fallback(); };
     image.src = `https://github.com/${encodeURIComponent(login)}.png?size=56`;
   } else fallback();
@@ -232,7 +250,7 @@ function authorLink(actor, label) {
   const login = githubUsername(actor, cfg.identity);
   const element = node(login ? 'a' : 'span', label, 'author');
   if (login) {
-    element.href = `https://github.com/${encodeURIComponent(login)}`;
+    element.href = (actor.type === 'agent' || actor.provider === cfg.forge?.provider ? cfg.forge?.serverURL || 'https://github.com' : 'https://github.com') + '/' + encodeURIComponent(login);
     element.target = '_blank'; element.rel = 'noopener noreferrer';
   }
   return element;
@@ -260,7 +278,7 @@ function renderList() {
     const status = workerStatus(task), heading = node('div', '', 'task-heading');
     const dot = node('i', '', 'state-dot ' + status.color); dot.title = status.worker || status.label;
     dot.setAttribute('aria-label', dot.title);
-    const reference = task.references?.find(r => r.source === 'github' && ['issue', 'pr', 'pull_request'].includes(r.kind));
+    const reference = task.references?.find(r => ['github', 'gitea'].includes(r.source) && ['issue', 'pr', 'pull_request'].includes(r.kind));
     const repository = reference?.repository || task.repository;
     const label = `${repository ? `${repository}${reference?.id ? ` #${reference.id}` : ''} ` : ''}${task.title}`;
     button.title = label;
@@ -276,7 +294,7 @@ function renderList() {
   }
 }
 function confirmationLabel(task) {
-  return task.references?.some(reference => reference.source === 'github' && reference.kind === 'issue')
+  return task.references?.some(reference => ['github', 'gitea'].includes(reference.source) && ['issue', 'pr'].includes(reference.kind))
     ? 'Awaiting confirmation on GitHub' : 'Awaiting confirmation';
 }
 function workerStatus(task) {
@@ -333,16 +351,16 @@ function renderDetail() {
     $('#share-banner').textContent = 'Read-only shared task';
     document.title = selected.title + ' · read-only';
   }
-  const reference = selected.references?.find(r => r.source === 'github' && ['issue', 'pr', 'pull_request'].includes(r.kind));
+  const reference = selected.references?.find(r => ['github', 'gitea'].includes(r.source) && ['issue', 'pr', 'pull_request'].includes(r.kind));
   const repository = selected.repository || reference?.repository;
   const context = $('#task-repository'); context.replaceChildren();
   if (repository && /^[\w.-]+\/[\w.-]+$/.test(repository)) {
-    const url = 'https://github.com/' + repository.split('/').map(encodeURIComponent).join('/');
+    const url = (reference?.serverURL || cfg.forge?.serverURL || 'https://github.com') + '/' + repository.split('/').map(encodeURIComponent).join('/');
     const link = node('a', repository); link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.title = url;
     context.append(link);
     if (reference?.id && /^\d+$/.test(String(reference.id))) {
       const issue = node('a', `#${reference.id}`);
-      issue.href = url + (reference.kind === 'issue' ? '/issues/' : '/pull/') + reference.id;
+      issue.href = reference.url || url + (reference.kind === 'issue' ? '/issues/' : reference.source === 'gitea' ? '/pulls/' : '/pull/') + reference.id;
       issue.target = '_blank'; issue.rel = 'noopener noreferrer';
       context.append(node('span', ' · '), issue);
     }
@@ -360,7 +378,6 @@ function renderDetail() {
   $('#delete-task').disabled = Boolean(selected.deleteRequested);
   $('#share-task').hidden = cfg.sharingMode === 'disabled';
   const events = selected.events.filter(e => !(e.kind === 'control' && (e.action === 'remove_prompt' || e.content === 'Removed queued prompt'))
-    && !(e.kind === 'event' && selected.events.some(p => p.causedBy?.includes(e.id)))
     && (e.kind !== 'progress' || !selected.events.some(r =>
       r.kind === 'result' && r.executionId === e.executionId && r.content.slice(0, 8000) === e.content)));
   for (const entry of groupAgentMessages(events)) {
@@ -380,6 +397,15 @@ function renderDetail() {
     const author = entry.actor.type === 'controller' ? 'Controller' : entry.actor.type === 'agent' ? cfg.identity?.name || entry.actor.name || 'Coding agent' : entry.actor.name || entry.actor.subject || entry.actor.type;
     const meta = node('div', '', 'meta');
     meta.append(avatar(entry.actor), authorLink(entry.actor, author), node('span', '· ' + new Date(entry.createdAt).toLocaleString()));
+    if (entry.kind === 'event' && ['github', 'gitea'].includes(entry.actor.provider || entry.source)) {
+      const provider = entry.actor.provider || entry.source;
+      const reference = selected.references?.find(value => value.source === provider);
+      const url = entry.externalURL || entry.githubIssue || reference?.url;
+      if (url) {
+        const source = node('a', `via ${provider === 'github' ? 'GitHub' : 'Gitea'}`, 'source-link');
+        source.href = url; source.target = '_blank'; source.rel = 'noopener noreferrer'; meta.append(source);
+      }
+    }
     if (entry.kind === 'prompt') {
       const queued = selected.pending.includes(entry.id);
       const current = selected.active?.currentPrompts || (selected.active?.state !== 'Idle' ? selected.active?.prompts : []) || [];
@@ -404,7 +430,8 @@ function renderDetail() {
         };
         meta.append(remove);
       }
-    } else if (entry.actor.type === 'controller' || entry.kind === 'event') meta.append(node('span', entry.kind || entry.source, 'prompt-status'));
+    } else if (entry.actor.type === 'controller' || entry.kind === 'event' && !['github', 'gitea'].includes(entry.actor.provider || entry.source))
+      meta.append(node('span', entry.kind || entry.source, 'prompt-status'));
     if (entry.kind === 'email') meta.append(node('span', 'Email · ' + entry.deliveryState, 'prompt-status'));
     n.append(meta, markdown(entry.content));
     if (entry.tools?.length) {
@@ -417,6 +444,26 @@ function renderDetail() {
         row.append(node('div',`${tool.toolState==='running'?'◌':tool.toolState==='failed'?'✕':'✓'} ${tool.toolName || 'Tool'}${tool.toolDetail ? ' · ' + tool.toolDetail : ''} · ${tool.toolState || 'requested'}${Number.isInteger(tool.exitCode)?` · exit ${tool.exitCode}`:''}`,'tool-heading'));
         row.title = new Date(tool.createdAt).toLocaleString();
         if (tool.command) row.append(node('pre',tool.command));
+        if (cfg.mcpPayloadsEnabled && !readOnly && tool.mcpPayloadAvailable && tool.toolName?.startsWith('mcp__')) {
+          const payload = node('details', '', 'mcp-payload');
+          payload.dataset.expansionKey = `${selected.id}:${tool.id}:payload`;
+          const taskId = selected.id;
+          payload.append(node('summary', 'Request and response JSON'));
+          payload.addEventListener('toggle', async () => {
+            if (!payload.open || payload.dataset.loaded) return;
+            payload.dataset.loaded = 'true';
+            const content = node('div', 'Loading…', 'mcp-payload-content'); payload.append(content);
+            try {
+              const data = await api(`/tasks/${encodeURIComponent(taskId)}/tools/${encodeURIComponent(tool.id)}/payload`);
+              content.replaceChildren();
+              for (const [label, value] of [['Request', data.request], ['Response', data.response]]) {
+                content.append(node('h4', label), value === undefined ? node('p', 'Pending or unavailable') : formattedJson(value));
+              }
+            } catch (error) { content.textContent = error.message; payload.dataset.loaded = ''; }
+          });
+          payload.open = expandedDetails.get(payload.dataset.expansionKey) || false;
+          row.append(payload);
+        }
         details.append(row);
       }
       n.append(details);
@@ -427,7 +474,8 @@ function renderDetail() {
       n.append(stats);
     }
     if (entry.causedBy?.length) {
-      const details = node('details', '', 'prompt-context'); details.append(node('summary', 'Source event'));
+      const details = node('details', '', 'prompt-context');
+      details.append(node('summary', entry.causedBy.length > 1 ? `${entry.causedBy.length} source events` : 'Source event'));
       details.dataset.expansionKey = `${selected.id}:${entry.id}:source`;
       details.open = expandedDetails.get(details.dataset.expansionKey) || false;
       for (const cause of entry.causedBy) {
@@ -634,6 +682,14 @@ $('#followup').onsubmit = async event => {
   finally { sending = false; renderDetail(); }
 };
 let knownDevices = [];
+function deviceDisplayName(device) {
+  return device.hostname && device.hostname !== 'unknown' ? `Device ${device.hostname}` : device.label || 'Device unknown';
+}
+function deviceTooltip(device, included) {
+  const state = !device.connected ? (included ? 'Offline · included in task' : 'Offline') : included ? 'Online · included in task' : 'Online · available';
+  const info = Object.entries(device.info || {}).map(([key, value]) => `${key}: ${value}`);
+  return [deviceDisplayName(device), state, ...info, device.connected ? (included ? 'Click to remove from task' : 'Click to include in task') : 'Connect device to use it'].join('\n');
+}
 async function refreshDevices() {
   if (!user || user.expired) return;
   const data = await api('/devices');
@@ -642,15 +698,17 @@ async function refreshDevices() {
 }
 function renderDeviceNavbar() {
   const nav = $('#devices-navbar'); nav.replaceChildren();
-  for (const device of knownDevices.filter(d => d.connected)) {
+  for (const device of knownDevices) {
     const included = selected?.devices?.includes(device.id);
-    const btn = node('button', '', 'device-badge' + (included ? ' device-included' : ''));
+    const state = !device.connected ? 'offline' : included ? 'included' : 'online';
+    const btn = node('button', '', 'device-badge device-' + state);
     btn.type = 'button';
-    btn.title = (device.hostname || device.label || device.id.slice(0, 8)) + (included ? ' · included in task (click to remove)' : ' · click to include in task');
+    btn.title = deviceTooltip(device, included);
     btn.setAttribute('aria-pressed', String(Boolean(included)));
-    const dot = node('i', '', 'state-dot ' + (included ? 'green' : 'gray')); dot.setAttribute('aria-hidden', 'true');
-    btn.append(dot, node('span', device.hostname || device.label || device.id.slice(0, 8)));
-    btn.onclick = () => toggleDevice(device.id, !included);
+    btn.setAttribute('aria-disabled', String(!device.connected || !selected || readOnly));
+    const dot = node('i', '', 'state-dot ' + (state === 'included' ? 'green' : state === 'online' ? 'amber' : 'gray')); dot.setAttribute('aria-hidden', 'true');
+    btn.append(dot, node('span', deviceDisplayName(device)), node('small', state === 'included' ? 'Included' : state === 'online' ? 'Online' : included ? 'Offline · included' : 'Offline'));
+    if (device.connected && selected && !readOnly) btn.onclick = () => toggleDevice(device.id, !included);
     nav.append(btn);
   }
 }
@@ -659,12 +717,33 @@ async function toggleDevice(deviceId, include) {
   try { selected = await api(`/tasks/${selected.id}/devices/${encodeURIComponent(deviceId)}`, 'PATCH', {included: include}); renderDeviceNavbar(); renderDetail(); }
   catch (error) { failure(error); }
 }
+function deviceSystemdSetup(device) {
+  return `mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/device-agent.service" <<'EOF'
+[Unit]
+Description=Codemowers device agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/env device-agent --endpoint ${device.url}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+sudo loginctl enable-linger "$USER"
+systemctl --user daemon-reload
+systemctl --user enable --now device-agent.service`;
+}
 function renderDeviceList() {
   const list = $('#device-list'); list.replaceChildren();
   if (!knownDevices.length) { list.append(node('p', 'No devices registered yet.', 'empty-resource')); return; }
   for (const device of knownDevices) {
     const row = node('div', '', 'resource-row');
-    const label = node('strong', device.hostname || device.label || device.id.slice(0, 8));
+    const label = node('strong', deviceDisplayName(device));
+    label.title = deviceTooltip(device, selected?.devices?.includes(device.id));
     const status = node('small', device.connected ? `Connected since ${new Date(device.connectedAt).toLocaleString()}` : 'Disconnected');
     const url = node('code', device.url); url.style.display = 'block'; url.style.fontSize = '11px'; url.style.overflowWrap = 'anywhere';
     const copyBtn = node('button', 'Copy URL', 'copy-url-btn'); copyBtn.type = 'button';
@@ -672,7 +751,15 @@ function renderDeviceList() {
     const revokeBtn = node('button', 'Revoke', 'revoke-device-btn'); revokeBtn.type = 'button';
     revokeBtn.onclick = async () => { revokeBtn.disabled = true; try { await api('/devices/' + encodeURIComponent(device.id), 'DELETE', {}); await refreshDevices(); renderDeviceList(); } catch (error) { failure(error); revokeBtn.disabled = false; } };
     row.append(label, status, url, copyBtn, revokeBtn);
-    list.append(row);
+    const setup = node('details', '', 'device-setup');
+    const commands = deviceSystemdSetup(device);
+    const setupCopy = node('button', 'Copy setup', 'copy-url-btn'); setupCopy.type = 'button';
+    setupCopy.onclick = async () => { try { await navigator.clipboard.writeText(commands); setupCopy.textContent = 'Copied'; setTimeout(() => { setupCopy.textContent = 'Copy setup'; }, 2000); } catch (error) { failure(error); } };
+    setup.append(node('summary', 'Systemd service setup'),
+      node('p', 'Run as the Linux user whose files the device agent may access. Install device-agent in that user’s PATH first.'),
+      node('pre', commands), setupCopy);
+    const entry = node('div', '', 'device-entry'); entry.append(row, setup);
+    list.append(entry);
   }
 }
 $('#manage-devices').onclick = async () => {
@@ -733,7 +820,12 @@ try {
   if (location.pathname === '/auth/callback') {
     user = await auth.signinRedirectCallback(); history.replaceState({}, '', user.state?.refine ? '/?refine=' + encodeURIComponent(user.state.refine) : user.state?.draft ? '/?draft=' + encodeURIComponent(user.state.draft) : user.state?.task ? '/?task=' + encodeURIComponent(user.state.task) : '/');
     restoredComposer = user.state?.composer;
-  } else user = await auth.getUser();
+  } else {
+    user = await auth.getUser();
+    if (user?.expired && user.refresh_token) {
+      try { await renewUser(); } catch {}
+    }
+  }
   if (user && !user.expired) {
     const actor = await api('/me'); currentActor = actor;
     $('#connectivity-navbar').hidden = false;

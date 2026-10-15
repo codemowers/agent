@@ -1,3 +1,4 @@
+import {forgeConfiguration} from './forge.js';
 import {mkdir, readFile, writeFile, appendFile, glob} from 'node:fs/promises';
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
@@ -7,11 +8,13 @@ import {command} from './kube.js';
 import {turnMetrics} from './metrics.js';
 import {workerMcpConfig, readMcpConfig} from './mcp-auth.js';
 import {toolEvents} from './tool-events.js';
+import {mcpPayloadEnabled} from './mcp-payload.js';
 import {watchTurnControl} from './turn-control.js';
 import {initializeRepository, prepareWorkspace} from './workspace.js';
 import {agentIdentity} from './identity.js';
 import {signalChild} from './child-signals.js';
 import {taskCommunication} from './agent-mcp.js';
+import {agentFetch} from './http.js';
 
 export async function worker(onException = async () => {}) {
   const root = process.env.AGENT_STATE_DIR || '/workspace';
@@ -29,6 +32,18 @@ export async function worker(onException = async () => {}) {
   await mkdir(root + '/home', {recursive: true});
   await mkdir(root + '/executions', {recursive: true});
   let envelope = JSON.parse(await readFile(process.env.AGENT_ENVELOPE_FILE, 'utf8'));
+  const backend = process.env.AGENT_BACKEND || 'claude';
+  if (!['claude', 'codex'].includes(backend)) throw new Error('Unknown backend');
+  const credential = backend === 'codex' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
+  if (!process.env[credential]?.trim()) {
+    const result = {exitCode: 1, completedAt: new Date().toISOString(), sessionId: envelope.session?.id || envelope.sessionId,
+      summary: `${backend === 'codex' ? 'OpenAI' : 'Anthropic'} API unavailable: ${credential} is not configured for this execution.`};
+    await writeFile(`${root}/executions/${executionId}.result.json`, JSON.stringify(result), {mode: 0o600});
+    console.log(JSON.stringify({type: 'agent_result', executionId, result}));
+    await emit({kind: 'result', result});
+    process.exitCode = result.exitCode;
+    return;
+  }
   let child, stopped = false;
   process.on('SIGTERM', () => {
     stopped = true;
@@ -37,26 +52,32 @@ export async function worker(onException = async () => {}) {
     setTimeout(() => signalChild(target, 'SIGKILL'), 30000).unref();
   });
   const cwd = root + '/repo';
-  await command('gh', ['auth', 'setup-git']);
+  const forge = forgeConfiguration();
+  if (process.env.GH_TOKEN && forge.provider === 'github') {
+    if (forge.serverURL !== 'https://github.com') process.env.GH_ENTERPRISE_TOKEN = process.env.GH_TOKEN;
+    await command('gh', ['auth', 'setup-git']);
+  } else if (process.env.GH_TOKEN) {
+    process.env.GIT_CONFIG_COUNT = '1';
+    process.env.GIT_CONFIG_KEY_0 = 'http.' + forge.serverURL + '/.extraHeader';
+    process.env.GIT_CONFIG_VALUE_0 = 'Authorization: Basic ' + Buffer.from(agentIdentity().username + ':' + process.env.GH_TOKEN).toString('base64');
+  }
   await initializeRepository(cwd, envelope.repository);
   const mcpSource = await readMcpConfig();
   const mcp = await workerMcpConfig(mcpSource);
   mcp.mcpServers.agent = {type: 'http', url: endpoint + '/mcp', headers: {Authorization: `Bearer ${token}`}};
-  const backend = process.env.AGENT_BACKEND || 'claude';
-  const secrets = Object.entries(process.env).filter(([name])=>/TOKEN|PASSWORD|SECRET|API_KEY/.test(name)).map(([,value])=>value);
-  if (!['claude', 'codex'].includes(backend)) throw new Error('Unknown backend');
+  const secrets = Object.entries(process.env).filter(([name])=>/TOKEN|PASSWORD|SECRET|API_KEY|GIT_CONFIG_VALUE/.test(name)).map(([,value])=>value);
   let turn = 0;
   async function runTurn(envelope) {
   let control, interruptKillTimer;
   try {
   const instructions = await readFile(process.env.AGENT_INSTRUCTIONS_FILE, 'utf8');
-  let infrastructure, controls = {}, draft, identity = agentIdentity(), email, repair, communication = taskCommunication(envelope);
+  let infrastructure, controls = {}, draft, identity = agentIdentity(), email, repair, devices = [], communication = taskCommunication(envelope);
   try {
-    const response = await fetch(endpoint + '/context', {headers: {Authorization: `Bearer ${token}`},
+    const response = await agentFetch(endpoint + '/context', {headers: {Authorization: `Bearer ${token}`},
       signal: AbortSignal.timeout(30000), redirect: 'error'});
     if (!response.ok) throw new Error('Build discovery unavailable');
     const context = await response.json();
-    ({infrastructure, controls, draft, email, repair} = context);
+    ({infrastructure, controls, draft, email, repair, devices = []} = context);
     identity = context.identity || identity;
     communication = context.communication || communication;
   } catch { infrastructure = {status: 'unavailable', detail: 'Controller build discovery unavailable; do not guess infrastructure configuration.'}; }
@@ -76,8 +97,11 @@ export async function worker(onException = async () => {}) {
     }
   }
   const input = 'Current agent identity (controller-provided; repository templates are not live configuration):\n'
-    + JSON.stringify(identity) + '\nTask communication priority:\n' + JSON.stringify(communication)
+    + JSON.stringify(identity) + '\nGit provider (use gh for GitHub/GHE; the configured API for Gitea when GH_TOKEN is set):\n'
+    + JSON.stringify({...forge, authenticated: Boolean(process.env.GH_TOKEN)}) + '\nTask communication priority:\n' + JSON.stringify(communication)
     + '\nController mailbox status:\n' + JSON.stringify(email || {status: 'unavailable', verifyWith: 'agent.get_email_status'}) + '\n\n'
+    + 'Devices included in this Task (use these IDs with agent device tools; refresh with agent.get_task_context):\n'
+    + JSON.stringify(devices) + '\n\n'
     + (repair ? 'Latest controller-deduplicated repair context:\n' + JSON.stringify(repair) + '\n\n' : '')
     + `Task objective:\n${envelope.objective}\n\n` + (!resume && envelope.previousSummary
     ? `Previous execution summary:\n${envelope.previousSummary}\nInspect the existing workspace and progress.md before continuing.\n\n` : '')
@@ -112,8 +136,11 @@ export async function worker(onException = async () => {}) {
     interrupted = true;
     if (child?.pid) {
       const target = child;
-      signalChild(target, 'SIGINT');
-      interruptKillTimer = setTimeout(() => signalChild(target, 'SIGKILL'), 10000);
+      if (!signalChild(target, 'SIGINT')) console.warn(JSON.stringify({event: 'turn_control_signal_failed', signal: 'SIGINT'}));
+      interruptKillTimer = setTimeout(() => {
+        if (!signalChild(target, 'SIGKILL') && target.exitCode === null && target.signalCode === null)
+          console.warn(JSON.stringify({event: 'turn_control_signal_failed', signal: 'SIGKILL'}));
+      }, 10000);
       interruptKillTimer.unref();
     }
   }
@@ -149,13 +176,18 @@ export async function worker(onException = async () => {}) {
     void appendFile(stderrFile, data);
   });
   let codexSummary = '', codexUsage, codexFailed = false, codexError = '';
+  const mcpToolIds = new Set();
   for await (const line of createInterface({input: child.stdout})) {
     await appendFile(logFile, line + '\n');
     let event;
     try { event = JSON.parse(line); } catch (e) { if (e instanceof SyntaxError) continue; throw e; }
-    for (const entry of toolEvents(backend,event,secrets)) if (entry.toolId) {
+    if (mcpPayloadEnabled() && backend === 'claude' && event.type === 'assistant') {
+      for (const block of event.message?.content || []) if (block.type === 'tool_use' && block.name?.startsWith('mcp__')) mcpToolIds.add(block.id);
+    }
+    for (const entry of toolEvents(backend,event,secrets,mcpPayloadEnabled(),mcpToolIds)) if (entry.toolId) {
       await emit(entry);
     }
+    if (event.type === 'user') for (const block of event.message?.content || []) if (block.type === 'tool_result') mcpToolIds.delete(block.tool_use_id);
     if (backend === 'codex') {
       if (event.type === 'thread.started' && event.thread_id) {
         reportedSession = event.thread_id;
@@ -219,7 +251,7 @@ export async function worker(onException = async () => {}) {
     // Refresh after the CLI exits so a fast final response cannot miss the update.
     if (result && !stopped) {
       try {
-        const response = await fetch(endpoint + '/control', {headers: {Authorization: `Bearer ${token}`},
+        const response = await agentFetch(endpoint + '/control', {headers: {Authorization: `Bearer ${token}`},
           signal: AbortSignal.timeout(3000), redirect: 'error'});
         if (response.ok) {
           const control = await response.json();
@@ -235,7 +267,7 @@ export async function worker(onException = async () => {}) {
       await delay(2000);
       if (stopped || Date.now() >= deadline) break;
       try {
-        const response = await fetch(endpoint + '/next', {method: 'POST',
+        const response = await agentFetch(endpoint + '/next', {method: 'POST',
           headers: {authorization: `Bearer ${token}`, 'content-type': 'application/json'},
           body: JSON.stringify({id: requestId, afterSequence}), signal: AbortSignal.timeout(10000)});
         if (!response.ok) continue;

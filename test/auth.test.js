@@ -4,12 +4,15 @@ import {createServer} from 'node:http';
 import {generateKeyPair, exportJWK, SignJWT} from 'jose';
 import {authentication, authorized} from '../src/auth.js';
 import {digest} from '../src/domain.js';
+import {agentUserAgent} from '../src/http.js';
 
 test('API validates access-token signature, type, issuer, audience, expiry and sandbox permission', async t => {
   const {privateKey, publicKey} = await generateKeyPair('RS256');
   const jwk = {...await exportJWK(publicKey), kid: 'test-key', use: 'sig', alg: 'RS256'};
   let issuer;
+  const requestAgents = [];
   const server = createServer((req, res) => {
+    requestAgents.push([req.url, req.headers['user-agent']]);
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify(req.url === '/jwks' ? {keys: [jwk]} : {issuer, jwks_uri: issuer + 'jwks'}));
   });
@@ -27,6 +30,7 @@ test('API validates access-token signature, type, issuer, audience, expiry and s
   const request = value => ({headers: {authorization: 'Bearer ' + value}});
   const actor = await authenticate(request(await token()), 'agent:write');
   assert.equal(actor.issuer, issuer); assert.equal(actor.subject, 'user-123');
+  assert.deepEqual(requestAgents, [['/.well-known/openid-configuration', agentUserAgent], ['/jwks', agentUserAgent]]);
   for (const options of [{type: 'JWT'}, {issuer: 'https://other.example/'},
     {audience: 'https://other.example/api'}, {expiry: Math.floor(Date.now() / 1000) - 60},
     {key: (await generateKeyPair('RS256')).privateKey}]) {

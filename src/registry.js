@@ -1,11 +1,12 @@
 import {createHash, randomUUID} from 'node:crypto';
+import {agentFetch} from './http.js';
 
 const digest = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const manifestType = 'application/vnd.oci.image.manifest.v1+json';
 
 // A real push/read-back check against only the provisioned HTTPS registry.
 // Each check owns a unique zero-layer image; cleanup never touches application tags.
-export async function probeRegistry(registry, repository, auth, request = fetch) {
+export async function probeRegistry(registry, repository, auth, request = agentFetch) {
   const origin = new URL(`https://${registry}/`);
   const authorization = auth.identitytoken ? `Bearer ${auth.identitytoken}`
     : `Basic ${auth.auth || Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`;

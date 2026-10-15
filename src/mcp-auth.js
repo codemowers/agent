@@ -2,6 +2,7 @@ import {readFile} from 'node:fs/promises';
 import http from 'node:http';
 import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
+import {agentFetch} from './http.js';
 
 export const driftmowerTokenProjection = {
   audience: 'http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp',
@@ -15,7 +16,7 @@ export async function readMcpConfig(path = process.env.AGENT_MCP_CONFIG_FILE || 
   return JSON.parse(content);
 }
 
-export async function mcpRequest(server, options = {}, request = fetch) {
+export async function mcpRequest(server, options = {}, request = agentFetch) {
   const headers = {...server.headers, ...options.headers};
   if (server.tokenFile) {
     for (const key of Object.keys(headers)) if (key.toLowerCase() === 'authorization') delete headers[key];

@@ -19,7 +19,7 @@ export function sharedTask(task) {
   if (task.lastExecution) result.lastExecution = pick(task.lastExecution, ['podName']);
   if (task.blocked) result.blocked = pick(task.blocked, ['summary']);
   result.events = task.events.map(event => ({...pick(event, ['id', 'kind', 'action', 'content', 'createdAt', 'updatedAt',
-    'executionId', 'podName', 'causedBy', 'queueDisposition', 'toolName', 'toolDetail', 'toolState', 'command', 'exitCode']), actor: actor(event.actor),
+    'executionId', 'podName', 'causedBy', 'automatic', 'queueDisposition', 'toolName', 'toolDetail', 'toolState', 'command', 'exitCode']), actor: actor(event.actor),
     ...(event.metrics ? {metrics: pick(event.metrics, ['durationMs', 'apiDurationMs', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'])} : {})}));
   return result;
 }

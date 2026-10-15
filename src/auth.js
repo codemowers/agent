@@ -1,6 +1,7 @@
-import {createRemoteJWKSet, jwtVerify} from 'jose';
+import {createRemoteJWKSet, customFetch, jwtVerify} from 'jose';
 import {githubUsername} from './profiles.js';
 import {Problem, digest} from './domain.js';
+import {agentFetch} from './http.js';
 
 export function authorized(payload, config, scope) {
   if (!(payload.scope || '').split(' ').includes(scope)) throw new Problem(403, 'Missing API scope');
@@ -17,7 +18,7 @@ export function authorized(payload, config, scope) {
     ...(typeof payload.email === 'string' && payload.email_verified === true
       ? {avatarHash: digest(payload.email.trim().toLowerCase())} : {})};
 }
-export async function authentication(config, {fetchFn = fetch, retryDelayMs = 2000} = {}) {
+export async function authentication(config, {fetchFn = agentFetch, retryDelayMs = 2000} = {}) {
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await new Promise(resolve => setTimeout(resolve, attempt * retryDelayMs));
@@ -26,7 +27,7 @@ export async function authentication(config, {fetchFn = fetch, retryDelayMs = 20
       if (!response.ok) throw new Error('OIDC discovery failed');
       const discovery = await response.json();
       if (discovery.issuer !== config.issuer) throw new Error('OIDC issuer mismatch');
-      const jwks = createRemoteJWKSet(new URL(discovery.jwks_uri));
+      const jwks = createRemoteJWKSet(new URL(discovery.jwks_uri), {[customFetch]: agentFetch});
       return async (request, scope) => {
         const header = request.headers.authorization;
         if (!header?.startsWith('Bearer ')) throw new Problem(401, 'Sign in to continue');

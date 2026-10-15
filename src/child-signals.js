@@ -6,8 +6,7 @@ export function signalChild(child, signal, {kill = process.kill.bind(process),
   if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return false;
   try { kill(-child.pid, signal); return true; }
   catch (error) {
-    if (error.code === 'ESRCH') return false;
-    if (!['EACCES', 'EPERM'].includes(error.code)) throw error;
+    if (!['ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
   }
   try { kill(child.pid, signal); return true; }
   catch (error) {

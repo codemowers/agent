@@ -1,6 +1,7 @@
 node_modules/
 public/
 skaffold.env
+skaffold.*.env
 /mcp.json
 /identity.env
 /mail.env

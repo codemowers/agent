@@ -1,3 +1,4 @@
+import {isForgeReference, threadKey} from './forge.js';
 import {Problem, digest} from './domain.js';
 
 // One task and its conversation are changed atomically, together with the
@@ -66,8 +67,8 @@ export class Store {
   }
   async remove(id) {
     const task = await this.get(id);
-    const mappings = (task.references || []).filter(r => r.source === 'github' && r.kind === 'issue')
-      .map(r => this.prefix + 'external:' + digest(`github:${r.repository}:${r.id}`));
+    const mappings = (task.references || []).filter(r => isForgeReference(r) && ['issue', 'pr'].includes(r.kind))
+      .map(r => this.prefix + 'external:' + digest(threadKey(r)));
     await this.redis.eval(`local t=redis.call('GET',KEYS[1]); if not t then return 0 end;
       local v=cjson.decode(t); if (v.active and v.active~=cjson.null) or not v.deleteRequested then return 0 end;
       redis.call('DEL',KEYS[1]);redis.call('SREM',KEYS[2],ARGV[1]);

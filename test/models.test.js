@@ -36,6 +36,8 @@ test('CLI/model changes require a stopped paused Task, reset native session, and
   const kube = new Kube({release: 'agent', namespace: 'tenant-a', githubSecret: 'github', openaiSecret: 'openai-api-token', image: 'runner'});
   const env = kube.pod(task).spec.containers[0].env;
   assert.equal(env.find(e => e.name === 'OPENAI_API_KEY').valueFrom.secretKeyRef.name, 'openai-api-token');
+  assert.equal(env.find(e => e.name === 'OPENAI_API_KEY').valueFrom.secretKeyRef.optional, true);
+  assert.equal(env.find(e => e.name === 'GH_TOKEN').valueFrom.secretKeyRef.optional, true);
   assert.ok(!env.some(e => e.name === 'ANTHROPIC_API_KEY'));
   assert.equal(env.find(e => e.name === 'AGENT_MODEL').value, 'cloud-codex');
   assert.equal(kube.pvc(task).metadata.name, 'agent-task-' + id);
@@ -51,10 +53,19 @@ test('Codex default does not inherit the Claude model or credential', () => {
   assert.ok(!env.some(e => e.name === 'ANTHROPIC_API_KEY'));
 });
 
+test('Claude credential reference is optional so the worker can report a missing API', () => {
+  const task = newTask('tenant-a', actor, 'Build software'); reserve(task);
+  const kube = new Kube({release: 'agent', anthropicSecret: 'anthropic-api-token', githubSecret: 'github'});
+  const env = kube.pod(task).spec.containers[0].env;
+  assert.deepEqual(env.find(e => e.name === 'ANTHROPIC_API_KEY').valueFrom.secretKeyRef,
+    {name: 'anthropic-api-token', key: 'token', optional: true});
+});
+
 test('new workers mount kubectl matching the live API version and retain other image tools', async () => {
   const task = newTask('tenant-a', actor, 'Build software'); reserve(task);
   const kube = new Kube({release: 'agent', namespace: 'tenant-a', githubSecret: 'github', image: 'runner',
-    toolImages: [{name: 'kubectl', image: 'outdated', binPath: 'bin'}, {name: 'utils', image: 'utilities', binPath: 'usr/bin'}]});
+    toolImages: [{name: 'kubectl', image: 'outdated', binPath: 'bin'}, {name: 'utils', image: 'utilities', binPath: 'usr/bin'},
+      {name: 'go', image: 'golang:1.27.2-bookworm', binPath: 'usr/local/go', mountPath: '/opt/tools/go'}]});
   let gitVersion = 'v1.36.3';
   kube.run = async args => {
     assert.deepEqual(args, ['version', '-o', 'json']);
@@ -66,8 +77,15 @@ test('new workers mount kubectl matching the live API version and retain other i
     assert.equal(pod.spec.volumes.find(volume => volume.name === 'tool-kubectl').image.reference,
       'registry.k8s.io/kubectl:' + version);
     assert.equal(pod.spec.volumes.find(volume => volume.name === 'tool-utils').image.reference, 'utilities');
+    assert.equal(pod.spec.volumes.find(volume => volume.name === 'tool-go').image.reference, 'golang:1.27.2-bookworm');
     assert.equal(container.volumeMounts.find(mount => mount.name === 'tool-kubectl').subPath, 'bin');
+    assert.deepEqual(container.volumeMounts.find(mount => mount.name === 'tool-go'),
+      {name: 'tool-go', mountPath: '/opt/tools/go', subPath: 'usr/local/go', readOnly: true});
     assert.match(container.env.find(env => env.name === 'PATH').value, /^\/opt\/tools\/kubectl\/bin:/);
+    assert.match(container.env.find(env => env.name === 'PATH').value, /:\/opt\/tools\/go\/bin:/);
+    assert.equal(container.env.find(env => env.name === 'GOROOT').value, '/opt/tools/go');
+    assert.equal(container.env.find(env => env.name === 'GOPATH').value, '/workspace/home/go');
+    assert.equal(container.env.find(env => env.name === 'GOTOOLCHAIN').value, 'local');
   }
   gitVersion = undefined;
   await assert.rejects(kube.workerPod(task), /valid server version/);

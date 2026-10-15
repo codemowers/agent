@@ -81,6 +81,31 @@ test('controller deduplicates faults across workers/restarts and different kinds
   assert.equal(restarted.id, a.id); assert.equal(tasks.size, 1); assert.equal(a.failureReport.occurrenceCount, 3);
 });
 
+test('different controller exceptions share one active repair task but get keyed follow-ups', async () => {
+  const {store, tasks} = fixture();
+  const imap = {component: 'controller', processId: 'controller-imap', kind: 'imap_connect', details: 'Error: Unexpected close'};
+  const fetchFailure = {component: 'controller', processId: 'controller-fetch', kind: 'uncaughtException', details: 'TypeError: fetch failed'};
+  const first = await createRepairTask(store, 'ns', imap);
+  const second = await createRepairTask(store, 'ns', fetchFailure);
+  assert.equal(first.id, second.id);
+  assert.equal(tasks.size, 1);
+  assert.equal(first.failureReport.fingerprints.length, 2);
+  assert.equal(first.failureReport.occurrences.length, 2);
+  assert.equal(first.pending.length, 2);
+  assert.match(first.events.at(-1).content, /new controller exception/);
+  await createRepairTask(store, 'ns', {...fetchFailure, processId: 'controller-fetch-restart'});
+  assert.equal(first.failureReport.occurrenceCount, 3);
+  assert.equal(first.pending.length, 2);
+  const worker = await createRepairTask(store, 'ns', {component: 'worker', processId: 'worker-unrelated',
+    kind: 'worker_turn', details: 'Worker-specific failure'});
+  assert.notEqual(worker.id, first.id);
+  assert.equal(tasks.size, 2);
+  first.phase = 'Completed'; first.desiredState = 'Paused';
+  const later = await createRepairTask(store, 'ns', {...imap, processId: 'controller-later'});
+  assert.notEqual(later.id, first.id);
+  assert.equal(tasks.size, 3);
+});
+
 test('repair worker faults attach to the root repair task without new tasks, prompts or state changes', async () => {
   const {store, tasks} = fixture();
   const root = await createRepairTask(store, 'ns', {component: 'controller', kind: 'imap_poll', processId: 'controller-1', details: 'IMAP failure'});
