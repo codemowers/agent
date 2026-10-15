@@ -1,6 +1,7 @@
 FROM golang:1.23-bookworm AS build
 WORKDIR /app
 COPY go.mod go.sum* ./
+ENV GOFLAGS=-mod=mod GONOSUMDB=*
 RUN go mod download
 COPY *.go ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
