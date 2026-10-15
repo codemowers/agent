@@ -219,7 +219,7 @@ spec:
   allowedCORSOrigins:
     - {{ printf "https://%s" .Values.host | quote }}
   allowedResources:
-    - {{ required "apiResource must be the public controller origin followed by /api" .Values.apiResource | quote }}
+    - {{ printf "https://%s/api" .Values.host | quote }}
   grantTypes:
     - authorization_code
     - refresh_token
