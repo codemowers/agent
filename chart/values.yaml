@@ -2,6 +2,11 @@ host: "controller"
 allowedGroups: []
 allowedUsers: []
 
+# bootstrapRbac: apply ServiceAccounts, Roles, ClusterRoles and bindings.
+# Requires cluster-admin or namespace-admin. Set false when deploying from
+# a worker pod that lacks RBAC write permissions; apply RBAC separately first.
+bootstrapRbac: true
+
 webhook:
   image: codemowers/agent-webhook:latest
   resources:
