@@ -18,6 +18,13 @@ import (
 	"github.com/codemowers/agent/operator/internal/controller"
 )
 
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 var scheme = runtime.NewScheme()
 
 func init() {
@@ -63,6 +70,19 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Task controller")
 		os.Exit(1)
+	}
+
+	if amqpURL := os.Getenv("AMQP_URL"); amqpURL != "" {
+		consumer := &controller.EventConsumer{
+			Client:   mgr.GetClient(),
+			AMQPURL:  amqpURL,
+			Queue:    envOrDefault("AMQP_QUEUE", "agent.webhook.events"),
+			Exchange: envOrDefault("AMQP_EXCHANGE", "agent.webhook.events"),
+		}
+		if err := mgr.Add(consumer); err != nil {
+			ctrl.Log.Error(err, "unable to add event consumer")
+			os.Exit(1)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

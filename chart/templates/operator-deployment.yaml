@@ -81,5 +81,13 @@ spec:
             httpGet:
               path: /healthz
               port: healthz
+          env:
+            {{- if .Values.rabbitmq.enabled }}
+            - name: AMQP_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-rabbitmq-default-user
+                  key: uri
+            {{- end }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
