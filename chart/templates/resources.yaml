@@ -17,6 +17,7 @@
   (dict "env" "ALERTMANAGER_TOKEN" "suffix" "alertmanager-token" "key" "token")
   (dict "env" "GITHUB_WEBHOOK_SECRET" "suffix" "github-webhook-secret" "key" "secret")
 -}}
+{{- if .Values.bootstrapRbac }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -145,6 +146,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ .Release.Name }}-worker
     namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- range $credential := $controllerCredentials }}
 ---
 apiVersion: secretgenerator.mittwald.de/v1alpha1

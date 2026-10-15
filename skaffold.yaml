@@ -53,6 +53,10 @@ deploy:
 
 profiles:
   - name: cluster
+    patches:
+      - op: add
+        path: /manifests/helm/releases/0/setValues/bootstrapRbac
+        value: "false"
     build:
       platforms:
         - linux/amd64

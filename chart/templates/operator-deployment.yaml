@@ -1,3 +1,4 @@
+{{- if .Values.bootstrapRbac }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -40,6 +41,7 @@ subjects:
     name: {{ .Release.Name }}-operator
     namespace: {{ .Release.Namespace }}
 ---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
