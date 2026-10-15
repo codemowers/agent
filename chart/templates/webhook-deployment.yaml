@@ -36,7 +36,7 @@ spec:
             - name: AMQP_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-rabbitmq-default-user
+                  name: {{ .Release.Name }}-events-default-user
                   key: uri
           resources:
             {{- toYaml .Values.webhook.resources | nindent 12 }}
