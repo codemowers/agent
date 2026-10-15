@@ -1,0 +1,133 @@
+---
+# RabbitMQ cluster for the agent orchestration system.
+# Deploy into the dedicated messaging namespace (e.g. agent-messaging).
+# Replica count and storage class are set by cluster admission policies;
+# omit spec.replicas and persistence.storageClassName from this manifest.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: agent-events
+  namespace: agent-messaging
+spec:
+  # replicas: injected by rabbitmq-replicas admission policy
+  # persistence.storageClassName: injected by rabbitmq-storage-class admission policy
+  persistence:
+    storage: 10Gi
+  rabbitmq:
+    additionalConfig: |
+      # Longer consumer timeout for slow worker turns
+      consumer_timeout = 7200000
+      # Require publisher confirms for at-least-once delivery
+      confirm_publish = true
+---
+# Vhost for agent events
+apiVersion: rabbitmq.com/v1beta1
+kind: Vhost
+metadata:
+  name: agent-events-vhost
+  namespace: agent-messaging
+spec:
+  name: /agent-events
+  rabbitmqClusterReference:
+    name: agent-events
+---
+# Exchange: topic exchange so webhook handler can publish with routing keys
+apiVersion: rabbitmq.com/v1beta1
+kind: Exchange
+metadata:
+  name: agent-webhook-events
+  namespace: agent-messaging
+spec:
+  name: agent.webhook.events
+  type: topic
+  durable: true
+  vhost: /agent-events
+  rabbitmqClusterReference:
+    name: agent-events
+---
+# Queue: controller consumes from this; quorum queue for durability
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: agent-controller-queue
+  namespace: agent-messaging
+spec:
+  name: agent.controller.work
+  durable: true
+  type: quorum
+  vhost: /agent-events
+  rabbitmqClusterReference:
+    name: agent-events
+---
+# Binding: route all webhook events to the controller queue
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: agent-webhook-to-controller
+  namespace: agent-messaging
+spec:
+  source: agent.webhook.events
+  destination: agent.controller.work
+  destinationType: queue
+  routingKey: '#'
+  vhost: /agent-events
+  rabbitmqClusterReference:
+    name: agent-events
+---
+# User for the webhook handler (publish-only)
+apiVersion: rabbitmq.com/v1beta1
+kind: User
+metadata:
+  name: agent-webhook-publisher
+  namespace: agent-messaging
+spec:
+  rabbitmqClusterReference:
+    name: agent-events
+  importCredentialsSecret:
+    name: agent-ctrl-rabbitmq-webhook-user
+---
+# User for the controller (consume + publish for DLQ/nack)
+apiVersion: rabbitmq.com/v1beta1
+kind: User
+metadata:
+  name: agent-controller-consumer
+  namespace: agent-messaging
+spec:
+  rabbitmqClusterReference:
+    name: agent-events
+  importCredentialsSecret:
+    name: agent-ctrl-rabbitmq-controller-user
+---
+# Permission: webhook publisher — publish to exchange only
+apiVersion: rabbitmq.com/v1beta1
+kind: Permission
+metadata:
+  name: agent-webhook-publisher-perm
+  namespace: agent-messaging
+spec:
+  vhost: /agent-events
+  userReference:
+    name: agent-webhook-publisher
+  permissions:
+    write: 'agent\.webhook\.events'
+    read: ''
+    configure: ''
+  rabbitmqClusterReference:
+    name: agent-events
+---
+# Permission: controller consumer — read queue, publish (nack/dlq)
+apiVersion: rabbitmq.com/v1beta1
+kind: Permission
+metadata:
+  name: agent-controller-consumer-perm
+  namespace: agent-messaging
+spec:
+  vhost: /agent-events
+  userReference:
+    name: agent-controller-consumer
+  permissions:
+    write: '.*'
+    read: '.*'
+    configure: ''
+  rabbitmqClusterReference:
+    name: agent-events

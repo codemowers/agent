@@ -1,0 +1,169 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agents.agents.codemowers.cloud
+  annotations:
+    codemowers.cloud/description: |
+      Agent CR defines a privilege domain: which credentials, MCP endpoints and
+      git providers are accessible to workers in this namespace. One Agent per
+      security domain; multiple Agents per namespace is allowed when domains align.
+spec:
+  group: agents.codemowers.cloud
+  scope: Namespaced
+  names:
+    kind: Agent
+    listKind: AgentList
+    plural: agents
+    singular: agent
+    shortNames:
+      - ag
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Backend
+          type: string
+          jsonPath: .spec.model.backend
+        - name: Image
+          type: string
+          jsonPath: .spec.workerImage
+        - name: Tasks
+          type: integer
+          jsonPath: .status.taskCount
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [workerImage, model]
+              properties:
+                workerImage:
+                  type: string
+                  description: OCI image for worker pods.
+
+                model:
+                  type: object
+                  required: [backend, credentialSecretRef]
+                  properties:
+                    backend:
+                      type: string
+                      enum: [claude, codex]
+                    credentialSecretRef:
+                      type: string
+                      description: |
+                        Secret name (agent-cred-* prefix) containing the API key.
+                        Must be in the same namespace as this Agent CR.
+
+                gitProviders:
+                  type: array
+                  description: |
+                    Git providers accessible to workers. Multiple GitHub/Gitea instances
+                    (including GitHub Enterprise) are supported by listing each separately.
+                  items:
+                    type: object
+                    required: [type, serverURL, credentialSecretRef]
+                    properties:
+                      type:
+                        type: string
+                        enum: [github, gitea]
+                      serverURL:
+                        type: string
+                        format: uri
+                        description: e.g. https://github.com or https://git.mycompany.com
+                      credentialSecretRef:
+                        type: string
+                        description: Secret name (agent-cred-* prefix) with a `token` key.
+
+                slackWorkspaces:
+                  type: array
+                  description: Slack workspaces this agent can read and write.
+                  items:
+                    type: object
+                    required: [workspaceId, botTokenSecretRef, signingSecretRef]
+                    properties:
+                      workspaceId:
+                        type: string
+                        description: Slack workspace/team ID (e.g. T12345ABC).
+                      botTokenSecretRef:
+                        type: string
+                        description: |
+                          Secret name (agent-ctrl-* prefix) with bot OAuth token.
+                          Controller-only; not mounted in worker pods.
+                      signingSecretRef:
+                        type: string
+                        description: |
+                          Secret name (agent-hook-* prefix) for Slack request signing.
+                          Used by the webhook handler to verify Slack payloads.
+
+                webhookSecretRef:
+                  type: string
+                  description: |
+                    Secret name (agent-hook-* prefix) for GitHub/Gitea webhook HMAC
+                    verification. Used by agent-webhook; not mounted in workers.
+
+                credentialRefs:
+                  type: array
+                  description: |
+                    Exhaustive list of agent-cred-* secrets that worker pods may mount.
+                    Admission policy enforces this allowlist; any secret not listed here
+                    is blocked for pods created by the agent-worker service account.
+                  items:
+                    type: string
+
+                mcpEndpoints:
+                  type: array
+                  description: MCP servers available to workers.
+                  items:
+                    type: object
+                    required: [url]
+                    properties:
+                      url:
+                        type: string
+                        format: uri
+                      tokenFile:
+                        type: string
+                        description: Path to a projected ServiceAccount token for this endpoint.
+                      siteURL:
+                        type: string
+                        format: uri
+                        description: Browser link shown in UI connectivity badges.
+
+                workerServiceAccountName:
+                  type: string
+                  default: agent-worker
+                  description: |
+                    ServiceAccount used by worker pods. Admission policies are written
+                    against this SA name. Defaults to agent-worker.
+
+            status:
+              type: object
+              properties:
+                taskCount:
+                  type: integer
+                  description: Number of live Task CRs owned by this Agent.
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ['True', 'False', Unknown]
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time

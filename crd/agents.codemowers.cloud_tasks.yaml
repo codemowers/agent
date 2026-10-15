@@ -1,0 +1,201 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tasks.agents.codemowers.cloud
+  annotations:
+    codemowers.cloud/description: |
+      Task CR tracks one unit of work: objective, worker lifecycle, external references
+      and completion policy. Owned by an Agent CR via ownerReferences — deleting the
+      Agent cascades to all its Tasks, and deleting a Task cascades to its worker Pod
+      and workspace PVC.
+spec:
+  group: agents.codemowers.cloud
+  scope: Namespaced
+  names:
+    kind: Task
+    listKind: TaskList
+    plural: tasks
+    singular: task
+    shortNames:
+      - task
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Reason
+          type: string
+          jsonPath: .status.reason
+        - name: Worker
+          type: string
+          jsonPath: .status.workerPodName
+        - name: Epoch
+          type: integer
+          jsonPath: .status.sessionEpoch
+        - name: Suspended
+          type: boolean
+          jsonPath: .spec.suspend
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [objective]
+              properties:
+                objective:
+                  type: string
+                  description: Human-readable goal for the worker.
+
+                suspend:
+                  type: boolean
+                  default: false
+                  description: |
+                    When true the controller stops any running worker and does not
+                    start a new one. Analogous to CronJob suspend; resuming sets this
+                    back to false.
+
+                externalReferences:
+                  type: array
+                  description: |
+                    External anchors for this task (GitHub issues, Slack threads,
+                    Alertmanager fingerprints, etc.). The controller routes incoming
+                    webhook events to the matching Task by these references.
+                  items:
+                    type: object
+                    required: [source, kind, id]
+                    properties:
+                      source:
+                        type: string
+                        enum: [github, gitea, slack, alertmanager]
+                      serverURL:
+                        type: string
+                        format: uri
+                        description: Required for github and gitea sources.
+                      repositoryOwner:
+                        type: string
+                      repositoryName:
+                        type: string
+                      workspaceId:
+                        type: string
+                        description: Slack workspace/team ID.
+                      channelId:
+                        type: string
+                        description: Slack channel ID.
+                      kind:
+                        type: string
+                        enum: [issue, pull_request, thread, alert]
+                      id:
+                        type: string
+                        description: |
+                          Issue number, PR number, Slack thread_ts, or Alertmanager
+                          fingerprint. Stored as string to avoid int overflow.
+
+                completionPolicy:
+                  type: object
+                  description: |
+                    When and how the controller considers this Task done. Omit to
+                    rely solely on worker/user signals.
+                  properties:
+                    milestone:
+                      type: string
+                      enum: [PullRequestCreated, VerifiedChecks, Approved, Merged]
+                    requiredChecks:
+                      type: array
+                      items:
+                        type: string
+                      description: CI check names that must pass for VerifiedChecks milestone.
+
+                model:
+                  type: object
+                  description: |
+                    Per-task model override. If omitted, inherits from the owning Agent CR.
+                  properties:
+                    backend:
+                      type: string
+                      enum: [claude, codex]
+                    credentialSecretRef:
+                      type: string
+
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Running, Waiting, Paused, Completed, Failed]
+                  description: |
+                    Pending   — no worker pod yet (first start or after suspend=false).
+                    Running   — worker pod is active and processing a prompt.
+                    Waiting   — worker completed a turn; idle, awaiting next event.
+                    Paused    — suspend=true; worker stopped, PVC retained.
+                    Completed — completion policy satisfied or user accepted.
+                    Failed    — terminal failure; manual intervention needed.
+
+                reason:
+                  type: string
+                  description: Machine-readable reason for the current phase.
+
+                workerPodName:
+                  type: string
+                  description: Name of the current (or last) worker pod.
+
+                workerPodUID:
+                  type: string
+                  description: UID of the current worker pod for fencing.
+
+                workspacePVCName:
+                  type: string
+                  description: Name of the persistent workspace PVC owned by this Task.
+
+                sessionEpoch:
+                  type: integer
+                  description: |
+                    Incremented on incompatible state (model/CLI change, corrupt session).
+                    Used to distinguish fresh sessions from resumed ones.
+
+                progress:
+                  type: object
+                  properties:
+                    summary:
+                      type: string
+                    updatedAt:
+                      type: string
+                      format: date-time
+
+                outputs:
+                  type: object
+                  description: Named outputs produced by the worker (PR URL, artifact refs, etc.)
+                  additionalProperties:
+                    type: string
+
+                queueMessageId:
+                  type: string
+                  description: RabbitMQ message ID of the pending prompt, for deduplication.
+
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ['True', 'False', Unknown]
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
