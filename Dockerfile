@@ -54,29 +54,3 @@ COPY --from=runtime /app /app
 EXPOSE 8080
 CMD ["node", "/app/src/main.js"]
 
-# ── Go build base ────────────────────────────────────────────────────────────
-FROM golang:1.23-bookworm AS go-builder
-WORKDIR /build
-
-# ── agent-webhook ─────────────────────────────────────────────────────────────
-FROM go-builder AS webhook-build
-COPY webhook/go.mod webhook/go.sum* ./
-RUN go mod download
-COPY webhook/ ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /webhook .
-
-FROM gcr.io/distroless/static:nonroot AS webhook
-COPY --from=webhook-build /webhook /webhook
-EXPOSE 8080
-ENTRYPOINT ["/webhook"]
-
-# ── agent-operator ────────────────────────────────────────────────────────────
-FROM go-builder AS operator-build
-COPY operator/go.mod operator/go.sum* ./
-RUN go mod download
-COPY operator/ ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /operator .
-
-FROM gcr.io/distroless/static:nonroot AS operator
-COPY --from=operator-build /operator /operator
-ENTRYPOINT ["/operator"]

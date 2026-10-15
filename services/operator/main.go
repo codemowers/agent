@@ -13,8 +13,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
-	"github.com/codemowers/agent/operator/internal/controller"
+	agentsv1alpha1 "github.com/codemowers/agent/services/operator/api/v1alpha1"
+	"github.com/codemowers/agent/services/operator/internal/controller"
 )
 
 var scheme = runtime.NewScheme()

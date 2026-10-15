@@ -2,3 +2,23 @@ host: "controller"
 apiResource: ""
 allowedGroups: []
 allowedUsers: []
+
+webhook:
+  image: codemowers/agent-webhook:latest
+  resources:
+    requests:
+      memory: 32Mi
+      cpu: 10m
+    limits:
+      memory: 64Mi
+      cpu: 200m
+
+operator:
+  image: codemowers/agent-operator:latest
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 10m
+    limits:
+      memory: 128Mi
+      cpu: 200m

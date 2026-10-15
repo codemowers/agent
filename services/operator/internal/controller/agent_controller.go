@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
+	agentsv1alpha1 "github.com/codemowers/agent/services/operator/api/v1alpha1"
 )
 
 // AgentReconciler reconciles Agent CRs: counts owned Tasks and updates status.
