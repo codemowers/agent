@@ -53,6 +53,31 @@ deploy:
         - --selector=skaffold.dev/keep!=true
 
 profiles:
+  - name: cluster
+    build:
+      platforms:
+        - linux/amd64
+      tagPolicy:
+        inputDigest: {}
+      cluster:
+        namespace: codemowers-agent-system
+        dockerConfig:
+          secretName: zot-registry-cluster-push-kaniko
+      artifacts:
+        - image: codemowers/agent
+          context: .
+          kaniko:
+            target: runner
+        - image: codemowers/agent-controller
+          context: .
+          kaniko:
+            target: controller
+        - image: codemowers/agent-webhook
+          context: webhook
+          kaniko: {}
+        - image: codemowers/agent-operator
+          context: operator
+          kaniko: {}
   - name: dev-test
     activation:
       - kubeContext: dev-test
