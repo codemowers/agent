@@ -21,11 +21,15 @@ build:
     - image: codemowers/agent-webhook
       context: .
       docker:
-        target: webhook
+        dockerfile: services/Dockerfile.golang
+        buildArgs:
+          SERVICE: webhook
     - image: codemowers/agent-operator
       context: .
       docker:
-        target: operator
+        dockerfile: services/Dockerfile.golang
+        buildArgs:
+          SERVICE: operator
 manifests:
   helm:
     flags:
@@ -44,6 +48,8 @@ manifests:
           env.AGENT_KUBE_CONTEXT: "{{.AGENT_KUBE_CONTEXT}}"
           image: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent_controller}}"
           workerImage: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent}}"
+          webhook.image: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent_webhook}}"
+          operator.image: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent_operator}}"
 
 deploy:
   kubectl:
