@@ -19,17 +19,11 @@ build:
       docker:
         target: controller
     - image: codemowers/agent-webhook
-      context: .
-      docker:
-        dockerfile: services/Dockerfile.golang
-        buildArgs:
-          SERVICE: webhook
+      context: webhook
+      docker: {}
     - image: codemowers/agent-operator
-      context: .
-      docker:
-        dockerfile: services/Dockerfile.golang
-        buildArgs:
-          SERVICE: operator
+      context: operator
+      docker: {}
 manifests:
   helm:
     flags:

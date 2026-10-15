@@ -1,0 +1,68 @@
+{{- if .Values.rabbitmq.enabled }}
+---
+# RabbitMQ cluster for event persistence and deduplication.
+# skaffold.dev/keep=true is added automatically by the cluster admission policy
+# so skaffold dev / skaffold delete leave this and its data intact.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: {{ .Release.Name }}-events
+spec:
+  # replicas: injected by rabbitmq-replicas admission policy
+  # persistence.storageClassName: injected by rabbitmq-storage-class admission policy
+  persistence:
+    storage: {{ .Values.rabbitmq.storage }}
+  rabbitmq:
+    additionalConfig: |
+      consumer_timeout = 7200000
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Vhost
+metadata:
+  name: {{ .Release.Name }}-events-vhost
+spec:
+  name: /agent-events
+  rabbitmqClusterReference:
+    name: {{ .Release.Name }}-events
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Exchange
+metadata:
+  name: {{ .Release.Name }}-webhook-exchange
+spec:
+  name: agent.webhook.events
+  type: topic
+  durable: true
+  vhost: /agent-events
+  rabbitmqClusterReference:
+    name: {{ .Release.Name }}-events
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: {{ .Release.Name }}-controller-queue
+spec:
+  name: agent.controller.work
+  durable: true
+  type: quorum
+  vhost: /agent-events
+  rabbitmqClusterReference:
+    name: {{ .Release.Name }}-events
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: {{ .Release.Name }}-webhook-binding
+spec:
+  source: agent.webhook.events
+  destination: agent.controller.work
+  destinationType: queue
+  routingKey: '#'
+  vhost: /agent-events
+  rabbitmqClusterReference:
+    name: {{ .Release.Name }}-events
+    namespace: {{ .Release.Namespace }}
+{{- end }}
