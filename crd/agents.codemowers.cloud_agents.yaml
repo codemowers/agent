@@ -1,169 +1,292 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: agents.agents.codemowers.cloud
   annotations:
-    codemowers.cloud/description: |
-      Agent CR defines a privilege domain: which credentials, MCP endpoints and
-      git providers are accessible to workers in this namespace. One Agent per
-      security domain; multiple Agents per namespace is allowed when domains align.
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: agents.agents.codemowers.cloud
 spec:
   group: agents.codemowers.cloud
-  scope: Namespaced
   names:
     kind: Agent
     listKind: AgentList
     plural: agents
-    singular: agent
     shortNames:
-      - ag
+    - ag
+    singular: agent
+  scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      subresources:
-        status: {}
-      additionalPrinterColumns:
-        - name: Backend
-          type: string
-          jsonPath: .spec.model.backend
-        - name: Image
-          type: string
-          jsonPath: .spec.workerImage
-        - name: Tasks
-          type: integer
-          jsonPath: .status.taskCount
-        - name: Age
-          type: date
-          jsonPath: .metadata.creationTimestamp
-      schema:
-        openAPIV3Schema:
-          type: object
-          required: [spec]
-          properties:
-            spec:
-              type: object
-              required: [workerImage, model]
-              properties:
-                workerImage:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.model.backend
+      name: Backend
+      type: string
+    - jsonPath: .status.taskCount
+      name: Tasks
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Agent defines a privilege domain: which credentials and MCP endpoints worker
+          pods may access. Task CRs are owned by an Agent via ownerReferences; deleting
+          the Agent cascades to all its Tasks and their worker Pods and PVCs.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              credentialRefs:
+                description: |-
+                  CredentialRefs is the exhaustive allowlist of agent-cred-* secrets that
+                  worker pods may mount. Admission policy enforces this list.
+                items:
                   type: string
-                  description: OCI image for worker pods.
-
-                model:
-                  type: object
-                  required: [backend, credentialSecretRef]
+                type: array
+              gitProviders:
+                description: GitProviders lists git server credentials available to
+                  workers.
+                items:
                   properties:
-                    backend:
-                      type: string
-                      enum: [claude, codex]
                     credentialSecretRef:
+                      description: CredentialSecretRef names a secret (agent-cred-*
+                        prefix) with a `token` key.
                       type: string
-                      description: |
-                        Secret name (agent-cred-* prefix) containing the API key.
-                        Must be in the same namespace as this Agent CR.
-
-                gitProviders:
-                  type: array
-                  description: |
-                    Git providers accessible to workers. Multiple GitHub/Gitea instances
-                    (including GitHub Enterprise) are supported by listing each separately.
-                  items:
-                    type: object
-                    required: [type, serverURL, credentialSecretRef]
-                    properties:
-                      type:
-                        type: string
-                        enum: [github, gitea]
-                      serverURL:
-                        type: string
-                        format: uri
-                        description: e.g. https://github.com or https://git.mycompany.com
-                      credentialSecretRef:
-                        type: string
-                        description: Secret name (agent-cred-* prefix) with a `token` key.
-
-                slackWorkspaces:
-                  type: array
-                  description: Slack workspaces this agent can read and write.
-                  items:
-                    type: object
-                    required: [workspaceId, botTokenSecretRef, signingSecretRef]
-                    properties:
-                      workspaceId:
-                        type: string
-                        description: Slack workspace/team ID (e.g. T12345ABC).
-                      botTokenSecretRef:
-                        type: string
-                        description: |
-                          Secret name (agent-ctrl-* prefix) with bot OAuth token.
-                          Controller-only; not mounted in worker pods.
-                      signingSecretRef:
-                        type: string
-                        description: |
-                          Secret name (agent-hook-* prefix) for Slack request signing.
-                          Used by the webhook handler to verify Slack payloads.
-
-                webhookSecretRef:
-                  type: string
-                  description: |
-                    Secret name (agent-hook-* prefix) for GitHub/Gitea webhook HMAC
-                    verification. Used by agent-webhook; not mounted in workers.
-
-                credentialRefs:
-                  type: array
-                  description: |
-                    Exhaustive list of agent-cred-* secrets that worker pods may mount.
-                    Admission policy enforces this allowlist; any secret not listed here
-                    is blocked for pods created by the agent-worker service account.
-                  items:
+                    serverURL:
+                      type: string
+                    type:
+                      enum:
+                      - github
+                      - gitea
+                      type: string
+                  required:
+                  - credentialSecretRef
+                  - serverURL
+                  - type
+                  type: object
+                type: array
+              mcpEndpoints:
+                description: MCPEndpoints lists MCP servers available to workers.
+                items:
+                  properties:
+                    siteURL:
+                      type: string
+                    tokenFile:
+                      type: string
+                    url:
+                      type: string
+                  required:
+                  - url
+                  type: object
+                type: array
+              model:
+                description: Model selects the AI backend and its credential secret.
+                properties:
+                  backend:
+                    description: Backend is claude or codex.
+                    enum:
+                    - claude
+                    - codex
                     type: string
-
-                mcpEndpoints:
-                  type: array
-                  description: MCP servers available to workers.
-                  items:
-                    type: object
-                    required: [url]
-                    properties:
-                      url:
-                        type: string
-                        format: uri
-                      tokenFile:
-                        type: string
-                        description: Path to a projected ServiceAccount token for this endpoint.
-                      siteURL:
-                        type: string
-                        format: uri
-                        description: Browser link shown in UI connectivity badges.
-
-                workerServiceAccountName:
-                  type: string
-                  default: agent-worker
-                  description: |
-                    ServiceAccount used by worker pods. Admission policies are written
-                    against this SA name. Defaults to agent-worker.
-
-            status:
-              type: object
-              properties:
-                taskCount:
-                  type: integer
-                  description: Number of live Task CRs owned by this Agent.
-                conditions:
-                  type: array
-                  items:
-                    type: object
-                    required: [type, status]
-                    properties:
-                      type:
-                        type: string
-                      status:
-                        type: string
-                        enum: ['True', 'False', Unknown]
-                      reason:
-                        type: string
-                      message:
-                        type: string
-                      lastTransitionTime:
-                        type: string
-                        format: date-time
+                  credentialSecretRef:
+                    description: CredentialSecretRef is the secret name (agent-cred-*
+                      prefix) holding the API key.
+                    type: string
+                required:
+                - backend
+                - credentialSecretRef
+                type: object
+              readOnlyRootFilesystem:
+                default: true
+                description: |-
+                  ReadOnlyRootFilesystem controls the worker container's root filesystem mutability.
+                  Defaults to true; set false for agents that need to write outside /workspace.
+                type: boolean
+              slackWorkspaces:
+                description: |-
+                  SlackWorkspaces lists Slack workspaces the controller can read/write.
+                  Credentials are controller-only (agent-ctrl-* prefix).
+                items:
+                  properties:
+                    botTokenSecretRef:
+                      description: BotTokenSecretRef names an agent-ctrl-* secret
+                        with the bot OAuth token.
+                      type: string
+                    signingSecretRef:
+                      description: SigningSecretRef names an agent-hook-* secret for
+                        request verification.
+                      type: string
+                    workspaceId:
+                      type: string
+                  required:
+                  - botTokenSecretRef
+                  - signingSecretRef
+                  - workspaceId
+                  type: object
+                type: array
+              toolImages:
+                description: |-
+                  ToolImages are OCI image volumes mounted into worker pods for additional tooling
+                  (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order.
+                items:
+                  description: ToolImage describes an OCI image volume mounted as
+                    a toolchain in worker pods.
+                  properties:
+                    binPath:
+                      description: BinPath is the subdirectory of MountPath prepended
+                        to PATH. Defaults to "bin".
+                      type: string
+                    image:
+                      description: Image is the OCI image reference.
+                      type: string
+                    mountPath:
+                      description: |-
+                        MountPath is the directory where the image filesystem root is mounted.
+                        Convention: /opt/tools/<name>
+                      type: string
+                    name:
+                      description: Name is used as the volume name; must be unique
+                        within the Agent.
+                      type: string
+                  required:
+                  - image
+                  - mountPath
+                  - name
+                  type: object
+                type: array
+              webhookSecretRef:
+                description: |-
+                  WebhookSecretRef is the secret (agent-hook-* prefix) for GitHub/Gitea HMAC.
+                  Read by the webhook handler, not mounted in worker pods.
+                type: string
+              workerImage:
+                description: WorkerImage is the OCI image for worker pods.
+                type: string
+              workerServiceAccountName:
+                description: WorkerServiceAccountName is the SA used by worker pods.
+                  Defaults to agent-worker.
+                type: string
+              readOnlyRootFilesystem:
+                default: true
+                description: ReadOnlyRootFilesystem controls the worker container's
+                  root filesystem mutability. Defaults to true; set false for agents
+                  that need to write outside /workspace.
+                type: boolean
+              toolImages:
+                description: ToolImages are OCI image volumes mounted into worker
+                  pods for additional tooling (e.g. kubectl, helm, go). PATH is prepended
+                  with each image's bin path in order.
+                items:
+                  description: ToolImage describes an OCI image volume mounted as
+                    a toolchain in worker pods.
+                  properties:
+                    binPath:
+                      description: BinPath is the subdirectory of MountPath prepended
+                        to PATH. Defaults to "bin".
+                      type: string
+                    image:
+                      description: Image is the OCI image reference.
+                      type: string
+                    mountPath:
+                      description: 'MountPath is the directory where the image filesystem
+                        root is mounted. Convention: /opt/tools/<name>'
+                      type: string
+                    name:
+                      description: Name is used as the volume name; must be unique
+                        within the Agent.
+                      type: string
+                  required:
+                  - image
+                  - mountPath
+                  - name
+                  type: object
+                type: array
+            required:
+            - model
+            - workerImage
+            type: object
+          status:
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              taskCount:
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

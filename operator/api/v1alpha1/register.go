@@ -1,3 +1,4 @@
+// +groupName=agents.codemowers.cloud
 package v1alpha1
 
 import (
@@ -57,6 +58,14 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	if in.MCPEndpoints != nil {
 		out.MCPEndpoints = make([]MCPEndpoint, len(in.MCPEndpoints))
 		copy(out.MCPEndpoints, in.MCPEndpoints)
+	}
+	if in.ToolImages != nil {
+		out.ToolImages = make([]ToolImage, len(in.ToolImages))
+		copy(out.ToolImages, in.ToolImages)
+	}
+	if in.ReadOnlyRootFilesystem != nil {
+		b := *in.ReadOnlyRootFilesystem
+		out.ReadOnlyRootFilesystem = &b
 	}
 }
 
