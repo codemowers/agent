@@ -174,8 +174,9 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, 500)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	jsonOK(w, map[string]string{"name": task.Name, "namespace": task.Namespace})
+	json.NewEncoder(w).Encode(map[string]string{"name": task.Name, "namespace": task.Namespace}) //nolint:errcheck
 }
 
 func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
