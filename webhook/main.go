@@ -20,12 +20,26 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+func amqpURL() string {
+	if u := os.Getenv("AMQP_URL"); u != "" {
+		return u
+	}
+	host := envOrDefault("AMQP_HOST", "localhost")
+	port := envOrDefault("AMQP_PORT", "5672")
+	user := envOrDefault("AMQP_USERNAME", "guest")
+	pass := envOrDefault("AMQP_PASSWORD", "guest")
+	vhost := envOrDefault("AMQP_VHOST", "/")
+	if vhost != "/" {
+		vhost = "/" + vhost
+	}
+	return fmt.Sprintf("amqp://%s:%s@%s:%s%s", user, pass, host, port, vhost)
+}
+
 func main() {
 	addr := envOrDefault("LISTEN_ADDR", ":8080")
-	amqpURL := mustEnv("AMQP_URL")
 	exchange := envOrDefault("AMQP_EXCHANGE", "agent.webhook.events")
 
-	conn, ch, err := dialAMQP(amqpURL)
+	conn, ch, err := dialAMQP(amqpURL())
 	if err != nil {
 		slog.Error("amqp dial failed", "err", err)
 		os.Exit(1)

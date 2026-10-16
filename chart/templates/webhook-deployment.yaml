@@ -33,11 +33,26 @@ spec:
               path: /healthz
               port: http
           env:
-            - name: AMQP_URL
+            - name: AMQP_HOST
               valueFrom:
                 secretKeyRef:
                   name: {{ .Release.Name }}-events-default-user
-                  key: uri
+                  key: host
+            - name: AMQP_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: port
+            - name: AMQP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: username
+            - name: AMQP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: password
           {{- if .Values.webhook.agents }}
           volumeMounts:
             - name: hook-secrets
