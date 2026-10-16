@@ -1,0 +1,51 @@
+# Operator RBAC — apply once with cluster-admin.
+# Grants agent-operator the permissions it needs beyond what the chart's
+# bootstrapRbac installs.  Required in every namespace where Agent CRs live
+# (currently codemowers-agent-system; repeat the Role+RoleBinding pair for
+# any additional worker namespace).
+#
+# Usage:
+#   kubectl apply -f deploy/operator-rbac.yaml
+#   # For additional Agent namespaces replace the namespace field and re-apply.
+---
+# Full operator ClusterRole: CRD access, Pod/PVC management, RoleBinding management.
+# Named with namespace suffix so multiple installations on one cluster don't collide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-codemowers-agent-system-operator
+rules:
+  - apiGroups: [agents.codemowers.cloud]
+    resources: [agents, tasks]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [agents.codemowers.cloud]
+    resources: [agents/status, tasks/status]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [pods, persistentvolumeclaims]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [get, create, update, patch, delete]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-codemowers-agent-system-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-codemowers-agent-system-operator
+subjects:
+  - kind: ServiceAccount
+    name: agent-operator
+    namespace: codemowers-agent-system

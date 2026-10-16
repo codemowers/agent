@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-webhook
+  annotations:
+    kubernetes.io/description: >-
+      Validates HMAC signatures from GitHub, Gitea and Alertmanager and
+      publishes events with routing keys to RabbitMQ for the controller.
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-webhook
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-webhook
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: webhook
+          image: {{ if .Values.imageRegistry }}{{ .Values.imageRegistry }}/{{ end }}{{ .Values.webhook.image }}
+          imagePullPolicy: Always
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          env:
+            - name: AMQP_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: host
+            - name: AMQP_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: port
+            - name: AMQP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: username
+            - name: AMQP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: password
+          {{- if .Values.webhook.agents }}
+          volumeMounts:
+            - name: hook-secrets
+              mountPath: /secrets
+              readOnly: true
+          {{- end }}
+          resources:
+            {{- toYaml .Values.webhook.resources | nindent 12 }}
+      {{- if .Values.webhook.agents }}
+      volumes:
+        - name: hook-secrets
+          projected:
+            sources:
+              {{- range .Values.webhook.agents }}
+              - secret:
+                  name: agent-hook-{{ . }}
+                  items:
+                    - key: token
+                      path: {{ . }}/token
+              {{- end }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-webhook
+spec:
+  selector:
+    app: {{ .Release.Name }}-webhook
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-webhook
+spec:
+  rules:
+    - host: {{ .Values.webhook.host | default "webhook" }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-webhook
+                port:
+                  name: http

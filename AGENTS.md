@@ -297,7 +297,7 @@ restore and filesystem snapshots are not needed.
 The runner uses Ubuntu 24.04 with Node 24.18.0, Git, SSH, Bash, coreutils, find,
 tar, unzip, ripgrep, jq, curl, gh, Python with venv/pip, make and C++ build tools. Preinstall
 both pinned npm CLIs: Claude Code 2.1.296 and Codex 0.162.1. Install Skaffold
-v2.18.0 from its binary release. Workers do not apt-install tools at startup.
+v2.18.0 and Helm v3.17.3 from their binary releases. Workers do not apt-install tools at startup.
 The controller image contains Node, application code, schema and SPA; kubectl is
 provided by an OCI image volume.
 
@@ -939,3 +939,17 @@ them after restarts and clean or retain Task-created workloads by explicit polic
 stopping a worker alone does not delete its deployments. CI/review/chat connectors
 need duplicate/out-of-order delivery, loop suppression, pause and stale-report
 verification. Shared control/queue behavior must remain identical across sources.
+
+<!-- codemowers/agent task 9e36be24-a85c-4053-907d-2efe513a1346 -->
+## Agent workspace context
+
+- Read [the task specification](specs/task-9e36be24.md) before planning. Keep it updated when the user changes requirements.
+- Read [Skaffold defaults](skaffold.env). Use the worker environment and existing kubeconfig; credentials are mounted separately.
+- MCP scopes: codemowers for engineering guidance, driftmower for cluster capabilities/inventory/logs/metrics, agent for namespace configuration and current task controls.
+- codemowers: https://mcp.codemowers.io/mcp
+- driftmower: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
+- Use driftmower.query_logs for application/build logs before kubectl logs. Query admission policies and resource schemas before platform manifests.
+- Validate skaffold.yaml with agent.validate_skaffold_config. Read agent.get_task_context before actions governed by user controls.
+- Prefer Kaniko through Skaffold cluster builds: skaffold build or skaffold run. If configuration is missing, adapt agent.get_skaffold_example and validate it first. Report failed/unclear infrastructure instead of improvising Kaniko Pods or Jobs; direct invocation requires an explicitly requested, verified workflow.
+- Infrastructure uncertainty is a blocker: report it through agent.report_blocked. Do not guess builders, registries, credentials, privileges or public visibility.
+- Work in topic branches. Do not push directly to main/master, force-push, or create a remote without user direction. If codemowers/agent denies push, advise a fork under the configured Git account and a pull request from it.

@@ -1,0 +1,35 @@
+# IMAP and SMTP configuration for the controller.
+# IMAP_HOST and SMTP_HOST independently enable each connector.
+# Missing host disables that protocol; present host with missing
+# credentials Secret reports incomplete_configuration in the UI.
+#
+# Non-secret settings go in the ConfigMap; credentials stay in Secrets.
+# Restart the controller after changes.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-controller-mail
+  namespace: codemowers-agent-system
+data:
+  IMAP_HOST: "imap.example.com"
+  # IMAP_PORT: "993"        # default: 993 (TLS)
+  # IMAP_MAILBOX: "INBOX"   # default: INBOX
+  # IMAP_ALLOWED_SENDERS: "trusted@example.com,other@example.com"
+  SMTP_HOST: "smtp.example.com"
+  # SMTP_PORT: "465"        # default: 465 (TLS); STARTTLS on other ports
+  # SMTP_FROM: "agent@example.com"    # defaults to AGENT_EMAIL
+  # SMTP_REPLY_TO: "agent@example.com"
+  # SMTP_SAVE_SENT: "true"  # archive sent mail via IMAP APPEND; requires IMAP
+---
+# IMAP credentials (controller-only; never shared with workers):
+#   kubectl create secret generic agent-controller-imap-credentials \
+#     --from-literal=IMAP_USERNAME=agent@example.com \
+#     --from-literal=IMAP_PASSWORD=secret \
+#     -n codemowers-agent-system
+#
+# SMTP credentials (controller-only):
+#   kubectl create secret generic agent-controller-smtp-credentials \
+#     --from-literal=SMTP_USERNAME=agent@example.com \
+#     --from-literal=SMTP_PASSWORD=secret \
+#     -n codemowers-agent-system

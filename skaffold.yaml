@@ -10,14 +10,20 @@ build:
   tagPolicy:
     inputDigest: {}
   artifacts:
-    - image: codemowers/agent
+    - image: agent
       context: .
       docker:
         target: runner
-    - image: codemowers/agent-controller
+    - image: agent-controller
       context: .
       docker:
         target: controller
+    - image: agent-webhook
+      context: webhook
+      docker: {}
+    - image: agent-operator
+      context: operator
+      docker: {}
 manifests:
   helm:
     flags:
@@ -31,11 +37,10 @@ manifests:
           host: controller
           "allowedGroups[0]": github.com:codemowers:admins
           env.AGENT_SHARING_MODE: public
+          imageRegistry: ""
         setValueTemplates:
-          apiResource: "{{.AGENT_API_RESOURCE}}"
           env.AGENT_KUBE_CONTEXT: "{{.AGENT_KUBE_CONTEXT}}"
-          image: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent_controller}}"
-          workerImage: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent}}"
+          "webhook.agents[0]": codemowers-agent
 
 deploy:
   kubectl:
@@ -45,6 +50,35 @@ deploy:
         - --selector=skaffold.dev/keep!=true
 
 profiles:
+  - name: cluster
+    patches:
+      - op: add
+        path: /manifests/helm/releases/0/setValues/bootstrapRbac
+        value: "false"
+    build:
+      platforms:
+        - linux/amd64
+      tagPolicy:
+        inputDigest: {}
+      cluster:
+        namespace: codemowers-agent-system
+        dockerConfig:
+          secretName: zot-registry-cluster-push-kaniko
+      artifacts:
+        - image: agent
+          context: .
+          kaniko:
+            target: runner
+        - image: agent-controller
+          context: .
+          kaniko:
+            target: controller
+        - image: agent-webhook
+          context: webhook
+          kaniko: {}
+        - image: agent-operator
+          context: operator
+          kaniko: {}
   - name: dev-test
     activation:
       - kubeContext: dev-test
@@ -54,9 +88,6 @@ profiles:
       - op: add
         path: /manifests/helm/releases/0/setValues/allowedUsers[0]
         value: laurivosandi
-      - op: replace
-        path: /manifests/helm/releases/0/setValueTemplates/apiResource
-        value: https://controller.codemowers-agent-system.dev.sensusq.com/api
       - op: replace
         path: /manifests/helm/releases/0/setValueTemplates/env.AGENT_KUBE_CONTEXT
         value: dev-test/codemowers-agent-system

@@ -1,0 +1,67 @@
+{{- if .Values.rabbitmq.enabled }}
+---
+# RabbitMQ cluster for event persistence and deduplication.
+# skaffold.dev/keep=true is added automatically by the cluster admission policy
+# so skaffold dev / skaffold delete leave this and its data intact.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: {{ .Release.Name }}-events
+spec:
+  # replicas: injected by rabbitmq-replicas admission policy
+  # persistence.storageClassName: injected by rabbitmq-storage-class admission policy
+  persistence:
+    storage: {{ .Values.rabbitmq.storage }}
+  rabbitmq:
+    additionalConfig: |
+      consumer_timeout = 7200000
+---
+# Topic exchange; webhook publishes events here with routing keys like
+# github:org/repo#issue:N or alertmanager:fingerprint.
+apiVersion: rabbitmq.com/v1beta1
+kind: Exchange
+metadata:
+  name: {{ .Release.Name }}-webhook-exchange
+  labels:
+    skaffold.dev/keep: 'true'
+spec:
+  name: agent.webhook.events
+  type: topic
+  durable: true
+  vhost: /
+  rabbitmqClusterReference:
+    name: {{ .Release.Name }}-events
+    namespace: {{ .Release.Namespace }}
+---
+# Quorum queue consumed by the operator to match events to Tasks.
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: {{ .Release.Name }}-webhook-queue
+  labels:
+    skaffold.dev/keep: 'true'
+spec:
+  name: agent.webhook.events
+  durable: true
+  type: quorum
+  vhost: /
+  rabbitmqClusterReference:
+    name: {{ .Release.Name }}-events
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: {{ .Release.Name }}-webhook-binding
+  labels:
+    skaffold.dev/keep: 'true'
+spec:
+  source: agent.webhook.events
+  destination: agent.webhook.events
+  destinationType: queue
+  routingKey: '#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: {{ .Release.Name }}-events
+    namespace: {{ .Release.Namespace }}
+{{- end }}

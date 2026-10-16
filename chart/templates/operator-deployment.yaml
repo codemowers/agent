@@ -1,0 +1,159 @@
+{{- if .Values.bootstrapRbac }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-operator
+rules:
+  - apiGroups: [agents.codemowers.cloud]
+    resources: [agents, tasks]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [agents.codemowers.cloud]
+    resources: [agents/status, tasks/status]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [pods, persistentvolumeclaims]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings, roles]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-operator
+    namespace: {{ .Release.Namespace }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-operator
+  annotations:
+    kubernetes.io/description: >-
+      Reconciles Agent and Task CRDs. Manages worker Pod and workspace PVC
+      lifecycle with ownerReferences cascade.
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-operator
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-operator
+    spec:
+      serviceAccountName: {{ .Release.Name }}-operator
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: {{ if .Values.imageRegistry }}{{ .Values.imageRegistry }}/{{ end }}{{ .Values.operator.image }}
+          imagePullPolicy: Always
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          ports:
+            - name: api
+              containerPort: 8080
+            - name: metrics
+              containerPort: 8081
+            - name: healthz
+              containerPort: 8082
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+          env:
+            {{- if .Values.rabbitmq.enabled }}
+            - name: AMQP_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: host
+            - name: AMQP_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: port
+            - name: AMQP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: username
+            - name: AMQP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-events-default-user
+                  key: password
+            {{- end }}
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-operator
+spec:
+  selector:
+    app: {{ .Release.Name }}-operator
+  ports:
+    - name: api
+      port: 80
+      targetPort: api
+---
+# Forward-auth in front of the dashboard: the operator API has no auth of its own.
+apiVersion: codemowers.cloud/v1
+kind: OIDCMiddlewareClient
+metadata:
+  name: {{ .Release.Name }}-operator
+spec:
+  displayName: Agent operator
+  uri: {{ printf "https://%s/" .Values.operator.host | quote }}
+  allowedGroups:
+    {{- toYaml .Values.allowedGroups | nindent 4 }}
+  allowedUsers:
+    {{- toYaml .Values.allowedUsers | nindent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-operator
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ .Release.Name }}-operator@kubernetescrd
+spec:
+  rules:
+    - host: {{ .Values.operator.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-operator
+                port:
+                  name: api
