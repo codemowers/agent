@@ -56,7 +56,18 @@ func (in *AgentAccess) DeepCopyInto(out *AgentAccess) {
 
 func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	*out = *in
-	in.Worker.DeepCopyInto(&out.Worker)
+	if in.Containers != nil {
+		out.Containers = make([]corev1.Container, len(in.Containers))
+		for i := range in.Containers {
+			in.Containers[i].DeepCopyInto(&out.Containers[i])
+		}
+	}
+	if in.InitContainers != nil {
+		out.InitContainers = make([]corev1.Container, len(in.InitContainers))
+		for i := range in.InitContainers {
+			in.InitContainers[i].DeepCopyInto(&out.InitContainers[i])
+		}
+	}
 	in.Access.DeepCopyInto(&out.Access)
 	if in.VolumeClaimTemplates != nil {
 		out.VolumeClaimTemplates = make([]corev1.PersistentVolumeClaim, len(in.VolumeClaimTemplates))
@@ -89,31 +100,6 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	if in.ToolImages != nil {
 		out.ToolImages = make([]ToolImage, len(in.ToolImages))
 		copy(out.ToolImages, in.ToolImages)
-	}
-}
-
-func (in *WorkerSpec) DeepCopyInto(out *WorkerSpec) {
-	*out = *in
-	if in.SecurityContext != nil {
-		sc := new(corev1.SecurityContext)
-		in.SecurityContext.DeepCopyInto(sc)
-		out.SecurityContext = sc
-	}
-	if in.Env != nil {
-		out.Env = make([]corev1.EnvVar, len(in.Env))
-		for i := range in.Env {
-			in.Env[i].DeepCopyInto(&out.Env[i])
-		}
-	}
-	if in.EnvFrom != nil {
-		out.EnvFrom = make([]corev1.EnvFromSource, len(in.EnvFrom))
-		for i := range in.EnvFrom {
-			in.EnvFrom[i].DeepCopyInto(&out.EnvFrom[i])
-		}
-	}
-	if in.VolumeMounts != nil {
-		out.VolumeMounts = make([]corev1.VolumeMount, len(in.VolumeMounts))
-		copy(out.VolumeMounts, in.VolumeMounts)
 	}
 }
 

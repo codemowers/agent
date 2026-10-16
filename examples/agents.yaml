@@ -21,30 +21,38 @@ metadata:
   annotations:
     codemowers.cloud/description: "Developer agent — full toolchain, Kube RBAC, topic branches"
 spec:
-  worker:
-    image: codemowers/agent:latest
-    securityContext:
-      readOnlyRootFilesystem: false
-      allowPrivilegeEscalation: false
-      runAsNonRoot: true
-      runAsUser: 1000
-    volumeMounts:
-      - name: workspace
-        mountPath: /workspace
-      - name: cache
-        mountPath: /home/user/.cache
-      - name: agent-config
-        mountPath: /etc/agent
-        readOnly: true
-    # env:
-    #   - name: SOME_SECRET
-    #     valueFrom:
-    #       secretKeyRef:
-    #         name: agent-cred-my-secret
-    #         key: value
-    # envFrom:
-    #   - secretRef:
-    #       name: agent-cred-extra
+  containers:
+    - name: worker
+      image: codemowers/agent:latest
+      securityContext:
+        readOnlyRootFilesystem: false
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: cache
+          mountPath: /home/user/.cache
+        - name: agent-config
+          mountPath: /etc/agent
+          readOnly: true
+        # Tool image volumes; operator creates pod volumes named tool-kubectl / tool-helm.
+        - name: tool-kubectl
+          mountPath: /opt/tools/kubectl
+          readOnly: true
+        - name: tool-helm
+          mountPath: /opt/tools/helm
+          readOnly: true
+      # env:
+      #   - name: SOME_SECRET
+      #     valueFrom:
+      #       secretKeyRef:
+      #         name: agent-cred-my-secret
+      #         key: value
+      # envFrom:
+      #   - secretRef:
+      #       name: agent-cred-extra
   volumeClaimTemplates:
     - metadata:
         name: workspace
@@ -106,14 +114,15 @@ metadata:
   annotations:
     codemowers.cloud/description: "Customer support agent — no cluster access, read-only root, no PVC"
 spec:
-  worker:
-    image: codemowers/agent:latest
-    securityContext:
-      readOnlyRootFilesystem: true
-      allowPrivilegeEscalation: false
-      runAsNonRoot: true
-      runAsUser: 65534
-  # No workspaceClaimTemplates — tasks are stateless; no PVCs created.
+  containers:
+    - name: worker
+      image: codemowers/agent:latest
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 65534
+  # No volumeClaimTemplates — tasks are stateless; no PVCs created.
   access:
     groups:
       - github.com:codemowers:admins
@@ -145,16 +154,23 @@ metadata:
   annotations:
     codemowers.cloud/description: "Admin agent — kubectl + helm, cluster-admin SA, no GitHub webhooks"
 spec:
-  worker:
-    image: codemowers/agent:latest
-    securityContext:
-      readOnlyRootFilesystem: false
-      allowPrivilegeEscalation: false
-      runAsNonRoot: true
-      runAsUser: 1000
-    volumeMounts:
-      - name: workspace
-        mountPath: /workspace
+  containers:
+    - name: worker
+      image: codemowers/agent:latest
+      securityContext:
+        readOnlyRootFilesystem: false
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: tool-kubectl
+          mountPath: /opt/tools/kubectl
+          readOnly: true
+        - name: tool-helm
+          mountPath: /opt/tools/helm
+          readOnly: true
   volumeClaimTemplates:
     - metadata:
         name: workspace

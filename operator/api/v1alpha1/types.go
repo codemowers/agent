@@ -30,8 +30,16 @@ type Agent struct {
 }
 
 type AgentSpec struct {
-	// Worker describes the worker container spec. Fields mirror a PodSpec container entry.
-	Worker WorkerSpec `json:"worker"`
+	// Containers is the list of worker containers. Mirrors PodSpec.containers exactly.
+	// The operator prepends operator-managed env vars (TASK_NAME, TASK_NAMESPACE,
+	// AGENT_NAME and PATH from toolImages) to each container; user-declared env
+	// entries follow and can override them.
+	// At least one container is required.
+	Containers []corev1.Container `json:"containers"`
+
+	// InitContainers is an optional list of init containers. Mirrors PodSpec.initContainers.
+	// Operator-managed env vars are injected into these as well.
+	InitContainers []corev1.Container `json:"initContainers,omitempty"`
 
 	// Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
 	// The Agent reconciler creates a namespaced RoleBinding for these principals
@@ -43,11 +51,11 @@ type AgentSpec struct {
 
 	// VolumeClaimTemplates is analogous to StatefulSet's volumeClaimTemplates.
 	// The operator stamps one PVC per Task per entry, using metadata.name as the
-	// volume name and PVC name suffix. Reference from worker.volumeMounts by name.
+	// volume name and PVC name suffix. Reference from container.volumeMounts by name.
 	VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates,omitempty"`
 
 	// Volumes are pod-level volume sources added to each worker pod.
-	// Mirrors PodSpec.volumes. Reference from worker.volumeMounts by name.
+	// Mirrors PodSpec.volumes. Reference from container.volumeMounts by name.
 	Volumes []corev1.Volume `json:"volumes,omitempty"`
 
 	// GitProviders lists git server credentials available to workers.
@@ -62,7 +70,8 @@ type AgentSpec struct {
 	WebhookSecretRef string `json:"webhookSecretRef,omitempty"`
 
 	// CredentialRefs is the exhaustive allowlist of agent-cred-* secrets that
-	// worker pods may mount. Admission policy enforces this list.
+	// worker pods may mount. Admission policy enforces this list; the operator
+	// adds each as a pod volume named cred-<secret> for explicit container mounts.
 	CredentialRefs []string `json:"credentialRefs,omitempty"`
 
 	// MCPEndpoints lists MCP servers available to workers.
@@ -72,8 +81,8 @@ type AgentSpec struct {
 	WorkerServiceAccountName string `json:"workerServiceAccountName,omitempty"`
 
 	// ToolImages are OCI image volumes mounted into worker pods for additional tooling
-	// (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order.
-	// PATH is built as: <tool1/bin>:<tool2/bin>:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+	// (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order
+	// and injected into all containers. Users may override PATH in their container env.
 	ToolImages []ToolImage `json:"toolImages,omitempty"`
 }
 
@@ -84,32 +93,6 @@ type AgentAccess struct {
 	Groups []string `json:"groups,omitempty"`
 	// Subjects is a list of individual OIDC subjects, typically email addresses.
 	Subjects []string `json:"subjects,omitempty"`
-}
-
-// WorkerSpec mirrors the container-level fields of a PodSpec container entry.
-// Only the fields relevant to agent workers are included; others can be added later.
-type WorkerSpec struct {
-	// Image is the OCI image for the worker container.
-	Image string `json:"image"`
-
-	// SecurityContext is the container security context.
-	// Mirrors PodSpec container.securityContext.
-	// If absent the operator applies a safe default: allowPrivilegeEscalation=false.
-	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
-
-	// Env lists environment variables set in the container.
-	// Mirrors PodSpec container.env. Operator-managed vars (PATH, TASK_NAME,
-	// TASK_NAMESPACE, AGENT_NAME) are prepended; these entries are appended after.
-	Env []corev1.EnvVar `json:"env,omitempty"`
-
-	// EnvFrom injects all keys from a ConfigMap or Secret as environment variables.
-	// Mirrors PodSpec container.envFrom.
-	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
-
-	// VolumeMounts describes volume mounts in the worker container.
-	// Mirrors PodSpec container.volumeMounts. Reference volumes from
-	// spec.volumes and spec.volumeClaimTemplates by name.
-	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
 }
 
 // ToolImage describes an OCI image volume mounted as a toolchain in worker pods.

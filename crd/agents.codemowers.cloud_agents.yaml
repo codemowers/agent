@@ -53,145 +53,26 @@ spec:
             type: object
           spec:
             properties:
-              worker:
-                description: Worker describes the worker container. Maps to a PodSpec container entry.
-                properties:
-                  image:
-                    description: Image is the OCI image for the worker container.
-                    type: string
-                  securityContext:
-                    description: |-
-                      SecurityContext is the container security context applied to worker pods.
-                      Mirrors the Kubernetes SecurityContext fields: runAsUser, runAsNonRoot,
-                      readOnlyRootFilesystem, allowPrivilegeEscalation, capabilities, etc.
-                      If absent the operator applies a safe default: allowPrivilegeEscalation=false.
-                    type: object
-                    x-kubernetes-preserve-unknown-fields: true
-                  volumeMounts:
-                    description: |-
-                      VolumeMounts describes volume mounts in the worker container.
-                      Mirrors PodSpec container.volumeMounts. Reference volumes from
-                      spec.volumes and spec.volumeClaimTemplates by name.
-                    items:
-                      properties:
-                        name:
-                          type: string
-                        mountPath:
-                          type: string
-                        readOnly:
-                          type: boolean
-                        subPath:
-                          type: string
-                        mountPropagation:
-                          type: string
-                      required:
-                      - name
-                      - mountPath
-                      type: object
-                    type: array
-                  env:
-                    description: |-
-                      Env is a list of additional environment variables for the worker container.
-                      Appended after operator-managed vars (PATH, TASK_NAME, TASK_NAMESPACE, AGENT_NAME).
-                      Use valueFrom to reference ConfigMap or Secret keys.
-                    items:
-                      description: EnvVar represents an environment variable present in a Container.
-                      properties:
-                        name:
-                          description: Name of the environment variable.
-                          type: string
-                        value:
-                          description: Literal string value. Takes precedence over valueFrom when both are set.
-                          type: string
-                        valueFrom:
-                          description: Source for the environment variable's value.
-                          properties:
-                            configMapKeyRef:
-                              description: Selects a key of a ConfigMap.
-                              properties:
-                                key:
-                                  type: string
-                                name:
-                                  type: string
-                                optional:
-                                  type: boolean
-                              required:
-                              - key
-                              - name
-                              type: object
-                            fieldRef:
-                              description: Selects a field of the pod.
-                              properties:
-                                apiVersion:
-                                  type: string
-                                fieldPath:
-                                  type: string
-                              required:
-                              - fieldPath
-                              type: object
-                            resourceFieldRef:
-                              description: Selects a resource of the container.
-                              properties:
-                                containerName:
-                                  type: string
-                                divisor:
-                                  type: string
-                                resource:
-                                  type: string
-                              required:
-                              - resource
-                              type: object
-                            secretKeyRef:
-                              description: Selects a key of a Secret.
-                              properties:
-                                key:
-                                  type: string
-                                name:
-                                  type: string
-                                optional:
-                                  type: boolean
-                              required:
-                              - key
-                              - name
-                              type: object
-                          type: object
-                      required:
-                      - name
-                      type: object
-                    type: array
-                  envFrom:
-                    description: EnvFrom injects all keys from a ConfigMap or Secret as environment variables.
-                    items:
-                      description: EnvFromSource represents the source of a set of ConfigMaps or Secrets.
-                      properties:
-                        configMapRef:
-                          description: Selects a ConfigMap to populate the environment variables.
-                          properties:
-                            name:
-                              type: string
-                            optional:
-                              type: boolean
-                          required:
-                          - name
-                          type: object
-                        prefix:
-                          description: An optional identifier to prepend to each key.
-                          type: string
-                        secretRef:
-                          description: Selects a Secret to populate the environment variables.
-                          properties:
-                            name:
-                              type: string
-                            optional:
-                              type: boolean
-                          required:
-                          - name
-                          type: object
-                      type: object
-                    type: array
-                required:
-                - image
-                type: object
+              containers:
+                description: |-
+                  Containers is the list of worker containers. Mirrors PodSpec.containers exactly.
+                  The operator prepends TASK_NAME, TASK_NAMESPACE, AGENT_NAME and PATH (from toolImages)
+                  to each container's env; user-declared env entries follow and can override them.
+                  At least one container is required.
+                items:
+                  description: Container entry; mirrors corev1.Container exactly.
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                type: array
+              initContainers:
+                description: |-
+                  InitContainers is an optional list of init containers. Mirrors PodSpec.initContainers.
+                  Operator-managed env vars are injected into these as well.
+                items:
+                  description: Init container entry; mirrors corev1.Container exactly.
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                type: array
               volumeClaimTemplates:
                 description: |-
                   VolumeClaimTemplates mirrors StatefulSet's volumeClaimTemplates. The operator stamps
@@ -219,7 +100,7 @@ spec:
               volumes:
                 description: |-
                   Volumes are pod-level volume sources added to each worker pod.
-                  Mirrors PodSpec.volumes. Reference from worker.volumeMounts by name.
+                  Mirrors PodSpec.volumes. Reference from container.volumeMounts by name.
                 items:
                   description: Volume entry; mirrors corev1.Volume (name + one source field).
                   type: object
@@ -365,8 +246,8 @@ spec:
                   type: object
                 type: array
             required:
+            - containers
             - model
-            - worker
             type: object
           status:
             properties:
