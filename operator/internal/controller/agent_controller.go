@@ -205,6 +205,9 @@ func (r *TaskReconciler) ensureWorkspacePVCs(ctx context.Context, task *agentsv1
 	changed := false
 	for _, tmpl := range agent.Spec.VolumeClaimTemplates {
 		name := tmpl.Name
+		if name == "" {
+			name = "workspace"
+		}
 		if _, exists := task.Status.WorkspacePVCs[name]; exists {
 			continue
 		}
