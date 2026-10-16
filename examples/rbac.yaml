@@ -1,18 +1,30 @@
-# Worker ServiceAccounts and RBAC for the three named agents.
+# RBAC for codemowers-agent-system.
 #
-# matmlazi (developer)
-#   SA: agent-worker
-#   Access: namespaced workloads + platform CRDs in codemowers-agent-system
+# agent-manager ClusterRole — grants manage access to Agent and Task CRs.
+# The Agent reconciler creates a namespaced RoleBinding for each Agent's spec.access
+# principals against this ClusterRole. Apply once cluster-wide.
 #
-# patpalouk (customer support)
-#   SA: agent-worker-readonly
-#   Access: none — automountServiceAccountToken disabled, no bindings
+# Worker ServiceAccounts:
+#   agent-worker        (matmlazi/developer): namespaced workloads + platform CRDs
+#   agent-worker-readonly (patpalouk/support): automountServiceAccountToken=false, no bindings
+#   agent-worker-admin  (krtek/admin): ClusterRoleBinding to cluster-admin
 #
-# krtek (admin)
-#   SA: agent-worker-admin
-#   Access: cluster-admin ClusterRoleBinding
-#
-# Apply: kubectl apply -f examples/rbac.yaml -n codemowers-agent-system
+# Apply: kubectl apply -f examples/rbac.yaml
+---
+# ── agent-manager: ClusterRole for Agent/Task CR management ──────────────────
+# Grants get/list/watch/update/patch/delete on Agent and Task CRs.
+# Namespaced access is scoped by the RoleBinding the operator creates per Agent.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-manager
+rules:
+  - apiGroups: [agents.codemowers.cloud]
+    resources: [agents, tasks]
+    verbs: [get, list, watch, update, patch, delete]
+  - apiGroups: [agents.codemowers.cloud]
+    resources: [agents/status, tasks/status]
+    verbs: [get]
 ---
 # ── matmlazi: developer SA ────────────────────────────────────────────────────
 apiVersion: v1

@@ -32,6 +32,11 @@ type AgentSpec struct {
 	// Worker describes the worker container. Maps to a PodSpec container entry.
 	Worker WorkerSpec `json:"worker"`
 
+	// Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
+	// The Agent reconciler creates a namespaced RoleBinding for these principals
+	// against the cluster-wide agent-manager ClusterRole.
+	Access AgentAccess `json:"access,omitempty"`
+
 	// WorkspaceSize is the PVC storage request for the task workspace (e.g. "10Gi").
 	// Empty or absent means no PVC is created; tasks run without persistent storage.
 	WorkspaceSize string `json:"workspaceSize,omitempty"`
@@ -64,6 +69,15 @@ type AgentSpec struct {
 	// (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order.
 	// PATH is built as: <tool1/bin>:<tool2/bin>:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	ToolImages []ToolImage `json:"toolImages,omitempty"`
+}
+
+// AgentAccess declares which OIDC principals may manage this Agent and its Tasks.
+// The operator creates/updates a RoleBinding in the Agent's namespace to enforce this.
+type AgentAccess struct {
+	// Groups is a list of OIDC group names (e.g. "github.com:codemowers:admins").
+	Groups []string `json:"groups,omitempty"`
+	// Subjects is a list of individual OIDC subjects, typically email addresses.
+	Subjects []string `json:"subjects,omitempty"`
 }
 
 // WorkerSpec mirrors the container-level fields of a PodSpec container entry.
