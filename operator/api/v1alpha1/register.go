@@ -41,9 +41,22 @@ func (in *Agent) DeepCopyInto(out *Agent) {
 	in.Status.DeepCopyInto(&out.Status)
 }
 
+func (in *AgentAccess) DeepCopyInto(out *AgentAccess) {
+	*out = *in
+	if in.Groups != nil {
+		out.Groups = make([]string, len(in.Groups))
+		copy(out.Groups, in.Groups)
+	}
+	if in.Subjects != nil {
+		out.Subjects = make([]string, len(in.Subjects))
+		copy(out.Subjects, in.Subjects)
+	}
+}
+
 func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	*out = *in
 	in.Worker.DeepCopyInto(&out.Worker)
+	in.Access.DeepCopyInto(&out.Access)
 	if in.GitProviders != nil {
 		out.GitProviders = make([]GitProvider, len(in.GitProviders))
 		copy(out.GitProviders, in.GitProviders)

@@ -73,6 +73,25 @@ spec:
                   WorkspaceSize is the PVC storage request for the task workspace (e.g. "10Gi").
                   Empty or absent means no PVC is created; tasks run without persistent storage.
                 type: string
+              access:
+                description: |-
+                  Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
+                  The Agent reconciler creates a namespaced RoleBinding (agent-access-<name>) for
+                  these principals against the cluster-wide agent-manager ClusterRole.
+                properties:
+                  groups:
+                    description: |-
+                      Groups is a list of OIDC group names.
+                      Format: <provider>:<org>:<team> (e.g. "github.com:codemowers:admins").
+                    items:
+                      type: string
+                    type: array
+                  subjects:
+                    description: Subjects is a list of individual OIDC subjects, typically email addresses.
+                    items:
+                      type: string
+                    type: array
+                type: object
               model:
                 description: Model selects the AI backend and its credential secret.
                 properties:

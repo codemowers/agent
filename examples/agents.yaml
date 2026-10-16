@@ -25,6 +25,11 @@ spec:
     image: codemowers/agent:latest
     readOnlyRootFilesystem: false
   workspaceSize: "20Gi"
+  access:
+    groups:
+      - github.com:codemowers:admins
+    subjects:
+      - lauri.vosandi@gmail.com
   model:
     backend: claude
     credentialSecretRef: agent-worker-anthropic-api-token
@@ -64,6 +69,11 @@ spec:
     image: codemowers/agent:latest
     readOnlyRootFilesystem: true
   # No workspaceSize — no PVC created; tasks are stateless.
+  access:
+    groups:
+      - github.com:codemowers:admins
+    subjects:
+      - lauri.vosandi@gmail.com
   model:
     backend: claude
     credentialSecretRef: agent-worker-anthropic-api-token
@@ -94,6 +104,11 @@ spec:
     image: codemowers/agent:latest
     readOnlyRootFilesystem: false
   workspaceSize: "10Gi"
+  access:
+    groups:
+      - github.com:codemowers:admins
+    subjects:
+      - lauri.vosandi@gmail.com
   model:
     backend: claude
     credentialSecretRef: agent-worker-anthropic-api-token

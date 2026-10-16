@@ -30,6 +30,10 @@ rules:
   - apiGroups: [rabbitmq.com]
     resources: [rabbitmqclusters]
     verbs: [get, list, watch]
+  # Manage namespaced RoleBindings for Agent spec.access principals.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [get, list, watch, create, update, patch, delete]
 ---
 # ClusterRole: webhook handler only needs to publish to RabbitMQ.
 # No Kubernetes API access; secrets come from its own pod's mounted volume.

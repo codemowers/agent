@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,6 +43,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, fmt.Errorf("list tasks: %w", err)
 	}
 
+	if err := r.reconcileAccessBinding(ctx, &agent); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	patch := client.MergeFrom(agent.DeepCopy())
 	agent.Status.TaskCount = len(taskList.Items)
 	if err := r.Status().Patch(ctx, &agent, patch); err != nil {
@@ -52,10 +57,85 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	return ctrl.Result{}, nil
 }
 
+// reconcileAccessBinding creates or updates a RoleBinding that grants the principals
+// listed in spec.access manage access to this Agent and its Tasks.
+func (r *AgentReconciler) reconcileAccessBinding(ctx context.Context, agent *agentsv1alpha1.Agent) error {
+	bindingName := "agent-access-" + agent.Name
+	subjects := accessSubjects(agent.Spec.Access)
+
+	var existing rbacv1.RoleBinding
+	err := r.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: bindingName}, &existing)
+
+	if errors.IsNotFound(err) {
+		if len(subjects) == 0 {
+			return nil // nothing to create
+		}
+		rb := r.buildAccessBinding(bindingName, agent, subjects)
+		return r.Create(ctx, rb)
+	}
+	if err != nil {
+		return fmt.Errorf("get access binding: %w", err)
+	}
+
+	// Update subjects if they changed.
+	if len(subjects) == 0 {
+		return r.Delete(ctx, &existing)
+	}
+	patch := client.MergeFrom(existing.DeepCopy())
+	existing.Subjects = subjects
+	return r.Patch(ctx, &existing, patch)
+}
+
+func (r *AgentReconciler) buildAccessBinding(name string, agent *agentsv1alpha1.Agent, subjects []rbacv1.Subject) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: agent.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion:         agentsv1alpha1.GroupVersion.String(),
+				Kind:               "Agent",
+				Name:               agent.Name,
+				UID:                agent.UID,
+				BlockOwnerDeletion: boolPtr(true),
+				Controller:         boolPtr(true),
+			}},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     "agent-manager",
+		},
+		Subjects: subjects,
+	}
+}
+
+// accessSubjects converts AgentAccess into RBAC subject entries.
+// Groups use the OIDC group format from Passmower (e.g. "github.com:codemowers:admins").
+// Subjects are individual user emails, matched as User kind.
+func accessSubjects(access agentsv1alpha1.AgentAccess) []rbacv1.Subject {
+	var subjects []rbacv1.Subject
+	for _, g := range access.Groups {
+		subjects = append(subjects, rbacv1.Subject{
+			Kind:     rbacv1.GroupKind,
+			APIGroup: rbacv1.GroupName,
+			Name:     g,
+		})
+	}
+	for _, s := range access.Subjects {
+		subjects = append(subjects, rbacv1.Subject{
+			Kind:     rbacv1.UserKind,
+			APIGroup: rbacv1.GroupName,
+			Name:     s,
+		})
+	}
+	return subjects
+}
+
 func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentsv1alpha1.Agent{}).
 		Owns(&agentsv1alpha1.Task{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Complete(r)
 }
 
