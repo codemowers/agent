@@ -46,7 +46,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	if err := r.reconcileAccessBinding(ctx, &agent); err != nil {
-		return ctrl.Result{}, err
+		// RBAC permission to manage RoleBindings may not be granted in all
+		// installations. Log and continue so the rest of the reconcile succeeds.
+		log.FromContext(ctx).Info("skipping access binding (no RoleBinding RBAC)", "err", err)
 	}
 
 	patch := client.MergeFrom(agent.DeepCopy())
