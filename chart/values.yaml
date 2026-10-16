@@ -9,6 +9,13 @@ bootstrapRbac: true
 
 webhook:
   image: codemowers/agent-webhook:latest
+  # agents: list of agent names for which to mount agent-hook-<name> secrets.
+  # Each secret must have a 'token' key containing the HMAC webhook secret.
+  # GitHub webhook URL: https://<webhook-host>/hooks/github/<agent-name>
+  agents: []
+  # host: short hostname for the webhook ingress (admission expands it).
+  # Defaults to webhook.<host> if unset.
+  host: ""
   resources:
     requests:
       memory: 32Mi

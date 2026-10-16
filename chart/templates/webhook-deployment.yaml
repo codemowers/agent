@@ -38,8 +38,24 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-events-default-user
                   key: uri
+          volumeMounts:
+            - name: hook-secrets
+              mountPath: /secrets
+              readOnly: true
           resources:
             {{- toYaml .Values.webhook.resources | nindent 12 }}
+      volumes:
+        - name: hook-secrets
+          projected:
+            sources:
+              {{- range .Values.webhook.agents }}
+              - secret:
+                  name: agent-hook-{{ . }}
+                  items:
+                    - key: token
+                      path: {{ . }}/token
+                  optional: true
+              {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -52,3 +68,20 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-webhook
+spec:
+  rules:
+    - host: {{ .Values.webhook.host | default (printf "webhook.%s" .Values.host) }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-webhook
+                port:
+                  name: http
