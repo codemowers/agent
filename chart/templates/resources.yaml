@@ -327,7 +327,7 @@ spec:
         fsGroup: 65534
       containers:
         - name: agent
-          image: {{ .Values.image }}
+          image: {{ if .Values.imageRegistry }}{{ .Values.imageRegistry }}/{{ end }}{{ .Values.image }}
           ports:
             - name: http
               containerPort: 8080
@@ -368,7 +368,7 @@ spec:
             - name: AGENT_MCP_CONFIG_FILE
               value: /mcp/mcp.json
             - name: AGENT_WORKER_IMAGE
-              value: {{ .Values.workerImage | default .Values.image | quote }}
+              value: {{ printf "%s%s" (ternary (printf "%s/" .Values.imageRegistry) "" (ne .Values.imageRegistry "")) (.Values.workerImage | default .Values.image) | quote }}
             {{- range $name := list "OIDC_IDP_URI" "OIDC_CLIENT_ID" "OIDC_CLIENT_URI" "OIDC_CLIENT_ORIGIN" "OIDC_REDIRECT_URIS" "OIDC_ALLOWED_GROUPS" }}
             - name: {{ $name }}
               valueFrom:
