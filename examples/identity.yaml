@@ -1,0 +1,15 @@
+# Bot identity used for Git commits, GitHub comments and email From.
+# Keys are imported into the controller environment.
+# Restart the controller after changes.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-identity
+  namespace: codemowers-agent-system
+data:
+  AGENT_USERNAME: matmlazi
+  AGENT_NAME: Mat Mlazi
+  AGENT_EMAIL: matmlazi@codemowers.io
+  # AGENT_FORGE_PROVIDER: github   # github (default) or gitea
+  # AGENT_FORGE_URL: https://github.com
