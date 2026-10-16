@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -343,35 +342,12 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		})
 	}
 
-	// OCI image volumes for tooling; collect bin paths for PATH injection.
-	var pathPrefixes []string
-	for _, tool := range agent.Spec.ToolImages {
-		volumes = append(volumes, corev1.Volume{
-			Name: "tool-" + tool.Name,
-			VolumeSource: corev1.VolumeSource{
-				Image: &corev1.ImageVolumeSource{
-					Reference:  tool.Image,
-					PullPolicy: corev1.PullIfNotPresent,
-				},
-			},
-		})
-		bin := tool.BinPath
-		if bin == "" {
-			bin = "bin"
-		}
-		pathPrefixes = append(pathPrefixes, tool.MountPath+"/"+bin)
-	}
-
 	// Operator-managed env vars prepended to every container and initContainer.
 	// User-declared env entries follow and can override these.
 	opEnv := []corev1.EnvVar{
 		{Name: "TASK_NAME", Value: task.Name},
 		{Name: "TASK_NAMESPACE", Value: task.Namespace},
 		{Name: "AGENT_NAME", Value: agent.Name},
-	}
-	if len(pathPrefixes) > 0 {
-		pathVal := strings.Join(pathPrefixes, ":") + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-		opEnv = append(opEnv, corev1.EnvVar{Name: "PATH", Value: pathVal})
 	}
 
 	containers := make([]corev1.Container, len(agent.Spec.Containers))
