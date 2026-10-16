@@ -37,7 +37,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	var taskList agentsv1alpha1.TaskList
 	if err := r.List(ctx, &taskList,
 		client.InNamespace(agent.Namespace),
-		client.MatchingFields{"metadata.ownerReferences[0].name": agent.Name},
+		client.MatchingLabels{"codemowers.cloud/agent": agent.Name},
 	); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list tasks: %w", err)
 	}
@@ -234,17 +234,36 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		var pod corev1.Pod
 		err := r.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: task.Status.WorkerPodName}, &pod)
 		if err == nil {
-			return r.syncPhaseFromPod(ctx, task, &pod)
-		}
-		if !errors.IsNotFound(err) {
+			// If the pod completed and a new wake signal arrived (event consumer
+			// set codemowers.cloud/wake-pending), clear the pod name so we
+			// spawn a fresh worker below. The worker's AMQP queue already holds
+			// the prompt; the new pod will consume it on startup.
+			if pod.Status.Phase == corev1.PodSucceeded &&
+				task.Annotations["codemowers.cloud/wake-pending"] == "true" {
+				annPatch := client.MergeFrom(task.DeepCopy())
+				delete(task.Annotations, "codemowers.cloud/wake-pending")
+				if err := r.Client.Patch(ctx, task, annPatch); err != nil {
+					return ctrl.Result{}, err
+				}
+				statPatch := client.MergeFrom(task.DeepCopy())
+				task.Status.WorkerPodName = ""
+				task.Status.WorkerPodUID = ""
+				if err := r.Status().Patch(ctx, task, statPatch); err != nil {
+					return ctrl.Result{}, err
+				}
+			} else {
+				return r.syncPhaseFromPod(ctx, task, &pod)
+			}
+		} else if !errors.IsNotFound(err) {
 			return ctrl.Result{}, err
-		}
-		// Pod disappeared; clear and re-create on next reconcile.
-		patch := client.MergeFrom(task.DeepCopy())
-		task.Status.WorkerPodName = ""
-		task.Status.WorkerPodUID = ""
-		if err := r.Status().Patch(ctx, task, patch); err != nil {
-			return ctrl.Result{}, err
+		} else {
+			// Pod disappeared; clear and re-create on next reconcile.
+			patch := client.MergeFrom(task.DeepCopy())
+			task.Status.WorkerPodName = ""
+			task.Status.WorkerPodUID = ""
+			if err := r.Status().Patch(ctx, task, patch); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
