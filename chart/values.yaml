@@ -6,11 +6,11 @@ allowedUsers: []
 # Set to "ghcr.io" (default) to pull release images from GitHub Container Registry.
 # Set to "" in Skaffold so rendered names match artifact names and Skaffold
 # replaces them with the locally built digest automatically.
-imageRegistry: "ghcr.io"
+imageRegistry: "ghcr.io/codemowers"
 
 # image / workerImage: short name without registry; imageRegistry is prepended.
-image: "codemowers/agent-controller"
-workerImage: "codemowers/agent"
+image: "agent-controller"
+workerImage: "agent"
 
 # bootstrapRbac: apply ServiceAccounts, Roles, ClusterRoles and bindings.
 # Requires cluster-admin or namespace-admin. Set false when deploying from
@@ -18,7 +18,7 @@ workerImage: "codemowers/agent"
 bootstrapRbac: true
 
 webhook:
-  image: codemowers/agent-webhook
+  image: agent-webhook
   # agents: list of agent names for which to mount agent-hook-<name> secrets.
   # Each secret must have a 'token' key containing the HMAC webhook secret.
   # GitHub webhook URL: https://<webhook-host>/hooks/github/<agent-name>
@@ -35,7 +35,7 @@ webhook:
       cpu: 200m
 
 operator:
-  image: codemowers/agent-operator
+  image: agent-operator
   resources:
     requests:
       memory: 64Mi

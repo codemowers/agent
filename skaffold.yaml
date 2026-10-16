@@ -10,18 +10,18 @@ build:
   tagPolicy:
     inputDigest: {}
   artifacts:
-    - image: codemowers/agent
+    - image: agent
       context: .
       docker:
         target: runner
-    - image: codemowers/agent-controller
+    - image: agent-controller
       context: .
       docker:
         target: controller
-    - image: codemowers/agent-webhook
+    - image: agent-webhook
       context: webhook
       docker: {}
-    - image: codemowers/agent-operator
+    - image: agent-operator
       context: operator
       docker: {}
 manifests:
@@ -65,18 +65,18 @@ profiles:
         dockerConfig:
           secretName: zot-registry-cluster-push-kaniko
       artifacts:
-        - image: codemowers/agent
+        - image: agent
           context: .
           kaniko:
             target: runner
-        - image: codemowers/agent-controller
+        - image: agent-controller
           context: .
           kaniko:
             target: controller
-        - image: codemowers/agent-webhook
+        - image: agent-webhook
           context: webhook
           kaniko: {}
-        - image: codemowers/agent-operator
+        - image: agent-operator
           context: operator
           kaniko: {}
   - name: dev-test
