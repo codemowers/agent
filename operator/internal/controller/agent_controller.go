@@ -163,9 +163,9 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return r.reconcileSuspended(ctx, &task)
 	}
 
-	// Only create a workspace PVC if the agent provides a claim template.
-	if agent.Spec.WorkspaceClaimTemplate != nil {
-		if err := r.ensureWorkspacePVC(ctx, &task, agent); err != nil {
+	// Ensure one PVC per WorkspaceClaimTemplate entry.
+	if len(agent.Spec.Worker.WorkspaceClaimTemplates) > 0 {
+		if err := r.ensureWorkspacePVCs(ctx, &task, agent); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -187,30 +187,42 @@ func (r *TaskReconciler) reconcileSuspended(ctx context.Context, task *agentsv1a
 	return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, "Suspended")
 }
 
-func (r *TaskReconciler) ensureWorkspacePVC(ctx context.Context, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) error {
-	if task.Status.WorkspacePVC != "" {
-		return nil
+func (r *TaskReconciler) ensureWorkspacePVCs(ctx context.Context, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) error {
+	if task.Status.WorkspacePVCs == nil {
+		task.Status.WorkspacePVCs = make(map[string]string)
 	}
-	pvcName := "agent-workspace-" + string(task.UID)[:8]
-	spec := agent.Spec.WorkspaceClaimTemplate.DeepCopy()
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      pvcName,
-			Namespace: task.Namespace,
-			Labels: map[string]string{
-				"codemowers.cloud/task":  task.Name,
-				"codemowers.cloud/agent": agent.Name,
-			},
-			OwnerReferences: []metav1.OwnerReference{taskOwnerRef(task)},
-		},
-		Spec: *spec,
-	}
-	if err := r.Create(ctx, pvc); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("create workspace PVC: %w", err)
-	}
+	taskUID8 := string(task.UID)[:8]
 	patch := client.MergeFrom(task.DeepCopy())
-	task.Status.WorkspacePVC = pvcName
-	return r.Status().Patch(ctx, task, patch)
+	changed := false
+	for _, tmpl := range agent.Spec.Worker.WorkspaceClaimTemplates {
+		if _, exists := task.Status.WorkspacePVCs[tmpl.Name]; exists {
+			continue
+		}
+		pvcName := "agent-workspace-" + taskUID8 + "-" + tmpl.Name
+		spec := tmpl.Spec.DeepCopy()
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pvcName,
+				Namespace: task.Namespace,
+				Labels: map[string]string{
+					"codemowers.cloud/task":     task.Name,
+					"codemowers.cloud/agent":    agent.Name,
+					"codemowers.cloud/pvc-role": tmpl.Name,
+				},
+				OwnerReferences: []metav1.OwnerReference{taskOwnerRef(task)},
+			},
+			Spec: *spec,
+		}
+		if err := r.Create(ctx, pvc); err != nil && !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("create workspace PVC %q: %w", tmpl.Name, err)
+		}
+		task.Status.WorkspacePVCs[tmpl.Name] = pvcName
+		changed = true
+	}
+	if changed {
+		return r.Status().Patch(ctx, task, patch)
+	}
+	return nil
 }
 
 func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) (ctrl.Result, error) {
@@ -302,19 +314,43 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
 
-	// Only mount the workspace PVC if one was provisioned.
-	if task.Status.WorkspacePVC != "" {
+	// Mount workspace PVCs stamped from WorkspaceClaimTemplates.
+	for _, tmpl := range agent.Spec.Worker.WorkspaceClaimTemplates {
+		pvcName, ok := task.Status.WorkspacePVCs[tmpl.Name]
+		if !ok {
+			continue
+		}
+		volName := "workspace-" + tmpl.Name
 		volumes = append(volumes, corev1.Volume{
-			Name: "workspace",
+			Name: volName,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: task.Status.WorkspacePVC,
+					ClaimName: pvcName,
 				},
 			},
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "workspace",
-			MountPath: "/workspace",
+			Name:      volName,
+			MountPath: tmpl.MountPath,
+		})
+	}
+
+	// Mount additional AgentVolumes (ConfigMap, Secret, EmptyDir).
+	for _, av := range agent.Spec.Worker.Volumes {
+		vs := corev1.VolumeSource{}
+		switch {
+		case av.ConfigMap != nil:
+			vs.ConfigMap = av.ConfigMap
+		case av.Secret != nil:
+			vs.Secret = av.Secret
+		case av.EmptyDir != nil:
+			vs.EmptyDir = av.EmptyDir
+		}
+		volumes = append(volumes, corev1.Volume{Name: av.Name, VolumeSource: vs})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      av.Name,
+			MountPath: av.MountPath,
+			ReadOnly:  av.ReadOnly,
 		})
 	}
 

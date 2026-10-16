@@ -58,11 +58,6 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	*out = *in
 	in.Worker.DeepCopyInto(&out.Worker)
 	in.Access.DeepCopyInto(&out.Access)
-	if in.WorkspaceClaimTemplate != nil {
-		wct := new(corev1.PersistentVolumeClaimSpec)
-		in.WorkspaceClaimTemplate.DeepCopyInto(wct)
-		out.WorkspaceClaimTemplate = wct
-	}
 	if in.GitProviders != nil {
 		out.GitProviders = make([]GitProvider, len(in.GitProviders))
 		copy(out.GitProviders, in.GitProviders)
@@ -103,6 +98,41 @@ func (in *WorkerSpec) DeepCopyInto(out *WorkerSpec) {
 		for i := range in.EnvFrom {
 			in.EnvFrom[i].DeepCopyInto(&out.EnvFrom[i])
 		}
+	}
+	if in.WorkspaceClaimTemplates != nil {
+		out.WorkspaceClaimTemplates = make([]WorkspaceClaimTemplate, len(in.WorkspaceClaimTemplates))
+		for i := range in.WorkspaceClaimTemplates {
+			in.WorkspaceClaimTemplates[i].DeepCopyInto(&out.WorkspaceClaimTemplates[i])
+		}
+	}
+	if in.Volumes != nil {
+		out.Volumes = make([]AgentVolume, len(in.Volumes))
+		for i := range in.Volumes {
+			in.Volumes[i].DeepCopyInto(&out.Volumes[i])
+		}
+	}
+}
+
+func (in *WorkspaceClaimTemplate) DeepCopyInto(out *WorkspaceClaimTemplate) {
+	*out = *in
+	in.Spec.DeepCopyInto(&out.Spec)
+}
+
+func (in *AgentVolume) DeepCopyInto(out *AgentVolume) {
+	*out = *in
+	if in.ConfigMap != nil {
+		cm := new(corev1.ConfigMapVolumeSource)
+		in.ConfigMap.DeepCopyInto(cm)
+		out.ConfigMap = cm
+	}
+	if in.Secret != nil {
+		s := new(corev1.SecretVolumeSource)
+		in.Secret.DeepCopyInto(s)
+		out.Secret = s
+	}
+	if in.EmptyDir != nil {
+		ed := in.EmptyDir.DeepCopy()
+		out.EmptyDir = ed
 	}
 }
 
@@ -186,6 +216,12 @@ func (in *TaskSpec) DeepCopyInto(out *TaskSpec) {
 
 func (in *TaskStatus) DeepCopyInto(out *TaskStatus) {
 	*out = *in
+	if in.WorkspacePVCs != nil {
+		out.WorkspacePVCs = make(map[string]string, len(in.WorkspacePVCs))
+		for k, v := range in.WorkspacePVCs {
+			out.WorkspacePVCs[k] = v
+		}
+	}
 	if in.Progress != nil {
 		p := *in.Progress
 		out.Progress = &p
