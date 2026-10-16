@@ -29,8 +29,12 @@ type Agent struct {
 }
 
 type AgentSpec struct {
-	// WorkerImage is the OCI image for worker pods.
-	WorkerImage string `json:"workerImage"`
+	// Worker describes the worker container. Maps to a PodSpec container entry.
+	Worker WorkerSpec `json:"worker"`
+
+	// WorkspaceSize is the PVC storage request for the task workspace (e.g. "10Gi").
+	// Empty or absent means no PVC is created; tasks run without persistent storage.
+	WorkspaceSize string `json:"workspaceSize,omitempty"`
 
 	// Model selects the AI backend and its credential secret.
 	Model ModelSpec `json:"model"`
@@ -58,10 +62,18 @@ type AgentSpec struct {
 
 	// ToolImages are OCI image volumes mounted into worker pods for additional tooling
 	// (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order.
+	// PATH is built as: <tool1/bin>:<tool2/bin>:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	ToolImages []ToolImage `json:"toolImages,omitempty"`
+}
 
-	// ReadOnlyRootFilesystem controls the worker container's root filesystem mutability.
-	// Defaults to true; set false for agents that need to write outside /workspace.
+// WorkerSpec mirrors the container-level fields of a PodSpec container entry.
+// Only the fields relevant to agent workers are included; others can be added later.
+type WorkerSpec struct {
+	// Image is the OCI image for the worker container.
+	Image string `json:"image"`
+
+	// ReadOnlyRootFilesystem mounts the container's root filesystem read-only.
+	// Defaults to true; set false for agents that write outside /workspace.
 	// +kubebuilder:default=true
 	ReadOnlyRootFilesystem *bool `json:"readOnlyRootFilesystem,omitempty"`
 }
