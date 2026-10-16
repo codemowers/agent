@@ -28,29 +28,14 @@ spec:
       allowPrivilegeEscalation: false
       runAsNonRoot: true
       runAsUser: 1000
-    workspaceClaimTemplates:
+    volumeMounts:
       - name: workspace
         mountPath: /workspace
-        spec:
-          accessModes: [ReadWriteOnce]
-          storageClassName: retain
-          resources:
-            requests:
-              storage: 20Gi
       - name: cache
         mountPath: /home/user/.cache
-        spec:
-          accessModes: [ReadWriteOnce]
-          storageClassName: retain
-          resources:
-            requests:
-              storage: 5Gi
-    volumes:
       - name: agent-config
         mountPath: /etc/agent
         readOnly: true
-        configMap:
-          name: agent-worker-config
     # env:
     #   - name: SOME_SECRET
     #     valueFrom:
@@ -60,6 +45,27 @@ spec:
     # envFrom:
     #   - secretRef:
     #       name: agent-cred-extra
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: retain
+        resources:
+          requests:
+            storage: 20Gi
+    - metadata:
+        name: cache
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: retain
+        resources:
+          requests:
+            storage: 5Gi
+  volumes:
+    - name: agent-config
+      configMap:
+        name: agent-worker-config
   access:
     groups:
       - github.com:codemowers:admins
@@ -146,15 +152,18 @@ spec:
       allowPrivilegeEscalation: false
       runAsNonRoot: true
       runAsUser: 1000
-    workspaceClaimTemplates:
+    volumeMounts:
       - name: workspace
         mountPath: /workspace
-        spec:
-          accessModes: [ReadWriteOnce]
-          storageClassName: retain
-          resources:
-            requests:
-              storage: 10Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: retain
+        resources:
+          requests:
+            storage: 10Gi
   access:
     groups:
       - github.com:codemowers:admins
