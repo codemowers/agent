@@ -56,7 +56,7 @@ func (in *AgentAccess) DeepCopyInto(out *AgentAccess) {
 
 func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	*out = *in
-	in.PodSpec.DeepCopyInto(&out.PodSpec)
+	in.Template.DeepCopyInto(&out.Template)
 	in.Access.DeepCopyInto(&out.Access)
 	if in.VolumeClaimTemplates != nil {
 		out.VolumeClaimTemplates = make([]corev1.PersistentVolumeClaim, len(in.VolumeClaimTemplates))

@@ -53,17 +53,24 @@ spec:
             type: object
           spec:
             properties:
-              podSpec:
+              template:
                 description: |-
-                  PodSpec is the pod template spec for worker pods, mirroring corev1.PodSpec.
-                  Declare containers, initContainers, volumes, serviceAccountName, nodeSelector,
-                  tolerations, affinity and any other pod-level fields here. The operator:
-                    - deep-copies this and appends workspace PVC and credential volumes
-                    - prepends TASK_NAME, TASK_NAMESPACE and AGENT_NAME to every container's env
-                    - enforces restartPolicy=Never and hostUsers=false
-                    - defaults serviceAccountName to "agent-worker" when empty
+                  Template is the pod template spec, identical in structure to
+                  Deployment/StatefulSet spec.template. template.spec is corev1.PodSpec;
+                  template.metadata carries pod-level labels and annotations. The operator
+                  appends workspace PVC and credential volumes, prepends TASK_NAME/
+                  TASK_NAMESPACE/AGENT_NAME to every container's env, and enforces
+                  restartPolicy=Never, hostUsers=false and a default serviceAccountName.
+                properties:
+                  metadata:
+                    description: Pod-level labels and annotations.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  spec:
+                    description: Pod spec template; mirrors corev1.PodSpec exactly.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
                 type: object
-                x-kubernetes-preserve-unknown-fields: true
               volumeClaimTemplates:
                 description: |-
                   VolumeClaimTemplates mirrors StatefulSet's volumeClaimTemplates. The operator stamps
@@ -203,7 +210,7 @@ spec:
                   type: object
                 type: array
             required:
-            - podSpec
+            - template
             - model
             type: object
           status:

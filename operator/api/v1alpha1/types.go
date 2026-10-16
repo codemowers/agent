@@ -30,14 +30,14 @@ type Agent struct {
 }
 
 type AgentSpec struct {
-	// PodSpec is the pod template spec for worker pods. Mirrors corev1.PodSpec exactly —
-	// containers, initContainers, volumes, serviceAccountName, nodeSelector, tolerations,
-	// affinity, etc. are all expressed here. The operator:
-	//   - deep-copies this and appends workspace PVC and credential volumes
+	// Template is the pod template for worker pods, identical in structure to
+	// Deployment/StatefulSet spec.template. template.spec is corev1.PodSpec;
+	// template.metadata carries pod-level labels and annotations. The operator:
+	//   - deep-copies template and appends workspace PVC and credential volumes
 	//   - prepends TASK_NAME, TASK_NAMESPACE and AGENT_NAME to every container's env
-	//   - enforces restartPolicy=Never and hostUsers=false regardless of what is set here
+	//   - enforces restartPolicy=Never and hostUsers=false
 	//   - defaults serviceAccountName to "agent-worker" when empty
-	PodSpec corev1.PodSpec `json:"podSpec"`
+	Template corev1.PodTemplateSpec `json:"template"`
 
 	// Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
 	// The Agent reconciler creates a namespaced RoleBinding for these principals

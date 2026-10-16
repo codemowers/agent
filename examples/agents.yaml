@@ -21,9 +21,10 @@ metadata:
   annotations:
     codemowers.cloud/description: "Developer agent — full toolchain, Kube RBAC, topic branches"
 spec:
-  podSpec:
-    serviceAccountName: agent-worker
-    containers:
+  template:
+    spec:
+      serviceAccountName: agent-worker
+      containers:
       - name: worker
         image: codemowers/agent:latest
         securityContext:
@@ -107,9 +108,10 @@ metadata:
   annotations:
     codemowers.cloud/description: "Customer support agent — no cluster access, read-only root, no PVC"
 spec:
-  podSpec:
-    serviceAccountName: agent-worker-readonly
-    containers:
+  template:
+    spec:
+      serviceAccountName: agent-worker-readonly
+      containers:
       - name: worker
         image: codemowers/agent:latest
         securityContext:
@@ -146,9 +148,10 @@ metadata:
   annotations:
     codemowers.cloud/description: "Admin agent — kubectl + helm, cluster-admin SA, no GitHub webhooks"
 spec:
-  podSpec:
-    serviceAccountName: agent-worker-admin
-    containers:
+  template:
+    spec:
+      serviceAccountName: agent-worker-admin
+      containers:
       - name: worker
         image: codemowers/agent:latest
         securityContext:
