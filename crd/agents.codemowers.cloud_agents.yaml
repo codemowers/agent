@@ -53,26 +53,17 @@ spec:
             type: object
           spec:
             properties:
-              containers:
+              podSpec:
                 description: |-
-                  Containers is the list of worker containers. Mirrors PodSpec.containers exactly.
-                  The operator prepends TASK_NAME, TASK_NAMESPACE and AGENT_NAME to each container's
-                  env; user-declared env entries follow and can override them. Set PATH explicitly
-                  in container env to expose OCI image volume tools. At least one container is required.
-                items:
-                  description: Container entry; mirrors corev1.Container exactly.
-                  type: object
-                  x-kubernetes-preserve-unknown-fields: true
-                type: array
-              initContainers:
-                description: |-
-                  InitContainers is an optional list of init containers. Mirrors PodSpec.initContainers.
-                  Operator-managed env vars are injected into these as well.
-                items:
-                  description: Init container entry; mirrors corev1.Container exactly.
-                  type: object
-                  x-kubernetes-preserve-unknown-fields: true
-                type: array
+                  PodSpec is the pod template spec for worker pods, mirroring corev1.PodSpec.
+                  Declare containers, initContainers, volumes, serviceAccountName, nodeSelector,
+                  tolerations, affinity and any other pod-level fields here. The operator:
+                    - deep-copies this and appends workspace PVC and credential volumes
+                    - prepends TASK_NAME, TASK_NAMESPACE and AGENT_NAME to every container's env
+                    - enforces restartPolicy=Never and hostUsers=false
+                    - defaults serviceAccountName to "agent-worker" when empty
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               volumeClaimTemplates:
                 description: |-
                   VolumeClaimTemplates mirrors StatefulSet's volumeClaimTemplates. The operator stamps
@@ -211,12 +202,8 @@ spec:
                   - url
                   type: object
                 type: array
-              workerServiceAccountName:
-                description: WorkerServiceAccountName is the SA used by worker pods.
-                  Defaults to agent-worker.
-                type: string
             required:
-            - containers
+            - podSpec
             - model
             type: object
           status:

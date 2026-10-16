@@ -56,29 +56,12 @@ func (in *AgentAccess) DeepCopyInto(out *AgentAccess) {
 
 func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	*out = *in
-	if in.Containers != nil {
-		out.Containers = make([]corev1.Container, len(in.Containers))
-		for i := range in.Containers {
-			in.Containers[i].DeepCopyInto(&out.Containers[i])
-		}
-	}
-	if in.InitContainers != nil {
-		out.InitContainers = make([]corev1.Container, len(in.InitContainers))
-		for i := range in.InitContainers {
-			in.InitContainers[i].DeepCopyInto(&out.InitContainers[i])
-		}
-	}
+	in.PodSpec.DeepCopyInto(&out.PodSpec)
 	in.Access.DeepCopyInto(&out.Access)
 	if in.VolumeClaimTemplates != nil {
 		out.VolumeClaimTemplates = make([]corev1.PersistentVolumeClaim, len(in.VolumeClaimTemplates))
 		for i := range in.VolumeClaimTemplates {
 			in.VolumeClaimTemplates[i].DeepCopyInto(&out.VolumeClaimTemplates[i])
-		}
-	}
-	if in.Volumes != nil {
-		out.Volumes = make([]corev1.Volume, len(in.Volumes))
-		for i := range in.Volumes {
-			in.Volumes[i].DeepCopyInto(&out.Volumes[i])
 		}
 	}
 	if in.GitProviders != nil {

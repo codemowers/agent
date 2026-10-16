@@ -30,16 +30,14 @@ type Agent struct {
 }
 
 type AgentSpec struct {
-	// Containers is the list of worker containers. Mirrors PodSpec.containers exactly.
-	// The operator prepends operator-managed env vars (TASK_NAME, TASK_NAMESPACE,
-	// AGENT_NAME and PATH from toolImages) to each container; user-declared env
-	// entries follow and can override them.
-	// At least one container is required.
-	Containers []corev1.Container `json:"containers"`
-
-	// InitContainers is an optional list of init containers. Mirrors PodSpec.initContainers.
-	// Operator-managed env vars are injected into these as well.
-	InitContainers []corev1.Container `json:"initContainers,omitempty"`
+	// PodSpec is the pod template spec for worker pods. Mirrors corev1.PodSpec exactly —
+	// containers, initContainers, volumes, serviceAccountName, nodeSelector, tolerations,
+	// affinity, etc. are all expressed here. The operator:
+	//   - deep-copies this and appends workspace PVC and credential volumes
+	//   - prepends TASK_NAME, TASK_NAMESPACE and AGENT_NAME to every container's env
+	//   - enforces restartPolicy=Never and hostUsers=false regardless of what is set here
+	//   - defaults serviceAccountName to "agent-worker" when empty
+	PodSpec corev1.PodSpec `json:"podSpec"`
 
 	// Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
 	// The Agent reconciler creates a namespaced RoleBinding for these principals
@@ -51,12 +49,8 @@ type AgentSpec struct {
 
 	// VolumeClaimTemplates is analogous to StatefulSet's volumeClaimTemplates.
 	// The operator stamps one PVC per Task per entry, using metadata.name as the
-	// volume name and PVC name suffix. Reference from container.volumeMounts by name.
+	// volume name and PVC name suffix. Mount by name from podSpec.containers[*].volumeMounts.
 	VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates,omitempty"`
-
-	// Volumes are pod-level volume sources added to each worker pod.
-	// Mirrors PodSpec.volumes. Reference from container.volumeMounts by name.
-	Volumes []corev1.Volume `json:"volumes,omitempty"`
 
 	// GitProviders lists git server credentials available to workers.
 	GitProviders []GitProvider `json:"gitProviders,omitempty"`
@@ -70,15 +64,12 @@ type AgentSpec struct {
 	WebhookSecretRef string `json:"webhookSecretRef,omitempty"`
 
 	// CredentialRefs is the exhaustive allowlist of agent-cred-* secrets that
-	// worker pods may mount. Admission policy enforces this list; the operator
-	// adds each as a pod volume named cred-<secret> for explicit container mounts.
+	// worker pods may mount. The operator adds each as a pod volume named cred-<secret>;
+	// mount explicitly from podSpec.containers[*].volumeMounts.
 	CredentialRefs []string `json:"credentialRefs,omitempty"`
 
 	// MCPEndpoints lists MCP servers available to workers.
 	MCPEndpoints []MCPEndpoint `json:"mcpEndpoints,omitempty"`
-
-	// WorkerServiceAccountName is the SA used by worker pods. Defaults to agent-worker.
-	WorkerServiceAccountName string `json:"workerServiceAccountName,omitempty"`
 }
 
 // AgentAccess declares which OIDC principals may manage this Agent and its Tasks.

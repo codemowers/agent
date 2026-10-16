@@ -245,13 +245,8 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		}
 	}
 
-	sa := agent.Spec.WorkerServiceAccountName
-	if sa == "" {
-		sa = "agent-worker"
-	}
-
 	podName := fmt.Sprintf("agent-worker-%s-%s", task.Name[:min(8, len(task.Name))], randSuffix())
-	pod := r.buildWorkerPod(podName, task, agent, sa)
+	pod := r.buildWorkerPod(podName, task, agent, "agent-worker")
 
 	if err := r.Create(ctx, pod); err != nil {
 		return ctrl.Result{}, fmt.Errorf("create worker pod: %w", err)
@@ -311,15 +306,22 @@ func (r *TaskReconciler) ownerAgent(ctx context.Context, task *agentsv1alpha1.Ta
 }
 
 func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, sa string) *corev1.Pod {
-	var volumes []corev1.Volume
+	ps := agent.Spec.PodSpec.DeepCopy()
 
-	// Workspace PVC volumes stamped from VolumeClaimTemplates; mount by name in containers.
+	// Safety overrides regardless of user-supplied values.
+	ps.RestartPolicy = corev1.RestartPolicyNever
+	ps.HostUsers = boolPtr(false)
+	if ps.ServiceAccountName == "" {
+		ps.ServiceAccountName = sa
+	}
+
+	// Workspace PVC volumes from VolumeClaimTemplates; containers mount by name.
 	for _, tmpl := range agent.Spec.VolumeClaimTemplates {
 		pvcName, ok := task.Status.WorkspacePVCs[tmpl.Name]
 		if !ok {
 			continue
 		}
-		volumes = append(volumes, corev1.Volume{
+		ps.Volumes = append(ps.Volumes, corev1.Volume{
 			Name: tmpl.Name,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
@@ -329,12 +331,9 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		})
 	}
 
-	// Pod-level volumes declared explicitly in spec.volumes.
-	volumes = append(volumes, agent.Spec.Volumes...)
-
 	// Credential secret volumes named cred-<secretName>; containers mount explicitly.
 	for _, secretName := range agent.Spec.CredentialRefs {
-		volumes = append(volumes, corev1.Volume{
+		ps.Volumes = append(ps.Volumes, corev1.Volume{
 			Name: "cred-" + secretName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{SecretName: secretName},
@@ -342,27 +341,20 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		})
 	}
 
-	// Operator-managed env vars prepended to every container and initContainer.
-	// User-declared env entries follow and can override these.
+	// Operator-managed env vars prepended to every container; user entries follow.
 	opEnv := []corev1.EnvVar{
 		{Name: "TASK_NAME", Value: task.Name},
 		{Name: "TASK_NAMESPACE", Value: task.Namespace},
 		{Name: "AGENT_NAME", Value: agent.Name},
 	}
-
-	containers := make([]corev1.Container, len(agent.Spec.Containers))
-	for i := range agent.Spec.Containers {
-		agent.Spec.Containers[i].DeepCopyInto(&containers[i])
-		containers[i].Env = append(opEnv, containers[i].Env...)
+	for i := range ps.Containers {
+		ps.Containers[i].Env = append(opEnv, ps.Containers[i].Env...)
+	}
+	for i := range ps.InitContainers {
+		ps.InitContainers[i].Env = append(opEnv, ps.InitContainers[i].Env...)
 	}
 
-	initContainers := make([]corev1.Container, len(agent.Spec.InitContainers))
-	for i := range agent.Spec.InitContainers {
-		agent.Spec.InitContainers[i].DeepCopyInto(&initContainers[i])
-		initContainers[i].Env = append(opEnv, initContainers[i].Env...)
-	}
-
-	pod := &corev1.Pod{
+	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: task.Namespace,
@@ -372,18 +364,8 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 			},
 			OwnerReferences: []metav1.OwnerReference{taskOwnerRef(task)},
 		},
-		Spec: corev1.PodSpec{
-			ServiceAccountName: sa,
-			RestartPolicy:      corev1.RestartPolicyNever,
-			HostUsers:          boolPtr(false),
-			Containers:         containers,
-			Volumes:            volumes,
-		},
+		Spec: *ps,
 	}
-	if len(initContainers) > 0 {
-		pod.Spec.InitContainers = initContainers
-	}
-	return pod
 }
 
 func (r *TaskReconciler) SetupWithManager(mgr ctrl.Manager) error {
