@@ -5,9 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	"github.com/codemowers/agent/operator/internal/rabbitmq"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -310,7 +311,13 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 	pod := r.buildWorkerPod(podName, task, agent, "agent-worker")
 
 	if err := r.Create(ctx, pod); err != nil {
-		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "PodCreateFailed")
+		// Admission/quota errors are often transient or fixable by the user;
+		// surface the cause and retry rather than terminally failing the Task.
+		log.FromContext(ctx).Error(err, "create worker pod failed", "pod", podName)
+		if _, perr := r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePending, "PodCreateFailed"); perr != nil {
+			return ctrl.Result{}, perr
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	patch := client.MergeFrom(task.DeepCopy())
