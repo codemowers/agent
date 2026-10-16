@@ -126,13 +126,11 @@ spec:
       port: 80
       targetPort: api
 ---
-{{- $operatorHost := .Values.operator.host | default (printf "operator.%s" .Values.host) }}
+{{- $operatorHost := .Values.operator.host | default "operator" }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}-operator
-  annotations:
-    kubernetes.io/tls-acme: "true"
 spec:
   rules:
     - host: {{ $operatorHost }}
@@ -145,7 +143,3 @@ spec:
                 name: {{ .Release.Name }}-operator
                 port:
                   name: api
-  tls:
-    - hosts:
-        - {{ $operatorHost }}
-      secretName: {{ .Release.Name }}-operator-tls
