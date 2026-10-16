@@ -56,9 +56,9 @@ spec:
               containers:
                 description: |-
                   Containers is the list of worker containers. Mirrors PodSpec.containers exactly.
-                  The operator prepends TASK_NAME, TASK_NAMESPACE, AGENT_NAME and PATH (from toolImages)
-                  to each container's env; user-declared env entries follow and can override them.
-                  At least one container is required.
+                  The operator prepends TASK_NAME, TASK_NAMESPACE and AGENT_NAME to each container's
+                  env; user-declared env entries follow and can override them. Set PATH explicitly
+                  in container env to expose OCI image volume tools. At least one container is required.
                 items:
                   description: Container entry; mirrors corev1.Container exactly.
                   type: object
@@ -215,36 +215,6 @@ spec:
                 description: WorkerServiceAccountName is the SA used by worker pods.
                   Defaults to agent-worker.
                 type: string
-              toolImages:
-                description: |-
-                  ToolImages are OCI image volumes mounted into worker pods for additional tooling
-                  (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order.
-                  PATH: <tool1/bin>:<tool2/bin>:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-                items:
-                  description: ToolImage describes an OCI image volume mounted as
-                    a toolchain in worker pods.
-                  properties:
-                    binPath:
-                      description: BinPath is the subdirectory of MountPath prepended
-                        to PATH. Defaults to "bin".
-                      type: string
-                    image:
-                      description: Image is the OCI image reference.
-                      type: string
-                    mountPath:
-                      description: 'MountPath is the directory where the image filesystem
-                        root is mounted. Convention: /opt/tools/<name>'
-                      type: string
-                    name:
-                      description: Name is used as the volume name; must be unique
-                        within the Agent.
-                      type: string
-                  required:
-                  - image
-                  - mountPath
-                  - name
-                  type: object
-                type: array
             required:
             - containers
             - model

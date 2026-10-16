@@ -79,11 +79,6 @@ type AgentSpec struct {
 
 	// WorkerServiceAccountName is the SA used by worker pods. Defaults to agent-worker.
 	WorkerServiceAccountName string `json:"workerServiceAccountName,omitempty"`
-
-	// ToolImages are OCI image volumes mounted into worker pods for additional tooling
-	// (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order
-	// and injected into all containers. Users may override PATH in their container env.
-	ToolImages []ToolImage `json:"toolImages,omitempty"`
 }
 
 // AgentAccess declares which OIDC principals may manage this Agent and its Tasks.
@@ -93,19 +88,6 @@ type AgentAccess struct {
 	Groups []string `json:"groups,omitempty"`
 	// Subjects is a list of individual OIDC subjects, typically email addresses.
 	Subjects []string `json:"subjects,omitempty"`
-}
-
-// ToolImage describes an OCI image volume mounted as a toolchain in worker pods.
-type ToolImage struct {
-	// Name is used as the volume name; must be unique within the Agent.
-	Name string `json:"name"`
-	// Image is the OCI image reference.
-	Image string `json:"image"`
-	// MountPath is the directory where the image filesystem root is mounted.
-	// Convention: /opt/tools/<name>
-	MountPath string `json:"mountPath"`
-	// BinPath is the subdirectory of MountPath prepended to PATH. Defaults to "bin".
-	BinPath string `json:"binPath,omitempty"`
 }
 
 type ModelSpec struct {

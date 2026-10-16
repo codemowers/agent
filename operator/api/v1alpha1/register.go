@@ -97,10 +97,6 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 		out.MCPEndpoints = make([]MCPEndpoint, len(in.MCPEndpoints))
 		copy(out.MCPEndpoints, in.MCPEndpoints)
 	}
-	if in.ToolImages != nil {
-		out.ToolImages = make([]ToolImage, len(in.ToolImages))
-		copy(out.ToolImages, in.ToolImages)
-	}
 }
 
 func (in *AgentStatus) DeepCopyInto(out *AgentStatus) {

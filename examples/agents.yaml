@@ -29,6 +29,9 @@ spec:
         allowPrivilegeEscalation: false
         runAsNonRoot: true
         runAsUser: 1000
+      env:
+        - name: PATH
+          value: /opt/tools/kubectl/bin:/opt/tools/helm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       volumeMounts:
         - name: workspace
           mountPath: /workspace
@@ -37,22 +40,12 @@ spec:
         - name: agent-config
           mountPath: /etc/agent
           readOnly: true
-        # Tool image volumes; operator creates pod volumes named tool-kubectl / tool-helm.
-        - name: tool-kubectl
+        - name: kubectl
           mountPath: /opt/tools/kubectl
           readOnly: true
-        - name: tool-helm
+        - name: helm
           mountPath: /opt/tools/helm
           readOnly: true
-      # env:
-      #   - name: SOME_SECRET
-      #     valueFrom:
-      #       secretKeyRef:
-      #         name: agent-cred-my-secret
-      #         key: value
-      # envFrom:
-      #   - secretRef:
-      #       name: agent-cred-extra
   volumeClaimTemplates:
     - metadata:
         name: workspace
@@ -74,6 +67,14 @@ spec:
     - name: agent-config
       configMap:
         name: agent-worker-config
+    - name: kubectl
+      image:
+        reference: registry.k8s.io/kubectl:v1.36.3
+        pullPolicy: IfNotPresent
+    - name: helm
+      image:
+        reference: alpine/helm:3.17.3
+        pullPolicy: IfNotPresent
   access:
     groups:
       - github.com:codemowers:admins
@@ -95,15 +96,6 @@ spec:
   credentialRefs:
     - agent-worker-anthropic-api-token
     - agent-worker-github-token
-  # kubectl and helm from OCI image volumes; PATH prepended automatically.
-  # PATH built as: /opt/tools/kubectl/bin:/opt/tools/helm/bin:/usr/local/sbin:...
-  toolImages:
-    - name: kubectl
-      image: registry.k8s.io/kubectl:v1.36.3
-      mountPath: /opt/tools/kubectl
-    - name: helm
-      image: alpine/helm:3.17.3
-      mountPath: /opt/tools/helm
   workerServiceAccountName: agent-worker
 ---
 apiVersion: agents.codemowers.cloud/v1alpha1
@@ -142,7 +134,7 @@ spec:
   credentialRefs:
     - agent-worker-anthropic-api-token
     - agent-worker-github-token
-  # No toolImages — no kubectl, no Kubernetes API access.
+  # No tool volumes — no kubectl, no Kubernetes API access.
   # agent-worker-readonly has automountServiceAccountToken:false and no RBAC bindings.
   workerServiceAccountName: agent-worker-readonly
 ---
@@ -162,13 +154,16 @@ spec:
         allowPrivilegeEscalation: false
         runAsNonRoot: true
         runAsUser: 1000
+      env:
+        - name: PATH
+          value: /opt/tools/kubectl/bin:/opt/tools/helm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       volumeMounts:
         - name: workspace
           mountPath: /workspace
-        - name: tool-kubectl
+        - name: kubectl
           mountPath: /opt/tools/kubectl
           readOnly: true
-        - name: tool-helm
+        - name: helm
           mountPath: /opt/tools/helm
           readOnly: true
   volumeClaimTemplates:
@@ -180,6 +175,15 @@ spec:
         resources:
           requests:
             storage: 10Gi
+  volumes:
+    - name: kubectl
+      image:
+        reference: registry.k8s.io/kubectl:v1.36.3
+        pullPolicy: IfNotPresent
+    - name: helm
+      image:
+        reference: alpine/helm:3.17.3
+        pullPolicy: IfNotPresent
   access:
     groups:
       - github.com:codemowers:admins
@@ -201,11 +205,4 @@ spec:
   credentialRefs:
     - agent-worker-anthropic-api-token
     - agent-worker-github-token
-  toolImages:
-    - name: kubectl
-      image: registry.k8s.io/kubectl:v1.36.3
-      mountPath: /opt/tools/kubectl
-    - name: helm
-      image: alpine/helm:3.17.3
-      mountPath: /opt/tools/helm
   workerServiceAccountName: agent-worker-admin
