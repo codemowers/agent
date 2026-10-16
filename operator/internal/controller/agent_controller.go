@@ -299,11 +299,15 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		}
 	}
 
+	if len(agent.Spec.Template.Spec.Containers) == 0 {
+		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "AgentMissingContainers")
+	}
+
 	podName := fmt.Sprintf("agent-worker-%s-%s", task.Name[:min(8, len(task.Name))], randSuffix())
 	pod := r.buildWorkerPod(podName, task, agent, "agent-worker")
 
 	if err := r.Create(ctx, pod); err != nil {
-		return ctrl.Result{}, fmt.Errorf("create worker pod: %w", err)
+		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "PodCreateFailed")
 	}
 
 	patch := client.MergeFrom(task.DeepCopy())
