@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"github.com/codemowers/agent/operator/internal/rabbitmq"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -140,7 +141,9 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // TaskReconciler reconciles Task CRs: manages worker Pod and workspace PVC lifecycle.
 type TaskReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme  *runtime.Scheme
+	AMQP    AMQPManager // nil when RabbitMQ is not configured
+	AMQPURL string      // injected into worker pods as AMQP_URL
 }
 
 func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -245,6 +248,31 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		}
 	}
 
+	// Ensure the per-task RabbitMQ queue exists and publish the objective once.
+	// The queue is durable so the message survives broker restarts and is waiting
+	// when the worker subscribes. The annotation guards against re-publishing on
+	// operator restart.
+	if r.AMQP != nil {
+		queue := taskQueue(task.Namespace, task.Name)
+		if err := r.AMQP.DeclareQueue(queue); err != nil {
+			return ctrl.Result{}, fmt.Errorf("declare task queue: %w", err)
+		}
+		if task.Annotations["codemowers.cloud/objective-published"] != "true" {
+			msg := rabbitmq.PromptMessage{Type: "objective", Body: task.Spec.Objective}
+			if err := r.AMQP.Publish(ctx, queue, msg); err != nil {
+				return ctrl.Result{}, fmt.Errorf("publish objective: %w", err)
+			}
+			annPatch := client.MergeFrom(task.DeepCopy())
+			if task.Annotations == nil {
+				task.Annotations = make(map[string]string)
+			}
+			task.Annotations["codemowers.cloud/objective-published"] = "true"
+			if err := r.Client.Patch(ctx, task, annPatch); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
 	podName := fmt.Sprintf("agent-worker-%s-%s", task.Name[:min(8, len(task.Name))], randSuffix())
 	pod := r.buildWorkerPod(podName, task, agent, "agent-worker")
 
@@ -346,6 +374,12 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		{Name: "TASK_NAME", Value: task.Name},
 		{Name: "TASK_NAMESPACE", Value: task.Namespace},
 		{Name: "AGENT_NAME", Value: agent.Name},
+	}
+	if r.AMQPURL != "" {
+		opEnv = append(opEnv,
+			corev1.EnvVar{Name: "AMQP_URL", Value: r.AMQPURL},
+			corev1.EnvVar{Name: "TASK_QUEUE", Value: taskQueue(task.Namespace, task.Name)},
+		)
 	}
 	for i := range ps.Containers {
 		ps.Containers[i].Env = append(opEnv, ps.Containers[i].Env...)

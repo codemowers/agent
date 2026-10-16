@@ -13,7 +13,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
+	"github.com/codemowers/agent/operator/internal/rabbitmq"
 )
+
+// AMQPManager is the subset of rabbitmq.Manager used by the reconcilers.
+// Defined as an interface so tests can substitute a stub and main.go can pass nil.
+type AMQPManager interface {
+	DeclareQueue(name string) error
+	DeleteQueue(name string) error
+	Publish(ctx context.Context, queue string, msg rabbitmq.PromptMessage) error
+}
+
+// taskQueue returns the canonical RabbitMQ queue name for a Task.
+// Format: "{namespace}/{taskName}" — human-readable and inspectable in the management UI.
+func taskQueue(namespace, name string) string {
+	return namespace + "/" + name
+}
 
 // EventConsumer reads webhook events from a RabbitMQ queue and wakes matched Tasks.
 type EventConsumer struct {
@@ -21,6 +36,7 @@ type EventConsumer struct {
 	AMQPURL  string
 	Queue    string
 	Exchange string
+	AMQP     AMQPManager // publishes follow-up prompts to per-task queues; nil = disabled
 }
 
 // Start connects to RabbitMQ and runs the consume loop until ctx is done.
@@ -239,15 +255,32 @@ func refMatches(task *agentsv1alpha1.Task, ev parsedEvent) bool {
 	return false
 }
 
-// wakeTask annotates the Task to record the latest received event, which triggers
-// the TaskReconciler and ensures a worker pod is started or resumed.
+// wakeTask annotates the Task (triggering TaskReconciler to start/resume a worker)
+// and publishes a follow-up prompt to the per-task queue so the worker receives it
+// via AMQP push without polling.
 func (c *EventConsumer) wakeTask(ctx context.Context, task *agentsv1alpha1.Task, routingKey, messageID string) error {
+	now := time.Now().UnixMilli()
 	patch := client.MergeFrom(task.DeepCopy())
 	if task.Annotations == nil {
 		task.Annotations = make(map[string]string)
 	}
 	task.Annotations["codemowers.cloud/event-routing-key"] = routingKey
 	task.Annotations["codemowers.cloud/event-message-id"] = messageID
-	task.Annotations["codemowers.cloud/event-received-at"] = strconv.FormatInt(time.Now().UnixMilli(), 10)
-	return c.Client.Patch(ctx, task, patch)
+	task.Annotations["codemowers.cloud/event-received-at"] = strconv.FormatInt(now, 10)
+	if err := c.Client.Patch(ctx, task, patch); err != nil {
+		return err
+	}
+
+	if c.AMQP == nil {
+		return nil
+	}
+	queue := taskQueue(task.Namespace, task.Name)
+	msg := rabbitmq.PromptMessage{
+		Type:       "event",
+		Body:       fmt.Sprintf("New event on %s — read the latest updates and decide what to do next.", routingKey),
+		RoutingKey: routingKey,
+		MessageID:  messageID,
+		ReceivedAt: now,
+	}
+	return c.AMQP.Publish(ctx, queue, msg)
 }
