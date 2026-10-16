@@ -22,7 +22,10 @@ import (
 // AgentReconciler reconciles Agent CRs: counts owned Tasks and updates status.
 type AgentReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	// APIReader is the non-cached client used for RoleBinding reads, avoiding
+	// a cluster-wide informer that the operator SA is not permitted to start.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 }
 
 func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -63,7 +66,7 @@ func (r *AgentReconciler) reconcileAccessBinding(ctx context.Context, agent *age
 	subjects := accessSubjects(agent.Spec.Access)
 
 	var existing rbacv1.RoleBinding
-	err := r.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: bindingName}, &existing)
+	err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: bindingName}, &existing)
 
 	if errors.IsNotFound(err) {
 		if len(subjects) == 0 {
