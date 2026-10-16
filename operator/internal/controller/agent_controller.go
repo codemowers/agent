@@ -377,10 +377,11 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		pathVal := strings.Join(pathPrefixes, ":") + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 		env = append(env, corev1.EnvVar{Name: "PATH", Value: pathVal})
 	}
+	env = append(env, agent.Spec.Worker.Env...)
 
-	roRootFS := true
-	if agent.Spec.Worker.ReadOnlyRootFilesystem != nil {
-		roRootFS = *agent.Spec.Worker.ReadOnlyRootFilesystem
+	sc := agent.Spec.Worker.SecurityContext
+	if sc == nil {
+		sc = &corev1.SecurityContext{AllowPrivilegeEscalation: boolPtr(false)}
 	}
 
 	return &corev1.Pod{
@@ -399,14 +400,12 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 			HostUsers:          boolPtr(false),
 			Containers: []corev1.Container{
 				{
-					Name:         "worker",
-					Image:        agent.Spec.Worker.Image,
-					VolumeMounts: volumeMounts,
-					Env:          env,
-					SecurityContext: &corev1.SecurityContext{
-						ReadOnlyRootFilesystem:   boolPtr(roRootFS),
-						AllowPrivilegeEscalation: boolPtr(false),
-					},
+					Name:            "worker",
+					Image:           agent.Spec.Worker.Image,
+					VolumeMounts:    volumeMounts,
+					Env:             env,
+					EnvFrom:         agent.Spec.Worker.EnvFrom,
+					SecurityContext: sc,
 				},
 			},
 			Volumes: volumes,

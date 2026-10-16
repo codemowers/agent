@@ -2,6 +2,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -86,10 +87,17 @@ type WorkerSpec struct {
 	// Image is the OCI image for the worker container.
 	Image string `json:"image"`
 
-	// ReadOnlyRootFilesystem mounts the container's root filesystem read-only.
-	// Defaults to true; set false for agents that write outside /workspace.
-	// +kubebuilder:default=true
-	ReadOnlyRootFilesystem *bool `json:"readOnlyRootFilesystem,omitempty"`
+	// SecurityContext is the container security context for worker pods.
+	// If absent the operator applies a safe default: allowPrivilegeEscalation=false.
+	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
+
+	// Env is a list of additional environment variables for the worker container.
+	// Appended after operator-managed vars (PATH, TASK_NAME, TASK_NAMESPACE, AGENT_NAME).
+	// Use ValueFrom to reference ConfigMap or Secret keys.
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// EnvFrom injects all keys from a ConfigMap or Secret as environment variables.
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
 }
 
 // ToolImage describes an OCI image volume mounted as a toolchain in worker pods.
