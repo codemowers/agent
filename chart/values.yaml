@@ -36,6 +36,9 @@ webhook:
 
 operator:
   image: agent-operator
+  # host: short hostname for the operator web UI ingress (admission expands it).
+  # Defaults to operator.<host> if unset.
+  host: ""
   resources:
     requests:
       memory: 64Mi
