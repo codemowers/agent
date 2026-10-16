@@ -94,7 +94,7 @@ func main() {
 	amqpURL := buildAMQPURL()
 	if amqpURL != "" {
 		amqpMgr = rabbitmq.New(amqpURL)
-		ctrl.Log.Info("RabbitMQ configured", "url", amqpURL)
+		ctrl.Log.Info("RabbitMQ configured")
 	}
 
 	if err := (&controller.TaskReconciler{
