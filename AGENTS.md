@@ -289,7 +289,7 @@ and history. Full process-memory restore and filesystem snapshots are not needed
 The runner uses Ubuntu 24.04 with Node 24.18.0, Git, SSH, Bash, coreutils, find,
 tar, unzip, ripgrep, jq, curl, gh, Python with venv/pip, make and C++ build tools. Preinstall
 both pinned npm CLIs: Claude Code 2.1.296 and Codex 0.162.1. Install Skaffold
-v2.18.0 from its binary release. Workers do not apt-install tools at startup.
+v2.18.0 and Helm v3.17.3 from their binary releases. Workers do not apt-install tools at startup.
 The controller image contains Node, application code, schema and SPA; kubectl is
 provided by an OCI image volume.
 
