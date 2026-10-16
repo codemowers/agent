@@ -3,6 +3,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
 	corev1 "k8s.io/api/core/v1"
@@ -23,6 +24,24 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func buildAMQPURL() string {
+	if u := os.Getenv("AMQP_URL"); u != "" {
+		return u
+	}
+	host := os.Getenv("AMQP_HOST")
+	if host == "" {
+		return ""
+	}
+	port := envOrDefault("AMQP_PORT", "5672")
+	user := envOrDefault("AMQP_USERNAME", "guest")
+	pass := envOrDefault("AMQP_PASSWORD", "guest")
+	vhost := envOrDefault("AMQP_VHOST", "/")
+	if vhost != "/" {
+		vhost = "/" + vhost
+	}
+	return fmt.Sprintf("amqp://%s:%s@%s:%s%s", user, pass, host, port, vhost)
 }
 
 var scheme = runtime.NewScheme()
@@ -72,7 +91,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if amqpURL := os.Getenv("AMQP_URL"); amqpURL != "" {
+	if amqpURL := buildAMQPURL(); amqpURL != "" {
 		consumer := &controller.EventConsumer{
 			Client:   mgr.GetClient(),
 			AMQPURL:  amqpURL,
