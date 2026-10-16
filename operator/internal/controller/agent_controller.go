@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -164,8 +163,8 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return r.reconcileSuspended(ctx, &task)
 	}
 
-	// Only create a workspace PVC if the agent requests one.
-	if agent.Spec.WorkspaceSize != "" {
+	// Only create a workspace PVC if the agent provides a claim template.
+	if agent.Spec.WorkspaceClaimTemplate != nil {
 		if err := r.ensureWorkspacePVC(ctx, &task, agent); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -193,7 +192,7 @@ func (r *TaskReconciler) ensureWorkspacePVC(ctx context.Context, task *agentsv1a
 		return nil
 	}
 	pvcName := "agent-workspace-" + string(task.UID)[:8]
-	storageClass := "retain"
+	spec := agent.Spec.WorkspaceClaimTemplate.DeepCopy()
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pvcName,
@@ -204,15 +203,7 @@ func (r *TaskReconciler) ensureWorkspacePVC(ctx context.Context, task *agentsv1a
 			},
 			OwnerReferences: []metav1.OwnerReference{taskOwnerRef(task)},
 		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			StorageClassName: &storageClass,
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: *resourceQuantity(agent.Spec.WorkspaceSize),
-				},
-			},
-		},
+		Spec: *spec,
 	}
 	if err := r.Create(ctx, pvc); err != nil && !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("create workspace PVC: %w", err)
@@ -439,11 +430,6 @@ func min(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func resourceQuantity(s string) *resource.Quantity {
-	q := resource.MustParse(s)
-	return &q
 }
 
 func randSuffix() string {

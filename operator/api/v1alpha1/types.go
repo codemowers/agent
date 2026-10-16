@@ -38,9 +38,11 @@ type AgentSpec struct {
 	// against the cluster-wide agent-manager ClusterRole.
 	Access AgentAccess `json:"access,omitempty"`
 
-	// WorkspaceSize is the PVC storage request for the task workspace (e.g. "10Gi").
-	// Empty or absent means no PVC is created; tasks run without persistent storage.
-	WorkspaceSize string `json:"workspaceSize,omitempty"`
+	// WorkspaceClaimTemplate is a PVC spec template for the task workspace.
+	// Analogous to StatefulSet volumeClaimTemplates: the operator stamps one PVC
+	// per Task using this spec, with the Task as the ownerReference.
+	// Absent means no PVC is created; tasks run without persistent storage.
+	WorkspaceClaimTemplate *corev1.PersistentVolumeClaimSpec `json:"workspaceClaimTemplate,omitempty"`
 
 	// Model selects the AI backend and its credential secret.
 	Model ModelSpec `json:"model"`

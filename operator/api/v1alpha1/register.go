@@ -58,6 +58,11 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	*out = *in
 	in.Worker.DeepCopyInto(&out.Worker)
 	in.Access.DeepCopyInto(&out.Access)
+	if in.WorkspaceClaimTemplate != nil {
+		wct := new(corev1.PersistentVolumeClaimSpec)
+		in.WorkspaceClaimTemplate.DeepCopyInto(wct)
+		out.WorkspaceClaimTemplate = wct
+	}
 	if in.GitProviders != nil {
 		out.GitProviders = make([]GitProvider, len(in.GitProviders))
 		copy(out.GitProviders, in.GitProviders)

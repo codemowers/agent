@@ -43,7 +43,12 @@ spec:
     #       name: agent-worker-config
     #   - secretRef:
     #       name: agent-cred-extra
-  workspaceSize: "20Gi"
+  workspaceClaimTemplate:
+    accessModes: [ReadWriteOnce]
+    storageClassName: retain
+    resources:
+      requests:
+        storage: 20Gi
   access:
     groups:
       - github.com:codemowers:admins
@@ -130,7 +135,12 @@ spec:
       allowPrivilegeEscalation: false
       runAsNonRoot: true
       runAsUser: 1000
-  workspaceSize: "10Gi"
+  workspaceClaimTemplate:
+    accessModes: [ReadWriteOnce]
+    storageClassName: retain
+    resources:
+      requests:
+        storage: 10Gi
   access:
     groups:
       - github.com:codemowers:admins
