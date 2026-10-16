@@ -43,6 +43,7 @@ manifests:
           workerImage: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent}}"
           webhook.image: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent_webhook}}"
           operator.image: "{{.IMAGE_FULLY_QUALIFIED_codemowers_agent_operator}}"
+          "webhook.agents[0]": codemowers-agent
 
 deploy:
   kubectl:
