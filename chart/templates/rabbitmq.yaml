@@ -16,38 +16,35 @@ spec:
     additionalConfig: |
       consumer_timeout = 7200000
 ---
-apiVersion: rabbitmq.com/v1beta1
-kind: Vhost
-metadata:
-  name: {{ .Release.Name }}-events-vhost
-spec:
-  name: /agent-events
-  rabbitmqClusterReference:
-    name: {{ .Release.Name }}-events
-    namespace: {{ .Release.Namespace }}
----
+# Topic exchange; webhook publishes events here with routing keys like
+# github:org/repo#issue:N or alertmanager:fingerprint.
 apiVersion: rabbitmq.com/v1beta1
 kind: Exchange
 metadata:
   name: {{ .Release.Name }}-webhook-exchange
+  labels:
+    skaffold.dev/keep: 'true'
 spec:
   name: agent.webhook.events
   type: topic
   durable: true
-  vhost: /agent-events
+  vhost: /
   rabbitmqClusterReference:
     name: {{ .Release.Name }}-events
     namespace: {{ .Release.Namespace }}
 ---
+# Quorum queue consumed by the operator to match events to Tasks.
 apiVersion: rabbitmq.com/v1beta1
 kind: Queue
 metadata:
-  name: {{ .Release.Name }}-controller-queue
+  name: {{ .Release.Name }}-webhook-queue
+  labels:
+    skaffold.dev/keep: 'true'
 spec:
-  name: agent.controller.work
+  name: agent.webhook.events
   durable: true
   type: quorum
-  vhost: /agent-events
+  vhost: /
   rabbitmqClusterReference:
     name: {{ .Release.Name }}-events
     namespace: {{ .Release.Namespace }}
@@ -56,12 +53,14 @@ apiVersion: rabbitmq.com/v1beta1
 kind: Binding
 metadata:
   name: {{ .Release.Name }}-webhook-binding
+  labels:
+    skaffold.dev/keep: 'true'
 spec:
   source: agent.webhook.events
-  destination: agent.controller.work
+  destination: agent.webhook.events
   destinationType: queue
   routingKey: '#'
-  vhost: /agent-events
+  vhost: /
   rabbitmqClusterReference:
     name: {{ .Release.Name }}-events
     namespace: {{ .Release.Namespace }}
