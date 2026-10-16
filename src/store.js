@@ -9,7 +9,7 @@ if not current then return -1 end
 if redis.call('EXISTS', KEYS[2]) == 1 then return 2 end
 if cjson.decode(current).revision ~= tonumber(ARGV[1]) then return 0 end
 redis.call('SET', KEYS[1], ARGV[2])
-redis.call('SET', KEYS[2], '1')
+redis.call('SET', KEYS[2], '1', 'EX', 604800)
 return 1`;
 const createScript = `
 local previous = redis.call('GET', KEYS[3])

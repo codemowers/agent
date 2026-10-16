@@ -1,35 +1,80 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ModelCatalog, changeModel} from '../src/models.js';
-import {newTask, reserve, finish, changeState} from '../src/domain.js';
+import {newTask, reserve, finish, prompt, claimNextTurn} from '../src/domain.js';
 import {Kube} from '../src/kube.js';
 
 const actor = {type: 'user', issuer: 'https://issuer.test', subject: 'me'};
-test('catalog offers only hosted Claude and Codex and validates CLI/provider selection', async () => {
+test('catalog discovers credential-accessible Claude and coding models and validates selection', async () => {
   const catalog = new ModelCatalog({model: 'cloud-claude', codexModel: 'cloud-codex'});
+  const oldAnthropic = process.env.ANTHROPIC_API_KEY, oldOpenai = process.env.OPENAI_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'anthropic-test'; process.env.OPENAI_API_KEY = 'openai-test';
+  catalog.fetchModels = async (url, options) => {
+    if (url.includes('anthropic')) {
+      assert.equal(options.headers['x-api-key'], 'anthropic-test');
+      return {ok: true, json: async () => ({data: [{id: 'claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5'},
+        {id: 'claude-sonnet-4-5-20250929'}]})};
+    }
+    assert.equal(options.headers.Authorization, 'Bearer openai-test');
+    return {ok: true, json: async () => ({data: [{id: 'gpt-6.1-sol'}, {id: 'gpt-5.3-codex'}, {id: 'gpt-6.1-sol-search'}]})};
+  };
+  try { await catalog.refresh(); } finally {
+    if (oldAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = oldAnthropic;
+    if (oldOpenai === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldOpenai;
+  }
   const listed = await catalog.list();
-  assert.deepEqual(listed.models.map(model => model.provider), ['anthropic', 'openai']);
+  assert.deepEqual(listed.models.map(model => model.id),
+    ['anthropic:default', 'openai:default', 'anthropic:claude-sonnet-5-5',
+      'anthropic:claude-sonnet-4-5-20250929', 'openai:gpt-6.1-sol', 'openai:gpt-5.3-codex']);
   assert.deepEqual(listed.warnings, []);
   assert.equal((await catalog.select()).model, 'cloud-claude');
   assert.equal((await catalog.select(undefined, 'codex')).model, 'cloud-codex');
+  assert.equal((await catalog.select('anthropic:claude-sonnet-5-5', 'claude')).model, 'claude-sonnet-5-5');
   await assert.rejects(catalog.select('https://arbitrary-host', 'claude'));
   await assert.rejects(catalog.select('anthropic:default', 'codex'));
   await assert.rejects(catalog.select('openai:default', 'unknown'));
 });
 
-test('CLI/model changes require a stopped paused Task, reset native session, and retain workspace identity', () => {
+test('transient discovery errors retain cached models for the affected provider', async () => {
+  const catalog = new ModelCatalog({model: 'claude-default', codexModel: 'codex-default'});
+  const oldAnthropic = process.env.ANTHROPIC_API_KEY, oldOpenai = process.env.OPENAI_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'anthropic-test'; process.env.OPENAI_API_KEY = 'openai-test';
+  catalog.fetchModels = async url => ({ok: true, json: async () => ({data: [
+    {id: url.includes('anthropic') ? 'claude-sonnet-5-5' : 'gpt-6.1-sol'}]})});
+  try {
+    await catalog.refresh();
+    catalog.fetchModels = async url => {
+      if (url.includes('anthropic')) throw new Error('temporary outage');
+      return {ok: true, json: async () => ({data: [{id: 'gpt-6.1-sol'}]})};
+    };
+    const listed = await catalog.refresh();
+    assert.ok(listed.models.some(model => model.id === 'anthropic:claude-sonnet-5-5'));
+    assert.ok(listed.models.some(model => model.id === 'openai:gpt-6.1-sol'));
+    assert.match(listed.warnings[0], /temporary outage/);
+  } finally {
+    if (oldAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = oldAnthropic;
+    if (oldOpenai === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldOpenai;
+  }
+});
+
+test('model change during active execution takes effect after the turn and retains workspace identity', () => {
   const task = newTask('tenant-a', actor, 'Build software'), id = task.id;
   const first = reserve(task);
   assert.match(first.podName, /^agent-worker-/);
   const model = {id: 'openai:default', provider: 'openai', backend: 'codex', model: 'cloud-codex',
     label: 'Codex', backends: ['codex']};
-  assert.throws(() => changeModel(task, model, actor));
-  changeState(task, 'Paused', actor);
-  assert.throws(() => changeModel(task, model, actor));
-  finish(task, first.id, {exitCode: 143, sessionId: first.sessionId});
   changeModel(task, model, actor);
+  assert.equal(task.pendingModel.id, model.id);
+  assert.equal(task.active.model?.backend, first.model?.backend);
+  task.active.state = 'Idle';
+  prompt(task, actor, 'Use Codex next', 'webui');
+  claimNextTurn(task, first.id);
+  assert.equal(task.active.state, 'Idle');
+  assert.equal(task.pending.length, 1);
+  finish(task, first.id, {exitCode: 143, sessionId: first.sessionId});
   assert.equal(task.session, null); assert.equal(task.id, id);
-  changeState(task, 'Active', actor);
+  assert.equal(task.pendingModel, null);
+  assert.equal(task.phase, 'Pending');
   const second = reserve(task);
   assert.notEqual(second.sessionId, first.sessionId);
   assert.equal(second.sessionEpoch, 2);

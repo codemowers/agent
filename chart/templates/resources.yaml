@@ -197,14 +197,14 @@ spec:
         - ReadWriteOnce
       resources:
         requests:
-          storage: 2Gi
+          storage: 8Gi
   resources:
     requests:
       cpu: 100m
       memory: 256Mi
     limits:
       cpu: "1"
-      memory: 1Gi
+      memory: 2Gi
 ---
 apiVersion: codemowers.cloud/v1
 kind: OIDCClient
@@ -383,6 +383,18 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ get $runtime "AGENT_GITHUB_SECRET" }}
+                  key: token
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ get $runtime "AGENT_ANTHROPIC_SECRET" }}
+                  key: token
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ get $runtime "AGENT_OPENAI_SECRET" }}
                   key: token
                   optional: true
             - name: REDIS_URL

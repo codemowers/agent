@@ -42,7 +42,7 @@
 <details id="task-settings"><summary>Task settings</summary><p class="eyebrow" id="task-id"></p><p id="task-draft"></p>
 <form id="rename"><input id="task-title" aria-label="Task title" required maxlength="200"><button type="submit">Rename</button></form>
 <form id="change-model"><div class="model-choice"><label>Worker CLI <select id="task-backend"><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
-<label>Model <select id="task-model"></select></label><button type="submit">Apply</button></div><small>Pause and wait for the worker to stop before changing CLI or model. Switching starts a new conversation and keeps the workspace.</small></form>
+<label>Model <select id="task-model"></select></label><button type="submit">Apply</button></div><small id="model-change-note">Apply now or send your next prompt. Switching starts a new conversation and keeps the workspace.</small></form>
 </details><div id="timeline"></div><p id="processing-state" role="status" aria-live="polite"></p><p id="turn-elapsed"></p><form id="followup"><textarea id="message" placeholder="Add instructions or answer a question…" required maxlength="16000"></textarea><button type="submit">Send →</button></form></section>
 </main><button id="sidebar-backdrop" type="button" aria-label="Close task menu" tabindex="-1" hidden></button><div id="error" role="alert" hidden></div><script type="module" src="/app.js"></script>
 

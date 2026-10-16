@@ -491,7 +491,8 @@ function renderDetail() {
   for (const b of $('#controls').querySelectorAll('[data-state]')) {
     b.disabled = terminal || (b.dataset.state === 'Completed' && Boolean(selected.active));
     if (b.dataset.state === 'Paused') b.hidden = terminal || selected.desiredState !== 'Active';
-    if (b.dataset.state === 'Active') { b.hidden = terminal || selected.desiredState !== 'Paused'; b.disabled = Boolean(selected.active); }
+    if (b.dataset.state === 'Active') { b.hidden = terminal || selected.desiredState !== 'Paused';
+      b.disabled = Boolean(selected.active) && selected.reason !== 'WorkerMissingRequiresReview'; }
   }
   const busy = Boolean(selected.active && selected.active.state !== 'Idle' && selected.desiredState === 'Active');
   $('#stop-prompt').hidden = !busy;
@@ -507,10 +508,14 @@ function renderDetail() {
   $('#followup button').disabled = terminal || sending;
   $('#followup button').textContent = sending ? 'Sending…' : busy || selected.desiredState === 'Paused' ? 'Queue →' : 'Send →';
   if (!modelDirty) {
-    $('#task-backend').value = selected.model?.backend || 'claude';
-    populateModels('#task-model', $('#task-backend').value, selected.model?.id);
+    const choice = selected.pendingModel || selected.model;
+    $('#task-backend').value = choice?.backend || 'claude';
+    populateModels('#task-model', $('#task-backend').value, choice?.id);
   }
-  const editable = !terminal && selected.desiredState === 'Paused' && !selected.active;
+  $('#model-change-note').textContent = selected.pendingModel
+    ? `${selected.pendingModel.label} is queued for the next turn. The current turn will finish first.`
+    : 'Apply now or send your next prompt. Switching starts a new conversation and keeps the workspace.';
+  const editable = !terminal;
   for (const element of $('#change-model').querySelectorAll('select,button')) element.disabled = !editable;
 }
 async function select(id) {
@@ -676,8 +681,9 @@ $('#followup').onsubmit = async event => {
   if (sending) return;
   const taskId = selected.id, content = $('#message').value;
   sending = true; renderDetail();
-  try { const task = await api(`/tasks/${taskId}/prompts`, 'POST', {prompt: content});
-    if (selected?.id === taskId) { selected = task; if ($('#message').value === content) $('#message').value = ''; } }
+  try { const task = await api(`/tasks/${taskId}/prompts`, 'POST', {prompt: content,
+    ...(modelDirty ? {backend: $('#task-backend').value, modelId: $('#task-model').value} : {})});
+    if (selected?.id === taskId) { selected = task; modelDirty = false; if ($('#message').value === content) $('#message').value = ''; } }
   catch (error) { failure(error); }
   finally { sending = false; renderDetail(); }
 };

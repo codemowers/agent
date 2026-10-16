@@ -188,7 +188,8 @@ Clients/workers cannot forge user or controller attribution. Preserve creator
 identity separately from later prompt authors and preserve original source events.
 
 Task creation and mutations persist state, queue changes and idempotency receipts
-atomically. The controller Lease serializes reconciliation; Redis revision checks
+atomically. Mutation receipts expire after seven days; creation receipts remain until
+Task deletion. The controller Lease serializes reconciliation; Redis revision checks
 handle concurrent API updates. Delivery is at least once. Reconcile Kubernetes
 and external effects after partial operations; there is no transaction spanning
 Redis, Kubernetes and GitHub. Check existing branches/PRs/workloads before
@@ -213,9 +214,11 @@ matching live workers. Persist terminal results before releasing the Pod
 finalizer. Delete successful Pods and execution input ConfigMaps; retain failed
 Pods for logs and exit status until Task deletion, including across retries.
 Actual container exit code overrides
-a worker claim. A disappeared or reused Pod pauses the Task for review. Do not
-replace an unreachable worker against the same PVC until termination/fencing is
-confirmed. A deletion request or expired Lease alone is insufficient.
+a worker claim. A disappeared or reused Pod pauses the Task for review. A user
+can resume a missing-Pod Task after the controller verifies the recorded Pod is
+absent; interrupted inputs return to the queue. Do not replace an unreachable
+worker against the same PVC until termination/fencing is confirmed. A deletion
+request or expired Lease alone is insufficient.
 
 Workers emit sequenced newline-delimited `agent_event` JSON to stdout. The
 controller ingests bounded Kubernetes logs and guards both receipts and
@@ -282,9 +285,12 @@ immutable execution ConfigMap file, not an oversized CLI prompt argument.
 Retain native Claude/Codex session files on the PVC at stable paths and record the
 session ID early. Redis transcript/final JSON alone cannot restore a CLI session.
 Missing/incompatible state starts a fresh session from objective, checkout and
-prior outcomes, increments the epoch and records why. Changing CLI/model requires
-a paused Task with no active worker and a new conversation epoch; retain workspace
-and history. Full process-memory restore and filesystem snapshots are not needed.
+prior outcomes, increments the epoch and records why. The controller discovers
+credential-accessible hosted models at startup and refreshes the cached catalog.
+Changing CLI/model during an execution queues the selection for the next turn;
+the current turn finishes before the worker exits. The next execution starts a
+new conversation epoch while retaining workspace and history. Full process-memory
+restore and filesystem snapshots are not needed.
 
 ## Runner, models and project builds
 

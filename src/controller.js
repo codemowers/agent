@@ -97,6 +97,11 @@ export async function reconcile(store, kube, config) {
         }
       }
       if (result) result.exitCode = exited?.exitCode ?? (pod.status.phase === 'Failed' ? 1 : result.exitCode);
+      if (task.pendingModel && task.active?.lastTurnResult) {
+        result = {...task.active.lastTurnResult, ...result,
+          exitCode: exited?.exitCode ?? (pod.status.phase === 'Failed' ? 1 : result?.exitCode ?? 0),
+          summary: task.active.lastTurnResult.summary};
+      }
       const finalResult = result || {exitCode: exited?.exitCode ?? (pod.status.phase === 'Succeeded' ? 0 : 1),
         summary: 'Worker stopped without a final result; inspect execution logs.'};
       await store.mutate(task.id, 'finish:' + execution.id, current => {

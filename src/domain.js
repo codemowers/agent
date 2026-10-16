@@ -127,6 +127,14 @@ export function changeState(task, state, actor) {
   }
   activity(task, actor, state === 'Completed' ? 'Accepted completion' : `Requested ${state}`, 'webui', {kind: 'control'});
 }
+export function resumeMissingWorker(task, executionId, actor) {
+  if (task.reason !== 'WorkerMissingRequiresReview' || task.active?.id !== executionId) {
+    throw new Problem(409, 'Worker state changed; refresh and retry');
+  }
+  task.active.stopRequested = true;
+  finish(task, executionId, {exitCode: 143, summary: 'Worker disappeared; resuming after user review.'});
+  changeState(task, 'Active', actor);
+}
 export function stateRevision(state, revision) {
   // Stopping expresses current user intent, regardless of intervening progress.
   if (['Paused', 'Cancelled'].includes(state)) return undefined;
@@ -173,6 +181,7 @@ export function interruptPrompt(task, executionId, promptIds, actor) {
 export function finish(task, executionId, result) {
   if (task.active?.id !== executionId) throw new Problem(409, 'Stale execution');
   const execution = task.active;
+  const switchingModel = Boolean(task.pendingModel);
   task.lastExecution = {...execution, token: undefined, state: result.exitCode === 0 ? 'Succeeded' : 'Failed',
     finishedAt: new Date().toISOString(), exitCode: result.exitCode, result};
   if (result.sessionId) task.session = {id: result.sessionId, epoch: execution.sessionEpoch, backend: execution.model?.backend || 'claude'};
@@ -184,11 +193,19 @@ export function finish(task, executionId, result) {
     task.pending = [...new Set([...execution.prompts.filter(p => !execution.completedPrompts?.includes(p)
       && !task.events.some(e => e.id === p && e.queueDisposition === 'removed')), ...task.pending])];
   }
+  if (task.pendingModel && task.desiredState !== 'Cancelled' && !task.completionRequested) {
+    task.sessionEpoch = (task.session?.epoch || task.sessionEpoch || execution.sessionEpoch) + 1;
+    task.session = null;
+    task.model = task.pendingModel;
+    task.pendingModel = null;
+    activity(task, controllerActor, `Model changed to ${task.model.label}. Starting a new conversation with the existing workspace.`,
+      'controller', {kind: 'model'});
+  }
   // Desired state always wins over late process success.
   if (task.completionRequested && !task.deleteRequested && task.desiredState !== 'Cancelled') task.phase = 'Completed';
   else if (task.desiredState !== 'Active') task.phase = task.desiredState;
   else if (task.pending.length) task.phase = 'Pending';
-  else { task.phase = 'Waiting'; task.reason = task.blocked ? 'AwaitingConfirmation' : result.exitCode === 0 ? 'AwaitingReview' : 'ExecutionFailed'; }
+  else { task.phase = 'Waiting'; task.reason = task.blocked ? 'AwaitingConfirmation' : result.exitCode === 0 || switchingModel ? 'AwaitingReview' : 'ExecutionFailed'; }
   return task;
 }
 export function recordResult(task, executionId, result) {
@@ -248,7 +265,7 @@ export function workerEvent(task, executionId, entry) {
     'controller', {kind: 'progress', executionId});
 }
 export function claimNextTurn(task, executionId) {
-  if (task.active?.id !== executionId || task.desiredState !== 'Active' || task.active.state !== 'Idle' || !promptsReady(task)) return;
+  if (task.active?.id !== executionId || task.desiredState !== 'Active' || task.pendingModel || task.active.state !== 'Idle' || !promptsReady(task)) return;
   task.active.currentPrompts = task.pending.splice(0);
   task.active.prompts.push(...task.active.currentPrompts);
   task.active.result = null; task.active.state = 'Running'; task.active.idleExpiresAt = null;

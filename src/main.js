@@ -29,7 +29,7 @@ import {DraftCatalog} from './drafts.js';
 import {transcriptDraft} from './refinement.js';
 import {refinementRepository, refinementPrompt} from './refinement-defaults.js';
 import {Problem, text, id, newTask, prompt, activity, controllerActor, publicTask, changeState, digest, tokenMatches,
-  workerEvent, claimNextTurn, renameTask, deleteTask, removeQueuedPrompt, stateRevision, blockExecution, interruptPrompt,
+  workerEvent, claimNextTurn, renameTask, deleteTask, removeQueuedPrompt, stateRevision, blockExecution, interruptPrompt, resumeMissingWorker,
   normalizeControls, controlsFromMarkdown, setControl, promptsReady} from './domain.js';
 
 const faults = installFaultHandler();
@@ -76,6 +76,10 @@ if (process.env.AGENT_MODE === 'worker') {
   const devices = new DeviceCatalog(kube, config);
   faults.setReporter(report => createRepairTask(store, config.namespace, report));
   const models = new ModelCatalog(config);
+  const {models: available, warnings} = await models.refresh();
+  console.log(JSON.stringify({event: 'models_discovered', count: available.length, warnings}));
+  setInterval(() => void models.refresh().catch(error => console.error(JSON.stringify({event: 'models_discovery_failed',
+    message: error.message}))), 60 * 60 * 1000).unref();
   config.probeAgent = async () => { await redis.ping(); return agentMcpInitialize(); };
   const setup = new SetupCatalog(config);
   const builds = new BuildCatalog(kube);
@@ -221,8 +225,13 @@ if (process.env.AGENT_MODE === 'worker') {
     res.json(publicTask(await store.mutate(id(req.params.id), requestId(req),
       task => changeModel(task, model, req.actor), req.body.revision)));
   });
-  app.post('/api/tasks/:id/prompts', async (req, res) => res.json(publicTask(await store.mutate(id(req.params.id), requestId(req),
-    task => prompt(task, req.actor, text(req.body.prompt), 'webui')))));
+  app.post('/api/tasks/:id/prompts', async (req, res) => {
+    const model = req.body.modelId ? await models.select(req.body.modelId, req.body.backend) : null;
+    res.json(publicTask(await store.mutate(id(req.params.id), requestId(req), task => {
+      if (model) changeModel(task, model, req.actor);
+      prompt(task, req.actor, text(req.body.prompt), 'webui');
+    })));
+  });
   app.post('/api/tasks/:id/interrupt', async (req, res) => res.json(publicTask(await store.mutate(id(req.params.id), requestId(req),
     task => interruptPrompt(task, req.body.executionId, req.body.promptIds, req.actor)))));
   app.patch('/api/tasks/:id/controls/:key', async (req, res) => res.json(publicTask(await store.mutate(id(req.params.id), requestId(req),
@@ -231,8 +240,19 @@ if (process.env.AGENT_MODE === 'worker') {
     task => removeQueuedPrompt(task, id(req.params.promptId), req.actor)))));
   app.post('/api/tasks/:id/state', async (req, res) => {
     const expectedRevision = stateRevision(req.body.state, req.body.revision);
+    let missingExecution;
+    if (req.body.state === 'Active') {
+      const current = await store.get(id(req.params.id));
+      if (current.reason === 'WorkerMissingRequiresReview' && current.active) {
+        if (await kube.get('pod', current.active.podName)) throw new Problem(409, 'Worker still exists; refresh and retry');
+        missingExecution = current.active.id;
+      }
+    }
     res.json(publicTask(await store.mutate(id(req.params.id), requestId(req),
-      task => changeState(task, req.body.state, req.actor), expectedRevision)));
+      task => {
+        if (missingExecution) resumeMissingWorker(task, missingExecution, req.actor);
+        else changeState(task, req.body.state, req.actor);
+      }, expectedRevision)));
   });
 
   async function execution(req) {
@@ -262,7 +282,8 @@ if (process.env.AGENT_MODE === 'worker') {
   });
   app.get('/executions/:id/control', async (req, res) => {
     const task = await execution(req);
-    res.json({interrupt: task.active.interrupt || null, idleTimeoutSeconds: task.active.idleTimeoutSeconds || 0});
+    res.json({interrupt: task.active.interrupt || null, idleTimeoutSeconds: task.active.idleTimeoutSeconds || 0,
+      stopAfterTurn: Boolean(task.pendingModel)});
   });
   app.get('/executions/:id/context', async (req, res) => {
     const task = await execution(req);
@@ -276,20 +297,23 @@ if (process.env.AGENT_MODE === 'worker') {
     let task = await execution(req);
     if (!Number.isInteger(req.body.afterSequence)) throw new Problem(400, 'Expected previous turn sequence');
     if (task.active.lastTurnSequence !== req.body.afterSequence) {
-      res.json({desiredState: task.desiredState, prompts: []}); return;
+      res.json({desiredState: task.pendingModel ? 'Paused' : task.desiredState,
+        stopAfterTurn: Boolean(task.pendingModel), prompts: []}); return;
     }
-    if (task.active.state === 'Idle' && promptsReady(task) && task.desiredState === 'Active') {
+    if (task.active.state === 'Idle' && promptsReady(task) && task.desiredState === 'Active' && !task.pendingModel) {
       task = await store.mutate(task.id, 'next:' + task.active.id + ':' + text(req.body.id, 200),
         current => {
           // A prompt can be removed between the readiness check and CAS retry.
           // Do not consume the resident worker's retry receipt for an empty wait.
           if (current.active?.id !== task.active.id || current.active.state !== 'Idle'
-            || current.desiredState !== 'Active' || !promptsReady(current)) throw new Problem(409, 'No prompt ready for this execution');
+            || current.desiredState !== 'Active' || current.pendingModel || !promptsReady(current)) throw new Problem(409, 'No prompt ready for this execution');
           claimNextTurn(current, task.active.id);
         });
-      res.json({desiredState: task.desiredState, session: task.session,
+      res.json({desiredState: task.pendingModel ? 'Paused' : task.desiredState,
+        stopAfterTurn: Boolean(task.pendingModel), session: task.session,
         prompts: task.events.filter(e => task.active.currentPrompts?.includes(e.id))});
-    } else res.json({desiredState: task.desiredState, session: task.session,
+    } else res.json({desiredState: task.pendingModel ? 'Paused' : task.desiredState,
+      stopAfterTurn: Boolean(task.pendingModel), session: task.session,
       prompts: task.active.state === 'Running' ? task.events.filter(e => task.active.currentPrompts?.includes(e.id)) : []});
   });
   app.post('/executions/:id/report', async (req, res) => {

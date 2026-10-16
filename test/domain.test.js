@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {newTask, prompt, reserve, finish, changeState, publicTask, Problem, workerEvent, claimNextTurn, renameTask, deleteTask, removeQueuedPrompt, stateRevision, blockExecution, interruptPrompt} from '../src/domain.js';
+import {newTask, prompt, reserve, finish, changeState, publicTask, Problem, workerEvent, claimNextTurn, renameTask, deleteTask, removeQueuedPrompt, stateRevision, blockExecution, interruptPrompt, resumeMissingWorker} from '../src/domain.js';
 import {authorized} from '../src/auth.js';
 import {Kube} from '../src/kube.js';
 test('prompt stop retains the active worker and task, marks interrupted input, and rejects stale turn controls', () => {
@@ -31,6 +31,18 @@ test('stop actions ignore stale UI revisions while resume and completion remain 
   finish(task, task.active.id, {exitCode: 143, summary: 'Stopped'});
   assert.equal(task.phase, 'Paused');
   assert.equal(task.active, null);
+});
+test('reviewed missing worker resumes unfinished and queued prompts', () => {
+  const task = newTask('ns', user, 'First prompt');
+  const run = reserve(task);
+  const followup = prompt(task, user, 'Second prompt');
+  task.reason = 'WorkerMissingRequiresReview'; task.desiredState = 'Paused';
+  assert.throws(() => resumeMissingWorker(task, 'stale', user), {status: 409});
+  resumeMissingWorker(task, run.id, user);
+  assert.equal(task.active, null);
+  assert.equal(task.desiredState, 'Active');
+  assert.equal(task.phase, 'Pending');
+  assert.deepEqual(task.pending, [run.prompts[0], followup.id]);
 });
 
 const user = {type: 'user', issuer: 'https://id.example/', subject: 'user-123', name: 'Lauri'};

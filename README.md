@@ -31,7 +31,7 @@ Note we will shortly add knob there to turn on the agent just like that.
 
 ## Features
 
-- **Choose your agent.** Select hosted Claude or Codex and a model per task.
+- **Choose your agent.** Select hosted Claude or Codex from models discovered with the configured provider credentials. You can change the CLI or model for the next turn; this starts a new conversation while keeping the workspace.
 - **Keep working.** Follow progress in the browser, queue prompts, and pause or
   resume with the workspace intact. Waiting for confirmation keeps the worker
   warm for 60 minutes after its last response; explicit Pause stops it.

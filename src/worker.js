@@ -237,6 +237,7 @@ export async function worker(onException = async () => {}) {
   }
   let idleSeconds = Number(process.env.AGENT_IDLE_TIMEOUT_SECONDS || 0);
   let result;
+  let stopAfterTurn = false;
   while (!stopped) {
     try { result = await runTurn(envelope); }
     catch (error) {
@@ -256,10 +257,11 @@ export async function worker(onException = async () => {}) {
         if (response.ok) {
           const control = await response.json();
           if (Number.isInteger(control.idleTimeoutSeconds) && control.idleTimeoutSeconds > 0) idleSeconds = control.idleTimeoutSeconds;
+          stopAfterTurn = control.stopAfterTurn === true;
         }
       } catch { /* Retain the established timeout during controller outages. */ }
     }
-    if (!result || !idleSeconds || stopped) break;
+    if (!result || !idleSeconds || stopped || stopAfterTurn) break;
     const deadline = Date.parse(result.completedAt) + idleSeconds * 1000;
     const afterSequence = sequence, requestId = randomUUID();
     let next;
@@ -272,6 +274,7 @@ export async function worker(onException = async () => {}) {
           body: JSON.stringify({id: requestId, afterSequence}), signal: AbortSignal.timeout(10000)});
         if (!response.ok) continue;
         const inbox = await response.json();
+        if (inbox.stopAfterTurn) { stopAfterTurn = true; break; }
         if (inbox.desiredState !== 'Active') { stopped = true; break; }
         if (inbox.prompts.length) { next = {...envelope, prompts: inbox.prompts, session: inbox.session}; break; }
       } catch { /* Keep the resident worker during transient controller outages. */ }
