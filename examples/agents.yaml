@@ -21,31 +21,45 @@ metadata:
   annotations:
     codemowers.cloud/description: "Developer agent — full toolchain, Kube RBAC, topic branches"
 spec:
-  containers:
-    - name: worker
-      image: codemowers/agent:latest
-      securityContext:
-        readOnlyRootFilesystem: false
-        allowPrivilegeEscalation: false
-        runAsNonRoot: true
-        runAsUser: 1000
-      env:
-        - name: PATH
-          value: /opt/tools/kubectl/bin:/opt/tools/helm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      volumeMounts:
-        - name: workspace
-          mountPath: /workspace
-        - name: cache
-          mountPath: /home/user/.cache
-        - name: agent-config
-          mountPath: /etc/agent
-          readOnly: true
-        - name: kubectl
-          mountPath: /opt/tools/kubectl
-          readOnly: true
-        - name: helm
-          mountPath: /opt/tools/helm
-          readOnly: true
+  podSpec:
+    serviceAccountName: agent-worker
+    containers:
+      - name: worker
+        image: codemowers/agent:latest
+        securityContext:
+          readOnlyRootFilesystem: false
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+        env:
+          - name: PATH
+            value: /opt/tools/kubectl/bin:/opt/tools/helm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: cache
+            mountPath: /home/user/.cache
+          - name: agent-config
+            mountPath: /etc/agent
+            readOnly: true
+          - name: kubectl
+            mountPath: /opt/tools/kubectl
+            readOnly: true
+          - name: helm
+            mountPath: /opt/tools/helm
+            readOnly: true
+    volumes:
+      - name: agent-config
+        configMap:
+          name: agent-worker-config
+      - name: kubectl
+        image:
+          reference: registry.k8s.io/kubectl:v1.36.3
+          pullPolicy: IfNotPresent
+      - name: helm
+        image:
+          reference: alpine/helm:3.17.3
+          pullPolicy: IfNotPresent
   volumeClaimTemplates:
     - metadata:
         name: workspace
@@ -63,18 +77,6 @@ spec:
         resources:
           requests:
             storage: 5Gi
-  volumes:
-    - name: agent-config
-      configMap:
-        name: agent-worker-config
-    - name: kubectl
-      image:
-        reference: registry.k8s.io/kubectl:v1.36.3
-        pullPolicy: IfNotPresent
-    - name: helm
-      image:
-        reference: alpine/helm:3.17.3
-        pullPolicy: IfNotPresent
   access:
     groups:
       - github.com:codemowers:admins
@@ -96,7 +98,6 @@ spec:
   credentialRefs:
     - agent-worker-anthropic-api-token
     - agent-worker-github-token
-  workerServiceAccountName: agent-worker
 ---
 apiVersion: agents.codemowers.cloud/v1alpha1
 kind: Agent
@@ -106,14 +107,16 @@ metadata:
   annotations:
     codemowers.cloud/description: "Customer support agent — no cluster access, read-only root, no PVC"
 spec:
-  containers:
-    - name: worker
-      image: codemowers/agent:latest
-      securityContext:
-        readOnlyRootFilesystem: true
-        allowPrivilegeEscalation: false
-        runAsNonRoot: true
-        runAsUser: 65534
+  podSpec:
+    serviceAccountName: agent-worker-readonly
+    containers:
+      - name: worker
+        image: codemowers/agent:latest
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 65534
   # No volumeClaimTemplates — tasks are stateless; no PVCs created.
   access:
     groups:
@@ -134,9 +137,6 @@ spec:
   credentialRefs:
     - agent-worker-anthropic-api-token
     - agent-worker-github-token
-  # No tool volumes — no kubectl, no Kubernetes API access.
-  # agent-worker-readonly has automountServiceAccountToken:false and no RBAC bindings.
-  workerServiceAccountName: agent-worker-readonly
 ---
 apiVersion: agents.codemowers.cloud/v1alpha1
 kind: Agent
@@ -146,26 +146,37 @@ metadata:
   annotations:
     codemowers.cloud/description: "Admin agent — kubectl + helm, cluster-admin SA, no GitHub webhooks"
 spec:
-  containers:
-    - name: worker
-      image: codemowers/agent:latest
-      securityContext:
-        readOnlyRootFilesystem: false
-        allowPrivilegeEscalation: false
-        runAsNonRoot: true
-        runAsUser: 1000
-      env:
-        - name: PATH
-          value: /opt/tools/kubectl/bin:/opt/tools/helm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      volumeMounts:
-        - name: workspace
-          mountPath: /workspace
-        - name: kubectl
-          mountPath: /opt/tools/kubectl
-          readOnly: true
-        - name: helm
-          mountPath: /opt/tools/helm
-          readOnly: true
+  podSpec:
+    serviceAccountName: agent-worker-admin
+    containers:
+      - name: worker
+        image: codemowers/agent:latest
+        securityContext:
+          readOnlyRootFilesystem: false
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+        env:
+          - name: PATH
+            value: /opt/tools/kubectl/bin:/opt/tools/helm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: kubectl
+            mountPath: /opt/tools/kubectl
+            readOnly: true
+          - name: helm
+            mountPath: /opt/tools/helm
+            readOnly: true
+    volumes:
+      - name: kubectl
+        image:
+          reference: registry.k8s.io/kubectl:v1.36.3
+          pullPolicy: IfNotPresent
+      - name: helm
+        image:
+          reference: alpine/helm:3.17.3
+          pullPolicy: IfNotPresent
   volumeClaimTemplates:
     - metadata:
         name: workspace
@@ -175,15 +186,6 @@ spec:
         resources:
           requests:
             storage: 10Gi
-  volumes:
-    - name: kubectl
-      image:
-        reference: registry.k8s.io/kubectl:v1.36.3
-        pullPolicy: IfNotPresent
-    - name: helm
-      image:
-        reference: alpine/helm:3.17.3
-        pullPolicy: IfNotPresent
   access:
     groups:
       - github.com:codemowers:admins
@@ -205,4 +207,3 @@ spec:
   credentialRefs:
     - agent-worker-anthropic-api-token
     - agent-worker-github-token
-  workerServiceAccountName: agent-worker-admin
