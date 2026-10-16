@@ -306,7 +306,7 @@ func (r *TaskReconciler) ownerAgent(ctx context.Context, task *agentsv1alpha1.Ta
 }
 
 func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, sa string) *corev1.Pod {
-	ps := agent.Spec.PodSpec.DeepCopy()
+	ps := agent.Spec.Template.Spec.DeepCopy()
 
 	// Safety overrides regardless of user-supplied values.
 	ps.RestartPolicy = corev1.RestartPolicyNever
