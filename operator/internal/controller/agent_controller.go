@@ -134,7 +134,9 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentsv1alpha1.Agent{}).
 		Owns(&agentsv1alpha1.Task{}).
-		Owns(&rbacv1.RoleBinding{}).
+		// RoleBindings are owned via ownerReference (GC cascade) but not watched:
+		// the cluster role does not permit cluster-wide RoleBinding list/watch, and
+		// re-reconciliation on RoleBinding changes is not needed for correctness.
 		Complete(r)
 }
 
