@@ -313,10 +313,8 @@ func (r *TaskReconciler) ownerAgent(ctx context.Context, task *agentsv1alpha1.Ta
 
 func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, sa string) *corev1.Pod {
 	var volumes []corev1.Volume
-	var volumeMounts []corev1.VolumeMount
 
-	// Add workspace PVC volumes stamped from VolumeClaimTemplates.
-	// Users mount these via worker.volumeMounts by the template's metadata.name.
+	// Workspace PVC volumes stamped from VolumeClaimTemplates; mount by name in containers.
 	for _, tmpl := range agent.Spec.VolumeClaimTemplates {
 		pvcName, ok := task.Status.WorkspacePVCs[tmpl.Name]
 		if !ok {
@@ -332,42 +330,30 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		})
 	}
 
-	// Add pod-level volumes declared in spec.volumes.
+	// Pod-level volumes declared explicitly in spec.volumes.
 	volumes = append(volumes, agent.Spec.Volumes...)
 
-	// Mount allowed credentials.
+	// Credential secret volumes named cred-<secretName>; containers mount explicitly.
 	for _, secretName := range agent.Spec.CredentialRefs {
-		volName := "cred-" + secretName
 		volumes = append(volumes, corev1.Volume{
-			Name: volName,
+			Name: "cred-" + secretName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{SecretName: secretName},
 			},
 		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      volName,
-			MountPath: "/secrets/" + secretName,
-			ReadOnly:  true,
-		})
 	}
 
-	// Mount OCI image volumes for tooling; collect bin paths for PATH.
+	// OCI image volumes for tooling; collect bin paths for PATH injection.
 	var pathPrefixes []string
 	for _, tool := range agent.Spec.ToolImages {
-		pull := corev1.PullIfNotPresent
 		volumes = append(volumes, corev1.Volume{
 			Name: "tool-" + tool.Name,
 			VolumeSource: corev1.VolumeSource{
 				Image: &corev1.ImageVolumeSource{
 					Reference:  tool.Image,
-					PullPolicy: pull,
+					PullPolicy: corev1.PullIfNotPresent,
 				},
 			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "tool-" + tool.Name,
-			MountPath: tool.MountPath,
-			ReadOnly:  true,
 		})
 		bin := tool.BinPath
 		if bin == "" {
@@ -376,23 +362,31 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		pathPrefixes = append(pathPrefixes, tool.MountPath+"/"+bin)
 	}
 
-	env := []corev1.EnvVar{
+	// Operator-managed env vars prepended to every container and initContainer.
+	// User-declared env entries follow and can override these.
+	opEnv := []corev1.EnvVar{
 		{Name: "TASK_NAME", Value: task.Name},
 		{Name: "TASK_NAMESPACE", Value: task.Namespace},
 		{Name: "AGENT_NAME", Value: agent.Name},
 	}
 	if len(pathPrefixes) > 0 {
 		pathVal := strings.Join(pathPrefixes, ":") + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-		env = append(env, corev1.EnvVar{Name: "PATH", Value: pathVal})
-	}
-	env = append(env, agent.Spec.Worker.Env...)
-
-	sc := agent.Spec.Worker.SecurityContext
-	if sc == nil {
-		sc = &corev1.SecurityContext{AllowPrivilegeEscalation: boolPtr(false)}
+		opEnv = append(opEnv, corev1.EnvVar{Name: "PATH", Value: pathVal})
 	}
 
-	return &corev1.Pod{
+	containers := make([]corev1.Container, len(agent.Spec.Containers))
+	for i := range agent.Spec.Containers {
+		agent.Spec.Containers[i].DeepCopyInto(&containers[i])
+		containers[i].Env = append(opEnv, containers[i].Env...)
+	}
+
+	initContainers := make([]corev1.Container, len(agent.Spec.InitContainers))
+	for i := range agent.Spec.InitContainers {
+		agent.Spec.InitContainers[i].DeepCopyInto(&initContainers[i])
+		initContainers[i].Env = append(opEnv, initContainers[i].Env...)
+	}
+
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: task.Namespace,
@@ -406,19 +400,14 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 			ServiceAccountName: sa,
 			RestartPolicy:      corev1.RestartPolicyNever,
 			HostUsers:          boolPtr(false),
-			Containers: []corev1.Container{
-				{
-					Name:            "worker",
-					Image:           agent.Spec.Worker.Image,
-					VolumeMounts:    append(volumeMounts, agent.Spec.Worker.VolumeMounts...),
-					Env:             env,
-					EnvFrom:         agent.Spec.Worker.EnvFrom,
-					SecurityContext: sc,
-				},
-			},
-			Volumes: volumes,
+			Containers:         containers,
+			Volumes:            volumes,
 		},
 	}
+	if len(initContainers) > 0 {
+		pod.Spec.InitContainers = initContainers
+	}
+	return pod
 }
 
 func (r *TaskReconciler) SetupWithManager(mgr ctrl.Manager) error {
