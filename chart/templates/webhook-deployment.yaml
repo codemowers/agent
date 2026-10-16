@@ -75,7 +75,7 @@ metadata:
   name: {{ .Release.Name }}-webhook
 spec:
   rules:
-    - host: {{ .Values.webhook.host | default (printf "webhook.%s" .Values.host) }}
+    - host: {{ .Values.webhook.host | default "webhook" }}
       http:
         paths:
           - path: /
