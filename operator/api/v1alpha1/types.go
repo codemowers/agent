@@ -38,12 +38,6 @@ type AgentSpec struct {
 	// against the cluster-wide agent-manager ClusterRole.
 	Access AgentAccess `json:"access,omitempty"`
 
-	// WorkspaceClaimTemplate is a PVC spec template for the task workspace.
-	// Analogous to StatefulSet volumeClaimTemplates: the operator stamps one PVC
-	// per Task using this spec, with the Task as the ownerReference.
-	// Absent means no PVC is created; tasks run without persistent storage.
-	WorkspaceClaimTemplate *corev1.PersistentVolumeClaimSpec `json:"workspaceClaimTemplate,omitempty"`
-
 	// Model selects the AI backend and its credential secret.
 	Model ModelSpec `json:"model"`
 
@@ -100,6 +94,44 @@ type WorkerSpec struct {
 
 	// EnvFrom injects all keys from a ConfigMap or Secret as environment variables.
 	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+
+	// WorkspaceClaimTemplates is a list of PVC templates for persistent worker storage.
+	// Analogous to StatefulSet volumeClaimTemplates: the operator stamps one PVC per
+	// Task per template entry, with the Task as ownerReference.
+	// Each entry declares its own name, mountPath and PVC spec.
+	WorkspaceClaimTemplates []WorkspaceClaimTemplate `json:"workspaceClaimTemplates,omitempty"`
+
+	// Volumes declares additional volumes to mount into the worker container.
+	// Supports ConfigMap, Secret and EmptyDir sources.
+	Volumes []AgentVolume `json:"volumes,omitempty"`
+}
+
+// WorkspaceClaimTemplate is one entry in WorkerSpec.WorkspaceClaimTemplates.
+// The operator creates one PVC per Task per entry, stamped from Spec.
+type WorkspaceClaimTemplate struct {
+	// Name is used as the PVC name suffix and volume name; must be unique per Agent.
+	Name string `json:"name"`
+	// MountPath is where the volume is mounted in the worker container.
+	MountPath string `json:"mountPath"`
+	// Spec is the PersistentVolumeClaimSpec, mirroring StatefulSet volumeClaimTemplates.
+	Spec corev1.PersistentVolumeClaimSpec `json:"spec"`
+}
+
+// AgentVolume declares a non-PVC volume to mount in the worker container.
+// Exactly one source field (ConfigMap, Secret, EmptyDir) should be set.
+type AgentVolume struct {
+	// Name is the volume name; must be unique within the pod.
+	Name string `json:"name"`
+	// MountPath is where the volume is mounted in the worker container.
+	MountPath string `json:"mountPath"`
+	// ReadOnly mounts the volume read-only.
+	ReadOnly bool `json:"readOnly,omitempty"`
+	// ConfigMap mounts a ConfigMap as a directory.
+	ConfigMap *corev1.ConfigMapVolumeSource `json:"configMap,omitempty"`
+	// Secret mounts a Secret as a directory.
+	Secret *corev1.SecretVolumeSource `json:"secret,omitempty"`
+	// EmptyDir mounts a temporary empty directory.
+	EmptyDir *corev1.EmptyDirVolumeSource `json:"emptyDir,omitempty"`
 }
 
 // ToolImage describes an OCI image volume mounted as a toolchain in worker pods.
@@ -234,7 +266,7 @@ type TaskStatus struct {
 	Reason         string             `json:"reason,omitempty"`
 	WorkerPodName  string             `json:"workerPodName,omitempty"`
 	WorkerPodUID   string             `json:"workerPodUID,omitempty"`
-	WorkspacePVC   string             `json:"workspacePVCName,omitempty"`
+	WorkspacePVCs  map[string]string  `json:"workspacePVCs,omitempty"`
 	SessionEpoch   int                `json:"sessionEpoch,omitempty"`
 	QueueMessageID string             `json:"queueMessageId,omitempty"`
 	Progress       *TaskProgress      `json:"progress,omitempty"`

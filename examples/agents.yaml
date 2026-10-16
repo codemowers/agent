@@ -28,27 +28,38 @@ spec:
       allowPrivilegeEscalation: false
       runAsNonRoot: true
       runAsUser: 1000
-    # env: additional env vars appended after operator-managed vars (PATH, TASK_NAME, etc.)
+    workspaceClaimTemplates:
+      - name: workspace
+        mountPath: /workspace
+        spec:
+          accessModes: [ReadWriteOnce]
+          storageClassName: retain
+          resources:
+            requests:
+              storage: 20Gi
+      - name: cache
+        mountPath: /home/user/.cache
+        spec:
+          accessModes: [ReadWriteOnce]
+          storageClassName: retain
+          resources:
+            requests:
+              storage: 5Gi
+    volumes:
+      - name: agent-config
+        mountPath: /etc/agent
+        readOnly: true
+        configMap:
+          name: agent-worker-config
     # env:
-    #   - name: ANTHROPIC_BASE_URL
-    #     value: https://api.anthropic.com
     #   - name: SOME_SECRET
     #     valueFrom:
     #       secretKeyRef:
     #         name: agent-cred-my-secret
     #         key: value
-    # envFrom: inject entire ConfigMap or Secret as env vars
     # envFrom:
-    #   - configMapRef:
-    #       name: agent-worker-config
     #   - secretRef:
     #       name: agent-cred-extra
-  workspaceClaimTemplate:
-    accessModes: [ReadWriteOnce]
-    storageClassName: retain
-    resources:
-      requests:
-        storage: 20Gi
   access:
     groups:
       - github.com:codemowers:admins
@@ -96,7 +107,7 @@ spec:
       allowPrivilegeEscalation: false
       runAsNonRoot: true
       runAsUser: 65534
-  # No workspaceSize — no PVC created; tasks are stateless.
+  # No workspaceClaimTemplates — tasks are stateless; no PVCs created.
   access:
     groups:
       - github.com:codemowers:admins
@@ -135,12 +146,15 @@ spec:
       allowPrivilegeEscalation: false
       runAsNonRoot: true
       runAsUser: 1000
-  workspaceClaimTemplate:
-    accessModes: [ReadWriteOnce]
-    storageClassName: retain
-    resources:
-      requests:
-        storage: 10Gi
+    workspaceClaimTemplates:
+      - name: workspace
+        mountPath: /workspace
+        spec:
+          accessModes: [ReadWriteOnce]
+          storageClassName: retain
+          resources:
+            requests:
+              storage: 10Gi
   access:
     groups:
       - github.com:codemowers:admins

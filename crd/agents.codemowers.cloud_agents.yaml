@@ -67,6 +67,56 @@ spec:
                       If absent the operator applies a safe default: allowPrivilegeEscalation=false.
                     type: object
                     x-kubernetes-preserve-unknown-fields: true
+                  workspaceClaimTemplates:
+                    description: |-
+                      WorkspaceClaimTemplates is a list of PVC templates for persistent worker storage.
+                      Analogous to StatefulSet volumeClaimTemplates: the operator stamps one PVC per Task
+                      per entry. Each entry declares its name, mountPath and PVC spec.
+                    items:
+                      properties:
+                        name:
+                          description: Volume name suffix; must be unique per Agent.
+                          type: string
+                        mountPath:
+                          description: Where the volume is mounted in the worker container.
+                          type: string
+                        spec:
+                          description: PersistentVolumeClaimSpec for the workspace PVC.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                      required:
+                      - name
+                      - mountPath
+                      - spec
+                      type: object
+                    type: array
+                  volumes:
+                    description: Volumes declares additional volumes (ConfigMap, Secret, EmptyDir) to mount.
+                    items:
+                      properties:
+                        name:
+                          type: string
+                        mountPath:
+                          type: string
+                        readOnly:
+                          type: boolean
+                        configMap:
+                          description: Mounts a ConfigMap as a directory.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        secret:
+                          description: Mounts a Secret as a directory.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        emptyDir:
+                          description: Mounts a temporary empty directory.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                      required:
+                      - name
+                      - mountPath
+                      type: object
+                    type: array
                   env:
                     description: |-
                       Env is a list of additional environment variables for the worker container.
@@ -170,13 +220,6 @@ spec:
                 required:
                 - image
                 type: object
-              workspaceClaimTemplate:
-                description: |-
-                  WorkspaceClaimTemplate is a PersistentVolumeClaimSpec template for the task workspace.
-                  Analogous to StatefulSet volumeClaimTemplates: the operator stamps one PVC per Task
-                  from this spec, with the Task as ownerReference. Absent means no PVC; tasks are stateless.
-                type: object
-                x-kubernetes-preserve-unknown-fields: true
               access:
                 description: |-
                   Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
