@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -256,6 +257,46 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		})
 	}
 
+	// Mount OCI image volumes for tooling; collect bin paths for PATH.
+	var pathPrefixes []string
+	for _, tool := range agent.Spec.ToolImages {
+		pull := corev1.PullIfNotPresent
+		volumes = append(volumes, corev1.Volume{
+			Name: "tool-" + tool.Name,
+			VolumeSource: corev1.VolumeSource{
+				Image: &corev1.ImageVolumeSource{
+					Reference:  tool.Image,
+					PullPolicy: pull,
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "tool-" + tool.Name,
+			MountPath: tool.MountPath,
+			ReadOnly:  true,
+		})
+		bin := tool.BinPath
+		if bin == "" {
+			bin = "bin"
+		}
+		pathPrefixes = append(pathPrefixes, tool.MountPath+"/"+bin)
+	}
+
+	env := []corev1.EnvVar{
+		{Name: "TASK_NAME", Value: task.Name},
+		{Name: "TASK_NAMESPACE", Value: task.Namespace},
+		{Name: "AGENT_NAME", Value: agent.Name},
+	}
+	if len(pathPrefixes) > 0 {
+		pathVal := strings.Join(pathPrefixes, ":") + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		env = append(env, corev1.EnvVar{Name: "PATH", Value: pathVal})
+	}
+
+	roRootFS := true
+	if agent.Spec.ReadOnlyRootFilesystem != nil {
+		roRootFS = *agent.Spec.ReadOnlyRootFilesystem
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -275,10 +316,10 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 					Name:         "worker",
 					Image:        image,
 					VolumeMounts: volumeMounts,
-					Env: []corev1.EnvVar{
-						{Name: "TASK_NAME", Value: task.Name},
-						{Name: "TASK_NAMESPACE", Value: task.Namespace},
-						{Name: "AGENT_NAME", Value: agent.Name},
+					Env:          env,
+					SecurityContext: &corev1.SecurityContext{
+						ReadOnlyRootFilesystem:   boolPtr(roRootFS),
+						AllowPrivilegeEscalation: boolPtr(false),
 					},
 				},
 			},
