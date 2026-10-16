@@ -17,6 +17,7 @@ import (
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	"github.com/codemowers/agent/operator/internal/controller"
+	"github.com/codemowers/agent/operator/internal/rabbitmq"
 )
 
 func envOrDefault(key, def string) string {
@@ -83,20 +84,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	// RabbitMQ is optional. When configured, per-task queues carry objectives and
+	// follow-up prompts; AMQP_URL and TASK_QUEUE are injected into every worker pod.
+	var amqpMgr *rabbitmq.Manager
+	amqpURL := buildAMQPURL()
+	if amqpURL != "" {
+		amqpMgr = rabbitmq.New(amqpURL)
+		ctrl.Log.Info("RabbitMQ configured", "url", amqpURL)
+	}
+
 	if err := (&controller.TaskReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		AMQP:    amqpMgr,
+		AMQPURL: amqpURL,
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Task controller")
 		os.Exit(1)
 	}
 
-	if amqpURL := buildAMQPURL(); amqpURL != "" {
+	if amqpURL != "" {
 		consumer := &controller.EventConsumer{
 			Client:   mgr.GetClient(),
 			AMQPURL:  amqpURL,
 			Queue:    envOrDefault("AMQP_QUEUE", "agent.webhook.events"),
 			Exchange: envOrDefault("AMQP_EXCHANGE", "agent.webhook.events"),
+			AMQP:     amqpMgr,
 		}
 		if err := mgr.Add(consumer); err != nil {
 			ctrl.Log.Error(err, "unable to add event consumer")
