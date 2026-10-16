@@ -67,31 +67,11 @@ spec:
                       If absent the operator applies a safe default: allowPrivilegeEscalation=false.
                     type: object
                     x-kubernetes-preserve-unknown-fields: true
-                  workspaceClaimTemplates:
+                  volumeMounts:
                     description: |-
-                      WorkspaceClaimTemplates is a list of PVC templates for persistent worker storage.
-                      Analogous to StatefulSet volumeClaimTemplates: the operator stamps one PVC per Task
-                      per entry. Each entry declares its name, mountPath and PVC spec.
-                    items:
-                      properties:
-                        name:
-                          description: Volume name suffix; must be unique per Agent.
-                          type: string
-                        mountPath:
-                          description: Where the volume is mounted in the worker container.
-                          type: string
-                        spec:
-                          description: PersistentVolumeClaimSpec for the workspace PVC.
-                          type: object
-                          x-kubernetes-preserve-unknown-fields: true
-                      required:
-                      - name
-                      - mountPath
-                      - spec
-                      type: object
-                    type: array
-                  volumes:
-                    description: Volumes declares additional volumes (ConfigMap, Secret, EmptyDir) to mount.
+                      VolumeMounts describes volume mounts in the worker container.
+                      Mirrors PodSpec container.volumeMounts. Reference volumes from
+                      spec.volumes and spec.volumeClaimTemplates by name.
                     items:
                       properties:
                         name:
@@ -100,18 +80,10 @@ spec:
                           type: string
                         readOnly:
                           type: boolean
-                        configMap:
-                          description: Mounts a ConfigMap as a directory.
-                          type: object
-                          x-kubernetes-preserve-unknown-fields: true
-                        secret:
-                          description: Mounts a Secret as a directory.
-                          type: object
-                          x-kubernetes-preserve-unknown-fields: true
-                        emptyDir:
-                          description: Mounts a temporary empty directory.
-                          type: object
-                          x-kubernetes-preserve-unknown-fields: true
+                        subPath:
+                          type: string
+                        mountPropagation:
+                          type: string
                       required:
                       - name
                       - mountPath
@@ -220,6 +192,39 @@ spec:
                 required:
                 - image
                 type: object
+              volumeClaimTemplates:
+                description: |-
+                  VolumeClaimTemplates mirrors StatefulSet's volumeClaimTemplates. The operator stamps
+                  one PVC per Task per entry using metadata.name as the volume and PVC name suffix.
+                  Mount them from worker.volumeMounts by name.
+                items:
+                  description: PersistentVolumeClaim template entry. Only metadata.name and spec are used.
+                  properties:
+                    metadata:
+                      properties:
+                        name:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    spec:
+                      description: PersistentVolumeClaimSpec for the stamped PVC.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                  required:
+                  - metadata
+                  - spec
+                  type: object
+                type: array
+              volumes:
+                description: |-
+                  Volumes are pod-level volume sources added to each worker pod.
+                  Mirrors PodSpec.volumes. Reference from worker.volumeMounts by name.
+                items:
+                  description: Volume entry; mirrors corev1.Volume (name + one source field).
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                type: array
               access:
                 description: |-
                   Access declares which OIDC groups and subjects may manage this Agent and its Tasks.

@@ -30,7 +30,7 @@ type Agent struct {
 }
 
 type AgentSpec struct {
-	// Worker describes the worker container. Maps to a PodSpec container entry.
+	// Worker describes the worker container spec. Fields mirror a PodSpec container entry.
 	Worker WorkerSpec `json:"worker"`
 
 	// Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
@@ -40,6 +40,15 @@ type AgentSpec struct {
 
 	// Model selects the AI backend and its credential secret.
 	Model ModelSpec `json:"model"`
+
+	// VolumeClaimTemplates is analogous to StatefulSet's volumeClaimTemplates.
+	// The operator stamps one PVC per Task per entry, using metadata.name as the
+	// volume name and PVC name suffix. Reference from worker.volumeMounts by name.
+	VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates,omitempty"`
+
+	// Volumes are pod-level volume sources added to each worker pod.
+	// Mirrors PodSpec.volumes. Reference from worker.volumeMounts by name.
+	Volumes []corev1.Volume `json:"volumes,omitempty"`
 
 	// GitProviders lists git server credentials available to workers.
 	GitProviders []GitProvider `json:"gitProviders,omitempty"`
@@ -83,55 +92,24 @@ type WorkerSpec struct {
 	// Image is the OCI image for the worker container.
 	Image string `json:"image"`
 
-	// SecurityContext is the container security context for worker pods.
+	// SecurityContext is the container security context.
+	// Mirrors PodSpec container.securityContext.
 	// If absent the operator applies a safe default: allowPrivilegeEscalation=false.
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
 
-	// Env is a list of additional environment variables for the worker container.
-	// Appended after operator-managed vars (PATH, TASK_NAME, TASK_NAMESPACE, AGENT_NAME).
-	// Use ValueFrom to reference ConfigMap or Secret keys.
+	// Env lists environment variables set in the container.
+	// Mirrors PodSpec container.env. Operator-managed vars (PATH, TASK_NAME,
+	// TASK_NAMESPACE, AGENT_NAME) are prepended; these entries are appended after.
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// EnvFrom injects all keys from a ConfigMap or Secret as environment variables.
+	// Mirrors PodSpec container.envFrom.
 	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
 
-	// WorkspaceClaimTemplates is a list of PVC templates for persistent worker storage.
-	// Analogous to StatefulSet volumeClaimTemplates: the operator stamps one PVC per
-	// Task per template entry, with the Task as ownerReference.
-	// Each entry declares its own name, mountPath and PVC spec.
-	WorkspaceClaimTemplates []WorkspaceClaimTemplate `json:"workspaceClaimTemplates,omitempty"`
-
-	// Volumes declares additional volumes to mount into the worker container.
-	// Supports ConfigMap, Secret and EmptyDir sources.
-	Volumes []AgentVolume `json:"volumes,omitempty"`
-}
-
-// WorkspaceClaimTemplate is one entry in WorkerSpec.WorkspaceClaimTemplates.
-// The operator creates one PVC per Task per entry, stamped from Spec.
-type WorkspaceClaimTemplate struct {
-	// Name is used as the PVC name suffix and volume name; must be unique per Agent.
-	Name string `json:"name"`
-	// MountPath is where the volume is mounted in the worker container.
-	MountPath string `json:"mountPath"`
-	// Spec is the PersistentVolumeClaimSpec, mirroring StatefulSet volumeClaimTemplates.
-	Spec corev1.PersistentVolumeClaimSpec `json:"spec"`
-}
-
-// AgentVolume declares a non-PVC volume to mount in the worker container.
-// Exactly one source field (ConfigMap, Secret, EmptyDir) should be set.
-type AgentVolume struct {
-	// Name is the volume name; must be unique within the pod.
-	Name string `json:"name"`
-	// MountPath is where the volume is mounted in the worker container.
-	MountPath string `json:"mountPath"`
-	// ReadOnly mounts the volume read-only.
-	ReadOnly bool `json:"readOnly,omitempty"`
-	// ConfigMap mounts a ConfigMap as a directory.
-	ConfigMap *corev1.ConfigMapVolumeSource `json:"configMap,omitempty"`
-	// Secret mounts a Secret as a directory.
-	Secret *corev1.SecretVolumeSource `json:"secret,omitempty"`
-	// EmptyDir mounts a temporary empty directory.
-	EmptyDir *corev1.EmptyDirVolumeSource `json:"emptyDir,omitempty"`
+	// VolumeMounts describes volume mounts in the worker container.
+	// Mirrors PodSpec container.volumeMounts. Reference volumes from
+	// spec.volumes and spec.volumeClaimTemplates by name.
+	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
 }
 
 // ToolImage describes an OCI image volume mounted as a toolchain in worker pods.

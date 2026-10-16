@@ -58,6 +58,18 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	*out = *in
 	in.Worker.DeepCopyInto(&out.Worker)
 	in.Access.DeepCopyInto(&out.Access)
+	if in.VolumeClaimTemplates != nil {
+		out.VolumeClaimTemplates = make([]corev1.PersistentVolumeClaim, len(in.VolumeClaimTemplates))
+		for i := range in.VolumeClaimTemplates {
+			in.VolumeClaimTemplates[i].DeepCopyInto(&out.VolumeClaimTemplates[i])
+		}
+	}
+	if in.Volumes != nil {
+		out.Volumes = make([]corev1.Volume, len(in.Volumes))
+		for i := range in.Volumes {
+			in.Volumes[i].DeepCopyInto(&out.Volumes[i])
+		}
+	}
 	if in.GitProviders != nil {
 		out.GitProviders = make([]GitProvider, len(in.GitProviders))
 		copy(out.GitProviders, in.GitProviders)
@@ -99,40 +111,9 @@ func (in *WorkerSpec) DeepCopyInto(out *WorkerSpec) {
 			in.EnvFrom[i].DeepCopyInto(&out.EnvFrom[i])
 		}
 	}
-	if in.WorkspaceClaimTemplates != nil {
-		out.WorkspaceClaimTemplates = make([]WorkspaceClaimTemplate, len(in.WorkspaceClaimTemplates))
-		for i := range in.WorkspaceClaimTemplates {
-			in.WorkspaceClaimTemplates[i].DeepCopyInto(&out.WorkspaceClaimTemplates[i])
-		}
-	}
-	if in.Volumes != nil {
-		out.Volumes = make([]AgentVolume, len(in.Volumes))
-		for i := range in.Volumes {
-			in.Volumes[i].DeepCopyInto(&out.Volumes[i])
-		}
-	}
-}
-
-func (in *WorkspaceClaimTemplate) DeepCopyInto(out *WorkspaceClaimTemplate) {
-	*out = *in
-	in.Spec.DeepCopyInto(&out.Spec)
-}
-
-func (in *AgentVolume) DeepCopyInto(out *AgentVolume) {
-	*out = *in
-	if in.ConfigMap != nil {
-		cm := new(corev1.ConfigMapVolumeSource)
-		in.ConfigMap.DeepCopyInto(cm)
-		out.ConfigMap = cm
-	}
-	if in.Secret != nil {
-		s := new(corev1.SecretVolumeSource)
-		in.Secret.DeepCopyInto(s)
-		out.Secret = s
-	}
-	if in.EmptyDir != nil {
-		ed := in.EmptyDir.DeepCopy()
-		out.EmptyDir = ed
+	if in.VolumeMounts != nil {
+		out.VolumeMounts = make([]corev1.VolumeMount, len(in.VolumeMounts))
+		copy(out.VolumeMounts, in.VolumeMounts)
 	}
 }
 

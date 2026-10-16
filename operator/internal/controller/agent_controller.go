@@ -163,8 +163,8 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return r.reconcileSuspended(ctx, &task)
 	}
 
-	// Ensure one PVC per WorkspaceClaimTemplate entry.
-	if len(agent.Spec.Worker.WorkspaceClaimTemplates) > 0 {
+	// Ensure one PVC per VolumeClaimTemplate entry.
+	if len(agent.Spec.VolumeClaimTemplates) > 0 {
 		if err := r.ensureWorkspacePVCs(ctx, &task, agent); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -194,11 +194,12 @@ func (r *TaskReconciler) ensureWorkspacePVCs(ctx context.Context, task *agentsv1
 	taskUID8 := string(task.UID)[:8]
 	patch := client.MergeFrom(task.DeepCopy())
 	changed := false
-	for _, tmpl := range agent.Spec.Worker.WorkspaceClaimTemplates {
-		if _, exists := task.Status.WorkspacePVCs[tmpl.Name]; exists {
+	for _, tmpl := range agent.Spec.VolumeClaimTemplates {
+		name := tmpl.Name
+		if _, exists := task.Status.WorkspacePVCs[name]; exists {
 			continue
 		}
-		pvcName := "agent-workspace-" + taskUID8 + "-" + tmpl.Name
+		pvcName := "agent-workspace-" + taskUID8 + "-" + name
 		spec := tmpl.Spec.DeepCopy()
 		pvc := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
@@ -207,16 +208,16 @@ func (r *TaskReconciler) ensureWorkspacePVCs(ctx context.Context, task *agentsv1
 				Labels: map[string]string{
 					"codemowers.cloud/task":     task.Name,
 					"codemowers.cloud/agent":    agent.Name,
-					"codemowers.cloud/pvc-role": tmpl.Name,
+					"codemowers.cloud/pvc-role": name,
 				},
 				OwnerReferences: []metav1.OwnerReference{taskOwnerRef(task)},
 			},
 			Spec: *spec,
 		}
 		if err := r.Create(ctx, pvc); err != nil && !errors.IsAlreadyExists(err) {
-			return fmt.Errorf("create workspace PVC %q: %w", tmpl.Name, err)
+			return fmt.Errorf("create workspace PVC %q: %w", name, err)
 		}
-		task.Status.WorkspacePVCs[tmpl.Name] = pvcName
+		task.Status.WorkspacePVCs[name] = pvcName
 		changed = true
 	}
 	if changed {
@@ -314,45 +315,25 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
 
-	// Mount workspace PVCs stamped from WorkspaceClaimTemplates.
-	for _, tmpl := range agent.Spec.Worker.WorkspaceClaimTemplates {
+	// Add workspace PVC volumes stamped from VolumeClaimTemplates.
+	// Users mount these via worker.volumeMounts by the template's metadata.name.
+	for _, tmpl := range agent.Spec.VolumeClaimTemplates {
 		pvcName, ok := task.Status.WorkspacePVCs[tmpl.Name]
 		if !ok {
 			continue
 		}
-		volName := "workspace-" + tmpl.Name
 		volumes = append(volumes, corev1.Volume{
-			Name: volName,
+			Name: tmpl.Name,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: pvcName,
 				},
 			},
 		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      volName,
-			MountPath: tmpl.MountPath,
-		})
 	}
 
-	// Mount additional AgentVolumes (ConfigMap, Secret, EmptyDir).
-	for _, av := range agent.Spec.Worker.Volumes {
-		vs := corev1.VolumeSource{}
-		switch {
-		case av.ConfigMap != nil:
-			vs.ConfigMap = av.ConfigMap
-		case av.Secret != nil:
-			vs.Secret = av.Secret
-		case av.EmptyDir != nil:
-			vs.EmptyDir = av.EmptyDir
-		}
-		volumes = append(volumes, corev1.Volume{Name: av.Name, VolumeSource: vs})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      av.Name,
-			MountPath: av.MountPath,
-			ReadOnly:  av.ReadOnly,
-		})
-	}
+	// Add pod-level volumes declared in spec.volumes.
+	volumes = append(volumes, agent.Spec.Volumes...)
 
 	// Mount allowed credentials.
 	for _, secretName := range agent.Spec.CredentialRefs {
@@ -429,7 +410,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 				{
 					Name:            "worker",
 					Image:           agent.Spec.Worker.Image,
-					VolumeMounts:    volumeMounts,
+					VolumeMounts:    append(volumeMounts, agent.Spec.Worker.VolumeMounts...),
 					Env:             env,
 					EnvFrom:         agent.Spec.Worker.EnvFrom,
 					SecurityContext: sc,
