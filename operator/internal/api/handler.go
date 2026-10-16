@@ -154,6 +154,9 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      taskName,
 			Namespace: agent.Namespace,
+			Labels: map[string]string{
+				"codemowers.cloud/agent": agent.Name,
+			},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         agentsv1alpha1.GroupVersion.String(),
 				Kind:               "Agent",

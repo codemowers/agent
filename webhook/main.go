@@ -39,15 +39,13 @@ func main() {
 	addr := envOrDefault("LISTEN_ADDR", ":8080")
 	exchange := envOrDefault("AMQP_EXCHANGE", "agent.webhook.events")
 
-	conn, ch, err := dialAMQP(amqpURL())
+	url := amqpURL()
+	conn, ch, err := dialAMQP(url)
 	if err != nil {
 		slog.Error("amqp dial failed", "err", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
-	defer ch.Close()
-
-	pub := &publisher{ch: ch, exchange: exchange}
+	pub := &publisher{url: url, conn: conn, ch: ch, exchange: exchange}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
@@ -62,8 +60,11 @@ func main() {
 	}
 }
 
-// publisher holds the AMQP channel and publishes events with a routing key.
+// publisher holds the AMQP connection and publishes events with a routing key.
+// It reconnects transparently on channel or connection failure.
 type publisher struct {
+	url      string
+	conn     *amqp.Connection
 	ch       *amqp.Channel
 	exchange string
 }
@@ -122,6 +123,26 @@ func (p *publisher) alertmanagerHandler(w http.ResponseWriter, r *http.Request) 
 	p.publish(w, routingKey, agent+"."+deliveryID, "alertmanager", "webhook", body)
 }
 
+// channel returns a usable AMQP channel, reconnecting if the connection is broken.
+func (p *publisher) channel() (*amqp.Channel, error) {
+	if p.conn == nil || p.conn.IsClosed() {
+		conn, ch, err := dialAMQP(p.url)
+		if err != nil {
+			return nil, err
+		}
+		p.conn = conn
+		p.ch = ch
+	}
+	if p.ch == nil {
+		ch, err := p.conn.Channel()
+		if err != nil {
+			return nil, err
+		}
+		p.ch = ch
+	}
+	return p.ch, nil
+}
+
 func (p *publisher) publish(w http.ResponseWriter, routingKey, messageID, source, event string, body []byte) {
 	headers := amqp.Table{
 		"x-source":   source,
@@ -131,7 +152,13 @@ func (p *publisher) publish(w http.ResponseWriter, routingKey, messageID, source
 		"x-received": time.Now().UTC().Format(time.RFC3339),
 	}
 
-	err := p.ch.PublishWithContext(
+	ch, err := p.channel()
+	if err != nil {
+		slog.Error("amqp channel failed", "err", err)
+		http.Error(w, "broker unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	err = ch.PublishWithContext(
 		context.Background(),
 		p.exchange,
 		routingKey,
@@ -146,6 +173,8 @@ func (p *publisher) publish(w http.ResponseWriter, routingKey, messageID, source
 		},
 	)
 	if err != nil {
+		// Channel may be broken; reset so next request reconnects.
+		p.ch = nil
 		slog.Error("publish failed", "routingKey", routingKey, "err", err)
 		http.Error(w, "publish error", http.StatusInternalServerError)
 		return
@@ -304,15 +333,6 @@ func dialAMQP(url string) (*amqp.Connection, *amqp.Channel, error) {
 
 func healthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
-}
-
-func mustEnv(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		slog.Error("required env var not set", "var", key)
-		os.Exit(1)
-	}
-	return v
 }
 
 func envOrDefault(key, def string) string {

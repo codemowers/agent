@@ -267,6 +267,8 @@ func (c *EventConsumer) wakeTask(ctx context.Context, task *agentsv1alpha1.Task,
 	task.Annotations["codemowers.cloud/event-routing-key"] = routingKey
 	task.Annotations["codemowers.cloud/event-message-id"] = messageID
 	task.Annotations["codemowers.cloud/event-received-at"] = strconv.FormatInt(now, 10)
+	// Signal the reconciler to spawn a new worker if the previous one has exited.
+	task.Annotations["codemowers.cloud/wake-pending"] = "true"
 	if err := c.Client.Patch(ctx, task, patch); err != nil {
 		return err
 	}
