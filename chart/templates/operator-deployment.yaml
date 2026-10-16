@@ -113,3 +113,47 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-operator
+spec:
+  selector:
+    app: {{ .Release.Name }}-operator
+  ports:
+    - name: api
+      port: 80
+      targetPort: api
+---
+# Forward-auth in front of the dashboard: the operator API has no auth of its own.
+apiVersion: codemowers.cloud/v1
+kind: OIDCMiddlewareClient
+metadata:
+  name: {{ .Release.Name }}-operator
+spec:
+  displayName: Agent operator
+  uri: {{ printf "https://%s/" .Values.operator.host | quote }}
+  allowedGroups:
+    {{- toYaml .Values.allowedGroups | nindent 4 }}
+  allowedUsers:
+    {{- toYaml .Values.allowedUsers | nindent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-operator
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ .Release.Name }}-operator@kubernetescrd
+spec:
+  rules:
+    - host: {{ .Values.operator.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-operator
+                port:
+                  name: api

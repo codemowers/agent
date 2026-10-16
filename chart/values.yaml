@@ -36,6 +36,8 @@ webhook:
 
 operator:
   image: agent-operator
+  # host: short hostname for the dashboard (admission expands it).
+  host: sloperator
   resources:
     requests:
       memory: 64Mi
