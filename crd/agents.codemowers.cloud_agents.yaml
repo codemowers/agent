@@ -53,6 +53,43 @@ spec:
             type: object
           spec:
             properties:
+              worker:
+                description: Worker describes the worker container. Maps to a PodSpec container entry.
+                properties:
+                  image:
+                    description: Image is the OCI image for the worker container.
+                    type: string
+                  readOnlyRootFilesystem:
+                    default: true
+                    description: ReadOnlyRootFilesystem mounts the container's root
+                      filesystem read-only. Defaults to true; set false for agents
+                      that write outside /workspace.
+                    type: boolean
+                required:
+                - image
+                type: object
+              workspaceSize:
+                description: |-
+                  WorkspaceSize is the PVC storage request for the task workspace (e.g. "10Gi").
+                  Empty or absent means no PVC is created; tasks run without persistent storage.
+                type: string
+              model:
+                description: Model selects the AI backend and its credential secret.
+                properties:
+                  backend:
+                    description: Backend is claude or codex.
+                    enum:
+                    - claude
+                    - codex
+                    type: string
+                  credentialSecretRef:
+                    description: CredentialSecretRef is the secret name (agent-cred-*
+                      prefix) holding the API key.
+                    type: string
+                required:
+                - backend
+                - credentialSecretRef
+                type: object
               credentialRefs:
                 description: |-
                   CredentialRefs is the exhaustive allowlist of agent-cred-* secrets that
@@ -61,8 +98,7 @@ spec:
                   type: string
                 type: array
               gitProviders:
-                description: GitProviders lists git server credentials available to
-                  workers.
+                description: GitProviders lists git server credentials available to workers.
                 items:
                   properties:
                     credentialSecretRef:
@@ -82,43 +118,6 @@ spec:
                   - type
                   type: object
                 type: array
-              mcpEndpoints:
-                description: MCPEndpoints lists MCP servers available to workers.
-                items:
-                  properties:
-                    siteURL:
-                      type: string
-                    tokenFile:
-                      type: string
-                    url:
-                      type: string
-                  required:
-                  - url
-                  type: object
-                type: array
-              model:
-                description: Model selects the AI backend and its credential secret.
-                properties:
-                  backend:
-                    description: Backend is claude or codex.
-                    enum:
-                    - claude
-                    - codex
-                    type: string
-                  credentialSecretRef:
-                    description: CredentialSecretRef is the secret name (agent-cred-*
-                      prefix) holding the API key.
-                    type: string
-                required:
-                - backend
-                - credentialSecretRef
-                type: object
-              readOnlyRootFilesystem:
-                default: true
-                description: |-
-                  ReadOnlyRootFilesystem controls the worker container's root filesystem mutability.
-                  Defaults to true; set false for agents that need to write outside /workspace.
-                type: boolean
               slackWorkspaces:
                 description: |-
                   SlackWorkspaces lists Slack workspaces the controller can read/write.
@@ -141,58 +140,34 @@ spec:
                   - workspaceId
                   type: object
                 type: array
-              toolImages:
-                description: |-
-                  ToolImages are OCI image volumes mounted into worker pods for additional tooling
-                  (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order.
-                items:
-                  description: ToolImage describes an OCI image volume mounted as
-                    a toolchain in worker pods.
-                  properties:
-                    binPath:
-                      description: BinPath is the subdirectory of MountPath prepended
-                        to PATH. Defaults to "bin".
-                      type: string
-                    image:
-                      description: Image is the OCI image reference.
-                      type: string
-                    mountPath:
-                      description: |-
-                        MountPath is the directory where the image filesystem root is mounted.
-                        Convention: /opt/tools/<name>
-                      type: string
-                    name:
-                      description: Name is used as the volume name; must be unique
-                        within the Agent.
-                      type: string
-                  required:
-                  - image
-                  - mountPath
-                  - name
-                  type: object
-                type: array
               webhookSecretRef:
                 description: |-
                   WebhookSecretRef is the secret (agent-hook-* prefix) for GitHub/Gitea HMAC.
                   Read by the webhook handler, not mounted in worker pods.
                 type: string
-              workerImage:
-                description: WorkerImage is the OCI image for worker pods.
-                type: string
+              mcpEndpoints:
+                description: MCPEndpoints lists MCP servers available to workers.
+                items:
+                  properties:
+                    siteURL:
+                      type: string
+                    tokenFile:
+                      type: string
+                    url:
+                      type: string
+                  required:
+                  - url
+                  type: object
+                type: array
               workerServiceAccountName:
                 description: WorkerServiceAccountName is the SA used by worker pods.
                   Defaults to agent-worker.
                 type: string
-              readOnlyRootFilesystem:
-                default: true
-                description: ReadOnlyRootFilesystem controls the worker container's
-                  root filesystem mutability. Defaults to true; set false for agents
-                  that need to write outside /workspace.
-                type: boolean
               toolImages:
-                description: ToolImages are OCI image volumes mounted into worker
-                  pods for additional tooling (e.g. kubectl, helm, go). PATH is prepended
-                  with each image's bin path in order.
+                description: |-
+                  ToolImages are OCI image volumes mounted into worker pods for additional tooling
+                  (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order.
+                  PATH: <tool1/bin>:<tool2/bin>:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
                 items:
                   description: ToolImage describes an OCI image volume mounted as
                     a toolchain in worker pods.
@@ -220,7 +195,7 @@ spec:
                 type: array
             required:
             - model
-            - workerImage
+            - worker
             type: object
           status:
             properties:

@@ -1,16 +1,16 @@
 # Named Agent CR examples for codemowers-agent-system.
 #
 # Three privilege domains:
-#   matmlazi    — developer: full toolchain, Kube RBAC, read-write workspace
-#   patpalouk   — customer support: no cluster access, read-only root, limited credentials
-#   krtek       — admin: kubectl + helm, cluster-wide RBAC SA, read-write workspace
+#   matmlazi    — developer: full toolchain, Kube RBAC, persistent workspace
+#   patpalouk   — customer support: no cluster access, read-only root, no PVC
+#   krtek       — admin: kubectl + helm, cluster-admin SA, persistent workspace, no webhooks
 #
 # Prerequisite secrets (create before applying):
 #   agent-worker-anthropic-api-token  — key: token  (Claude API key)
 #   agent-worker-github-token         — key: token  (GitHub PAT)
-#   agent-hook-<name>                 — key: token  (webhook HMAC; use examples/webhook-secrets.yaml pattern)
+#   agent-hook-<name>                 — key: token  (webhook HMAC; see examples/webhook-secrets.yaml)
 #
-# Kubectl image version must match the API server. Query with:
+# Kubectl image version must match the API server:
 #   kubectl version -o json | jq -r .serverVersion.gitVersion
 ---
 apiVersion: agents.codemowers.cloud/v1alpha1
@@ -21,8 +21,10 @@ metadata:
   annotations:
     codemowers.cloud/description: "Developer agent — full toolchain, Kube RBAC, topic branches"
 spec:
-  workerImage: codemowers/agent:latest
-  readOnlyRootFilesystem: false
+  worker:
+    image: codemowers/agent:latest
+    readOnlyRootFilesystem: false
+  workspaceSize: "20Gi"
   model:
     backend: claude
     credentialSecretRef: agent-worker-anthropic-api-token
@@ -39,7 +41,8 @@ spec:
   credentialRefs:
     - agent-worker-anthropic-api-token
     - agent-worker-github-token
-  # kubectl and helm mounted from OCI image volumes; PATH is prepended automatically.
+  # kubectl and helm from OCI image volumes; PATH prepended automatically.
+  # PATH built as: /opt/tools/kubectl/bin:/opt/tools/helm/bin:/usr/local/sbin:...
   toolImages:
     - name: kubectl
       image: registry.k8s.io/kubectl:v1.36.3
@@ -55,10 +58,12 @@ metadata:
   name: patpalouk
   namespace: codemowers-agent-system
   annotations:
-    codemowers.cloud/description: "Customer support agent — no cluster access, read-only root, GitHub read"
+    codemowers.cloud/description: "Customer support agent — no cluster access, read-only root, no PVC"
 spec:
-  workerImage: codemowers/agent:latest
-  readOnlyRootFilesystem: true
+  worker:
+    image: codemowers/agent:latest
+    readOnlyRootFilesystem: true
+  # No workspaceSize — no PVC created; tasks are stateless.
   model:
     backend: claude
     credentialSecretRef: agent-worker-anthropic-api-token
@@ -83,10 +88,12 @@ metadata:
   name: krtek
   namespace: codemowers-agent-system
   annotations:
-    codemowers.cloud/description: "Admin agent — kubectl + helm, cluster-wide operational reads"
+    codemowers.cloud/description: "Admin agent — kubectl + helm, cluster-admin SA, no GitHub webhooks"
 spec:
-  workerImage: codemowers/agent:latest
-  readOnlyRootFilesystem: false
+  worker:
+    image: codemowers/agent:latest
+    readOnlyRootFilesystem: false
+  workspaceSize: "10Gi"
   model:
     backend: claude
     credentialSecretRef: agent-worker-anthropic-api-token
@@ -94,7 +101,7 @@ spec:
     - type: github
       serverURL: https://github.com
       credentialSecretRef: agent-worker-github-token
-  # No webhookSecretRef — krtek is triggered manually or via UI, not GitHub webhooks.
+  # No webhookSecretRef — triggered manually or via UI only.
   mcpEndpoints:
     - url: https://mcp.codemowers.io/mcp
       siteURL: https://mcp.codemowers.io
@@ -110,5 +117,4 @@ spec:
     - name: helm
       image: alpine/helm:3.17.3
       mountPath: /opt/tools/helm
-  # Separate SA with ClusterRole for operational reads (nodes, namespaces, CRDs).
   workerServiceAccountName: agent-worker-admin

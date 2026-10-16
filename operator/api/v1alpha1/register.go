@@ -43,6 +43,7 @@ func (in *Agent) DeepCopyInto(out *Agent) {
 
 func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	*out = *in
+	in.Worker.DeepCopyInto(&out.Worker)
 	if in.GitProviders != nil {
 		out.GitProviders = make([]GitProvider, len(in.GitProviders))
 		copy(out.GitProviders, in.GitProviders)
@@ -63,6 +64,10 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 		out.ToolImages = make([]ToolImage, len(in.ToolImages))
 		copy(out.ToolImages, in.ToolImages)
 	}
+}
+
+func (in *WorkerSpec) DeepCopyInto(out *WorkerSpec) {
+	*out = *in
 	if in.ReadOnlyRootFilesystem != nil {
 		b := *in.ReadOnlyRootFilesystem
 		out.ReadOnlyRootFilesystem = &b

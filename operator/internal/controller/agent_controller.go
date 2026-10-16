@@ -62,8 +62,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // TaskReconciler reconciles Task CRs: manages worker Pod and workspace PVC lifecycle.
 type TaskReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	WorkerImage string // default; overridden by agent spec
+	Scheme *runtime.Scheme
 }
 
 func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -85,8 +84,11 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return r.reconcileSuspended(ctx, &task)
 	}
 
-	if err := r.ensureWorkspacePVC(ctx, &task, agent); err != nil {
-		return ctrl.Result{}, err
+	// Only create a workspace PVC if the agent requests one.
+	if agent.Spec.WorkspaceSize != "" {
+		if err := r.ensureWorkspacePVC(ctx, &task, agent); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	return r.reconcileWorkerPod(ctx, &task, agent)
@@ -117,7 +119,7 @@ func (r *TaskReconciler) ensureWorkspacePVC(ctx context.Context, task *agentsv1a
 			Name:      pvcName,
 			Namespace: task.Namespace,
 			Labels: map[string]string{
-				"codemowers.cloud/task": task.Name,
+				"codemowers.cloud/task":  task.Name,
 				"codemowers.cloud/agent": agent.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{taskOwnerRef(task)},
@@ -127,7 +129,7 @@ func (r *TaskReconciler) ensureWorkspacePVC(ctx context.Context, task *agentsv1a
 			StorageClassName: &storageClass,
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: *resourceQuantity("10Gi"),
+					corev1.ResourceStorage: *resourceQuantity(agent.Spec.WorkspaceSize),
 				},
 			},
 		},
@@ -160,14 +162,13 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		}
 	}
 
-	workerImage := agent.Spec.WorkerImage
 	sa := agent.Spec.WorkerServiceAccountName
 	if sa == "" {
 		sa = "agent-worker"
 	}
 
 	podName := fmt.Sprintf("agent-worker-%s-%s", task.Name[:min(8, len(task.Name))], randSuffix())
-	pod := r.buildWorkerPod(podName, task, agent, workerImage, sa)
+	pod := r.buildWorkerPod(podName, task, agent, sa)
 
 	if err := r.Create(ctx, pod); err != nil {
 		return ctrl.Result{}, fmt.Errorf("create worker pod: %w", err)
@@ -226,19 +227,24 @@ func (r *TaskReconciler) ownerAgent(ctx context.Context, task *agentsv1alpha1.Ta
 	return nil, fmt.Errorf("task %s/%s has no Agent ownerReference", task.Namespace, task.Name)
 }
 
-func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, image, sa string) *corev1.Pod {
-	volumes := []corev1.Volume{
-		{
+func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, sa string) *corev1.Pod {
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
+
+	// Only mount the workspace PVC if one was provisioned.
+	if task.Status.WorkspacePVC != "" {
+		volumes = append(volumes, corev1.Volume{
 			Name: "workspace",
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: task.Status.WorkspacePVC,
 				},
 			},
-		},
-	}
-	volumeMounts := []corev1.VolumeMount{
-		{Name: "workspace", MountPath: "/workspace"},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "workspace",
+			MountPath: "/workspace",
+		})
 	}
 
 	// Mount allowed credentials.
@@ -293,8 +299,8 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	}
 
 	roRootFS := true
-	if agent.Spec.ReadOnlyRootFilesystem != nil {
-		roRootFS = *agent.Spec.ReadOnlyRootFilesystem
+	if agent.Spec.Worker.ReadOnlyRootFilesystem != nil {
+		roRootFS = *agent.Spec.Worker.ReadOnlyRootFilesystem
 	}
 
 	return &corev1.Pod{
@@ -314,7 +320,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 			Containers: []corev1.Container{
 				{
 					Name:         "worker",
-					Image:        image,
+					Image:        agent.Spec.Worker.Image,
 					VolumeMounts: volumeMounts,
 					Env:          env,
 					SecurityContext: &corev1.SecurityContext{
