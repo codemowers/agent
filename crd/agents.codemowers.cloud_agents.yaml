@@ -170,11 +170,13 @@ spec:
                 required:
                 - image
                 type: object
-              workspaceSize:
+              workspaceClaimTemplate:
                 description: |-
-                  WorkspaceSize is the PVC storage request for the task workspace (e.g. "10Gi").
-                  Empty or absent means no PVC is created; tasks run without persistent storage.
-                type: string
+                  WorkspaceClaimTemplate is a PersistentVolumeClaimSpec template for the task workspace.
+                  Analogous to StatefulSet volumeClaimTemplates: the operator stamps one PVC per Task
+                  from this spec, with the Task as ownerReference. Absent means no PVC; tasks are stateless.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               access:
                 description: |-
                   Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
