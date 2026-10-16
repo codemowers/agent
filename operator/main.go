@@ -16,6 +16,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
+	"github.com/codemowers/agent/operator/internal/api"
 	"github.com/codemowers/agent/operator/internal/controller"
 	"github.com/codemowers/agent/operator/internal/rabbitmq"
 )
@@ -56,8 +57,10 @@ func init() {
 func main() {
 	var metricsAddr string
 	var probeAddr string
+	var apiAddr string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081", "Address for the metrics endpoint.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8082", "Address for health probes.")
+	flag.StringVar(&apiAddr, "api-bind-address", ":8080", "Address for the web UI and task API (no auth).")
 	opts := zap.Options{Development: os.Getenv("DEBUG") == "true"}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -100,6 +103,15 @@ func main() {
 		AMQPURL: amqpURL,
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Task controller")
+		os.Exit(1)
+	}
+
+	if err := mgr.Add(&api.Handler{
+		Client: mgr.GetClient(),
+		AMQP:   amqpMgr,
+		Addr:   apiAddr,
+	}); err != nil {
+		ctrl.Log.Error(err, "unable to add API server")
 		os.Exit(1)
 	}
 
