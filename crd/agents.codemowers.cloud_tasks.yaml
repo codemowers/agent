@@ -1,201 +1,247 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: tasks.agents.codemowers.cloud
   annotations:
-    codemowers.cloud/description: |
-      Task CR tracks one unit of work: objective, worker lifecycle, external references
-      and completion policy. Owned by an Agent CR via ownerReferences — deleting the
-      Agent cascades to all its Tasks, and deleting a Task cascades to its worker Pod
-      and workspace PVC.
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: tasks.agents.codemowers.cloud
 spec:
   group: agents.codemowers.cloud
-  scope: Namespaced
   names:
     kind: Task
     listKind: TaskList
     plural: tasks
-    singular: task
     shortNames:
-      - task
+    - task
+    singular: task
+  scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      subresources:
-        status: {}
-      additionalPrinterColumns:
-        - name: Phase
-          type: string
-          jsonPath: .status.phase
-        - name: Reason
-          type: string
-          jsonPath: .status.reason
-        - name: Worker
-          type: string
-          jsonPath: .status.workerPodName
-        - name: Epoch
-          type: integer
-          jsonPath: .status.sessionEpoch
-        - name: Suspended
-          type: boolean
-          jsonPath: .spec.suspend
-        - name: Age
-          type: date
-          jsonPath: .metadata.creationTimestamp
-      schema:
-        openAPIV3Schema:
-          type: object
-          required: [spec]
-          properties:
-            spec:
-              type: object
-              required: [objective]
-              properties:
-                objective:
-                  type: string
-                  description: Human-readable goal for the worker.
-
-                suspend:
-                  type: boolean
-                  default: false
-                  description: |
-                    When true the controller stops any running worker and does not
-                    start a new one. Analogous to CronJob suspend; resuming sets this
-                    back to false.
-
-                externalReferences:
-                  type: array
-                  description: |
-                    External anchors for this task (GitHub issues, Slack threads,
-                    Alertmanager fingerprints, etc.). The controller routes incoming
-                    webhook events to the matching Task by these references.
-                  items:
-                    type: object
-                    required: [source, kind, id]
-                    properties:
-                      source:
-                        type: string
-                        enum: [github, gitea, slack, alertmanager]
-                      serverURL:
-                        type: string
-                        format: uri
-                        description: Required for github and gitea sources.
-                      repositoryOwner:
-                        type: string
-                      repositoryName:
-                        type: string
-                      workspaceId:
-                        type: string
-                        description: Slack workspace/team ID.
-                      channelId:
-                        type: string
-                        description: Slack channel ID.
-                      kind:
-                        type: string
-                        enum: [issue, pull_request, thread, alert]
-                      id:
-                        type: string
-                        description: |
-                          Issue number, PR number, Slack thread_ts, or Alertmanager
-                          fingerprint. Stored as string to avoid int overflow.
-
-                completionPolicy:
-                  type: object
-                  description: |
-                    When and how the controller considers this Task done. Omit to
-                    rely solely on worker/user signals.
-                  properties:
-                    milestone:
-                      type: string
-                      enum: [PullRequestCreated, VerifiedChecks, Approved, Merged]
-                    requiredChecks:
-                      type: array
-                      items:
-                        type: string
-                      description: CI check names that must pass for VerifiedChecks milestone.
-
-                model:
-                  type: object
-                  description: |
-                    Per-task model override. If omitted, inherits from the owning Agent CR.
-                  properties:
-                    backend:
-                      type: string
-                      enum: [claude, codex]
-                    credentialSecretRef:
-                      type: string
-
-            status:
-              type: object
-              properties:
-                phase:
-                  type: string
-                  enum: [Pending, Running, Waiting, Paused, Completed, Failed]
-                  description: |
-                    Pending   — no worker pod yet (first start or after suspend=false).
-                    Running   — worker pod is active and processing a prompt.
-                    Waiting   — worker completed a turn; idle, awaiting next event.
-                    Paused    — suspend=true; worker stopped, PVC retained.
-                    Completed — completion policy satisfied or user accepted.
-                    Failed    — terminal failure; manual intervention needed.
-
-                reason:
-                  type: string
-                  description: Machine-readable reason for the current phase.
-
-                workerPodName:
-                  type: string
-                  description: Name of the current (or last) worker pod.
-
-                workerPodUID:
-                  type: string
-                  description: UID of the current worker pod for fencing.
-
-                workspacePVCName:
-                  type: string
-                  description: Name of the persistent workspace PVC owned by this Task.
-
-                sessionEpoch:
-                  type: integer
-                  description: |
-                    Incremented on incompatible state (model/CLI change, corrupt session).
-                    Used to distinguish fresh sessions from resumed ones.
-
-                progress:
-                  type: object
-                  properties:
-                    summary:
-                      type: string
-                    updatedAt:
-                      type: string
-                      format: date-time
-
-                outputs:
-                  type: object
-                  description: Named outputs produced by the worker (PR URL, artifact refs, etc.)
-                  additionalProperties:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.reason
+      name: Reason
+      type: string
+    - jsonPath: .status.workerPodName
+      name: Worker
+      type: string
+    - jsonPath: .spec.suspend
+      name: Suspended
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Task tracks one unit of work. It is owned by an Agent CR. Deleting a Task
+          cascades to its worker Pod and workspace PVC via ownerReferences.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              completionPolicy:
+                description: CompletionPolicy defines when the controller considers
+                  this Task done.
+                properties:
+                  milestone:
+                    enum:
+                    - PullRequestCreated
+                    - VerifiedChecks
+                    - Approved
+                    - Merged
                     type: string
-
-                queueMessageId:
+                  requiredChecks:
+                    items:
+                      type: string
+                    type: array
+                required:
+                - milestone
+                type: object
+              externalReferences:
+                description: ExternalReferences maps this Task to external anchors
+                  for event routing.
+                items:
+                  properties:
+                    channelId:
+                      type: string
+                    id:
+                      description: ID is the issue number, PR number, Slack thread_ts
+                        or Alertmanager fingerprint.
+                      type: string
+                    kind:
+                      enum:
+                      - issue
+                      - pull_request
+                      - thread
+                      - alert
+                      type: string
+                    repositoryName:
+                      type: string
+                    repositoryOwner:
+                      type: string
+                    serverURL:
+                      type: string
+                    source:
+                      enum:
+                      - github
+                      - gitea
+                      - slack
+                      - alertmanager
+                      type: string
+                    workspaceId:
+                      type: string
+                  required:
+                  - id
+                  - kind
+                  - source
+                  type: object
+                type: array
+              model:
+                description: Model overrides the Agent's default model for this Task.
+                properties:
+                  backend:
+                    description: Backend is claude or codex.
+                    enum:
+                    - claude
+                    - codex
+                    type: string
+                  credentialSecretRef:
+                    description: CredentialSecretRef is the secret name (agent-cred-*
+                      prefix) holding the API key.
+                    type: string
+                required:
+                - backend
+                - credentialSecretRef
+                type: object
+              objective:
+                description: Objective is the human-readable goal for the worker.
+                type: string
+              suspend:
+                default: false
+                description: |-
+                  Suspend stops the current worker and prevents a new one from starting.
+                  Analogous to CronJob suspend.
+                type: boolean
+            required:
+            - objective
+            type: object
+          status:
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              outputs:
+                additionalProperties:
                   type: string
-                  description: RabbitMQ message ID of the pending prompt, for deduplication.
-
-                conditions:
-                  type: array
-                  items:
-                    type: object
-                    required: [type, status]
-                    properties:
-                      type:
-                        type: string
-                      status:
-                        type: string
-                        enum: ['True', 'False', Unknown]
-                      reason:
-                        type: string
-                      message:
-                        type: string
-                      lastTransitionTime:
-                        type: string
-                        format: date-time
+                type: object
+              phase:
+                description: TaskPhase describes the current lifecycle state of the
+                  Task.
+                enum:
+                - Pending
+                - Running
+                - Waiting
+                - Paused
+                - Completed
+                - Failed
+                type: string
+              progress:
+                properties:
+                  summary:
+                    type: string
+                  updatedAt:
+                    format: date-time
+                    type: string
+                type: object
+              queueMessageId:
+                type: string
+              reason:
+                type: string
+              sessionEpoch:
+                type: integer
+              workerPodName:
+                type: string
+              workerPodUID:
+                type: string
+              workspacePVCName:
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -23,7 +23,26 @@ metadata:
 spec:
   worker:
     image: codemowers/agent:latest
-    readOnlyRootFilesystem: false
+    securityContext:
+      readOnlyRootFilesystem: false
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+    # env: additional env vars appended after operator-managed vars (PATH, TASK_NAME, etc.)
+    # env:
+    #   - name: ANTHROPIC_BASE_URL
+    #     value: https://api.anthropic.com
+    #   - name: SOME_SECRET
+    #     valueFrom:
+    #       secretKeyRef:
+    #         name: agent-cred-my-secret
+    #         key: value
+    # envFrom: inject entire ConfigMap or Secret as env vars
+    # envFrom:
+    #   - configMapRef:
+    #       name: agent-worker-config
+    #   - secretRef:
+    #       name: agent-cred-extra
   workspaceSize: "20Gi"
   access:
     groups:
@@ -67,7 +86,11 @@ metadata:
 spec:
   worker:
     image: codemowers/agent:latest
-    readOnlyRootFilesystem: true
+    securityContext:
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 65534
   # No workspaceSize — no PVC created; tasks are stateless.
   access:
     groups:
@@ -102,7 +125,11 @@ metadata:
 spec:
   worker:
     image: codemowers/agent:latest
-    readOnlyRootFilesystem: false
+    securityContext:
+      readOnlyRootFilesystem: false
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
   workspaceSize: "10Gi"
   access:
     groups:

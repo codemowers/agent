@@ -2,6 +2,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
@@ -81,9 +82,22 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 
 func (in *WorkerSpec) DeepCopyInto(out *WorkerSpec) {
 	*out = *in
-	if in.ReadOnlyRootFilesystem != nil {
-		b := *in.ReadOnlyRootFilesystem
-		out.ReadOnlyRootFilesystem = &b
+	if in.SecurityContext != nil {
+		sc := new(corev1.SecurityContext)
+		in.SecurityContext.DeepCopyInto(sc)
+		out.SecurityContext = sc
+	}
+	if in.Env != nil {
+		out.Env = make([]corev1.EnvVar, len(in.Env))
+		for i := range in.Env {
+			in.Env[i].DeepCopyInto(&out.Env[i])
+		}
+	}
+	if in.EnvFrom != nil {
+		out.EnvFrom = make([]corev1.EnvFromSource, len(in.EnvFrom))
+		for i := range in.EnvFrom {
+			in.EnvFrom[i].DeepCopyInto(&out.EnvFrom[i])
+		}
 	}
 }
 
