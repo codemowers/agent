@@ -72,7 +72,6 @@ spec:
                   items:
                     - key: token
                       path: {{ . }}/token
-                  optional: true
               {{- end }}
       {{- end }}
 ---
