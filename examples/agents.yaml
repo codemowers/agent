@@ -73,9 +73,8 @@ spec:
   credentialRefs:
     - agent-worker-anthropic-api-token
     - agent-worker-github-token
-  # No toolImages — no kubectl, no cluster RBAC needed.
-  # workerServiceAccountName defaults to agent-worker; consider a separate SA
-  # with no Kube API RBAC for stronger isolation.
+  # No toolImages — no kubectl, no Kubernetes API access.
+  # agent-worker-readonly has automountServiceAccountToken:false and no RBAC bindings.
   workerServiceAccountName: agent-worker-readonly
 ---
 apiVersion: agents.codemowers.cloud/v1alpha1
@@ -95,7 +94,7 @@ spec:
     - type: github
       serverURL: https://github.com
       credentialSecretRef: agent-worker-github-token
-  webhookSecretRef: agent-hook-krtek
+  # No webhookSecretRef — krtek is triggered manually or via UI, not GitHub webhooks.
   mcpEndpoints:
     - url: https://mcp.codemowers.io/mcp
       siteURL: https://mcp.codemowers.io
