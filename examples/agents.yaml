@@ -1,0 +1,115 @@
+# Named Agent CR examples for codemowers-agent-system.
+#
+# Three privilege domains:
+#   matmlazi    — developer: full toolchain, Kube RBAC, read-write workspace
+#   patpalouk   — customer support: no cluster access, read-only root, limited credentials
+#   krtek       — admin: kubectl + helm, cluster-wide RBAC SA, read-write workspace
+#
+# Prerequisite secrets (create before applying):
+#   agent-worker-anthropic-api-token  — key: token  (Claude API key)
+#   agent-worker-github-token         — key: token  (GitHub PAT)
+#   agent-hook-<name>                 — key: token  (webhook HMAC; use examples/webhook-secrets.yaml pattern)
+#
+# Kubectl image version must match the API server. Query with:
+#   kubectl version -o json | jq -r .serverVersion.gitVersion
+---
+apiVersion: agents.codemowers.cloud/v1alpha1
+kind: Agent
+metadata:
+  name: matmlazi
+  namespace: codemowers-agent-system
+  annotations:
+    codemowers.cloud/description: "Developer agent — full toolchain, Kube RBAC, topic branches"
+spec:
+  workerImage: codemowers/agent:latest
+  readOnlyRootFilesystem: false
+  model:
+    backend: claude
+    credentialSecretRef: agent-worker-anthropic-api-token
+  gitProviders:
+    - type: github
+      serverURL: https://github.com
+      credentialSecretRef: agent-worker-github-token
+  webhookSecretRef: agent-hook-matmlazi
+  mcpEndpoints:
+    - url: https://mcp.codemowers.io/mcp
+      siteURL: https://mcp.codemowers.io
+    - url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
+      tokenFile: /var/run/agent-mcp/driftmower
+  credentialRefs:
+    - agent-worker-anthropic-api-token
+    - agent-worker-github-token
+  # kubectl and helm mounted from OCI image volumes; PATH is prepended automatically.
+  toolImages:
+    - name: kubectl
+      image: registry.k8s.io/kubectl:v1.36.3
+      mountPath: /opt/tools/kubectl
+    - name: helm
+      image: alpine/helm:3.17.3
+      mountPath: /opt/tools/helm
+  workerServiceAccountName: agent-worker
+---
+apiVersion: agents.codemowers.cloud/v1alpha1
+kind: Agent
+metadata:
+  name: patpalouk
+  namespace: codemowers-agent-system
+  annotations:
+    codemowers.cloud/description: "Customer support agent — no cluster access, read-only root, GitHub read"
+spec:
+  workerImage: codemowers/agent:latest
+  readOnlyRootFilesystem: true
+  model:
+    backend: claude
+    credentialSecretRef: agent-worker-anthropic-api-token
+  gitProviders:
+    - type: github
+      serverURL: https://github.com
+      credentialSecretRef: agent-worker-github-token
+  webhookSecretRef: agent-hook-patpalouk
+  mcpEndpoints:
+    - url: https://mcp.codemowers.io/mcp
+      siteURL: https://mcp.codemowers.io
+  credentialRefs:
+    - agent-worker-anthropic-api-token
+    - agent-worker-github-token
+  # No toolImages — no kubectl, no cluster RBAC needed.
+  # workerServiceAccountName defaults to agent-worker; consider a separate SA
+  # with no Kube API RBAC for stronger isolation.
+  workerServiceAccountName: agent-worker-readonly
+---
+apiVersion: agents.codemowers.cloud/v1alpha1
+kind: Agent
+metadata:
+  name: krtek
+  namespace: codemowers-agent-system
+  annotations:
+    codemowers.cloud/description: "Admin agent — kubectl + helm, cluster-wide operational reads"
+spec:
+  workerImage: codemowers/agent:latest
+  readOnlyRootFilesystem: false
+  model:
+    backend: claude
+    credentialSecretRef: agent-worker-anthropic-api-token
+  gitProviders:
+    - type: github
+      serverURL: https://github.com
+      credentialSecretRef: agent-worker-github-token
+  webhookSecretRef: agent-hook-krtek
+  mcpEndpoints:
+    - url: https://mcp.codemowers.io/mcp
+      siteURL: https://mcp.codemowers.io
+    - url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
+      tokenFile: /var/run/agent-mcp/driftmower
+  credentialRefs:
+    - agent-worker-anthropic-api-token
+    - agent-worker-github-token
+  toolImages:
+    - name: kubectl
+      image: registry.k8s.io/kubectl:v1.36.3
+      mountPath: /opt/tools/kubectl
+    - name: helm
+      image: alpine/helm:3.17.3
+      mountPath: /opt/tools/helm
+  # Separate SA with ClusterRole for operational reads (nodes, namespaces, CRDs).
+  workerServiceAccountName: agent-worker-admin

@@ -55,6 +55,28 @@ type AgentSpec struct {
 
 	// WorkerServiceAccountName is the SA used by worker pods. Defaults to agent-worker.
 	WorkerServiceAccountName string `json:"workerServiceAccountName,omitempty"`
+
+	// ToolImages are OCI image volumes mounted into worker pods for additional tooling
+	// (e.g. kubectl, helm, go). PATH is prepended with each image's bin path in order.
+	ToolImages []ToolImage `json:"toolImages,omitempty"`
+
+	// ReadOnlyRootFilesystem controls the worker container's root filesystem mutability.
+	// Defaults to true; set false for agents that need to write outside /workspace.
+	// +kubebuilder:default=true
+	ReadOnlyRootFilesystem *bool `json:"readOnlyRootFilesystem,omitempty"`
+}
+
+// ToolImage describes an OCI image volume mounted as a toolchain in worker pods.
+type ToolImage struct {
+	// Name is used as the volume name; must be unique within the Agent.
+	Name string `json:"name"`
+	// Image is the OCI image reference.
+	Image string `json:"image"`
+	// MountPath is the directory where the image filesystem root is mounted.
+	// Convention: /opt/tools/<name>
+	MountPath string `json:"mountPath"`
+	// BinPath is the subdirectory of MountPath prepended to PATH. Defaults to "bin".
+	BinPath string `json:"binPath,omitempty"`
 }
 
 type ModelSpec struct {
