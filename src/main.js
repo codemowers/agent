@@ -33,7 +33,10 @@ import {Problem, text, id, newTask, prompt, activity, controllerActor, publicTas
   normalizeControls, controlsFromMarkdown, setControl, promptsReady} from './domain.js';
 
 const faults = installFaultHandler();
-if (process.env.AGENT_MODE === 'worker') {
+if (process.env.AGENT_MODE === 'task-worker') {
+  const {taskWorker} = await import('./task-worker.js');
+  await taskWorker();
+} else if (process.env.AGENT_MODE === 'worker') {
   faults.setReporter(async report => {
     const response = await agentFetch(`${process.env.AGENT_SERVICE_URL}/executions/${process.env.AGENT_TASK_ID}/fault`, {
       method: 'POST', headers: {'Content-Type': 'application/json', Authorization: `Bearer ${process.env.AGENT_REPORT_TOKEN}`},

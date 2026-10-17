@@ -128,6 +128,9 @@ spec:
                     description: CredentialSecretRef is the secret name (agent-cred-*
                       prefix) holding the API key.
                     type: string
+                  name:
+                    description: Name is the provider model identifier. Empty uses the CLI default.
+                    type: string
                 required:
                 - backend
                 - credentialSecretRef

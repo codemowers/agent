@@ -4,7 +4,7 @@ metadata:
   name: {{ .Release.Name }}-webhook
   annotations:
     kubernetes.io/description: >-
-      Validates HMAC signatures from GitHub, Gitea and Alertmanager and
+      Validates signatures from GitHub and Alertmanager and
       publishes events with routing keys to RabbitMQ for the controller.
 spec:
   selector:
@@ -15,6 +15,7 @@ spec:
       labels:
         app: {{ .Release.Name }}-webhook
     spec:
+      serviceAccountName: {{ .Release.Name }}-webhook
       securityContext:
         seccompProfile:
           type: RuntimeDefault
@@ -33,6 +34,10 @@ spec:
               path: /healthz
               port: http
           env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: AMQP_HOST
               valueFrom:
                 secretKeyRef:
@@ -53,28 +58,41 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-events-default-user
                   key: password
-          {{- if .Values.webhook.agents }}
-          volumeMounts:
-            - name: hook-secrets
-              mountPath: /secrets
-              readOnly: true
-          {{- end }}
           resources:
             {{- toYaml .Values.webhook.resources | nindent 12 }}
-      {{- if .Values.webhook.agents }}
-      volumes:
-        - name: hook-secrets
-          projected:
-            sources:
-              {{- range .Values.webhook.agents }}
-              - secret:
-                  name: agent-hook-{{ . }}
-                  items:
-                    - key: token
-                      path: {{ . }}/token
-              {{- end }}
-      {{- end }}
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-webhook
+---
+{{- if .Values.bootstrapRbac }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-webhook
+rules:
+  - apiGroups: [agents.codemowers.cloud]
+    resources: [agents]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-webhook
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-webhook
+    namespace: {{ .Release.Namespace }}
+---
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:

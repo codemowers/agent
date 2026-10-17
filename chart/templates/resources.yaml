@@ -227,10 +227,6 @@ spec:
     - refresh_token
   responseTypes:
     - code
-  allowedGroups:
-    {{- toYaml .Values.allowedGroups | nindent 4 }}
-  allowedUsers:
-    {{- toYaml .Values.allowedUsers | nindent 4 }}
   availableScopes:
     - openid
     - profile

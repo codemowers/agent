@@ -24,9 +24,12 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get]
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
   - apiGroups: [rbac.authorization.k8s.io]
-    resources: [rolebindings, roles]
-    verbs: [get, list, watch, create, update, patch, delete]
+    resources: [rolebindings]
+    verbs: [get, delete]
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     verbs: [get, create, update, patch]
@@ -89,6 +92,15 @@ spec:
               path: /healthz
               port: healthz
           env:
+            - name: AGENT_WORKER_IMAGE
+              value: {{ printf "%s%s" (ternary (printf "%s/" .Values.imageRegistry) "" (ne .Values.imageRegistry "")) (.Values.workerImage | default .Values.image) | quote }}
+            {{- range $name := list "OIDC_IDP_URI" "OIDC_CLIENT_ID" "OIDC_CLIENT_ORIGIN" "OIDC_REDIRECT_URIS" }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-{{ $.Release.Name }}-operator-owner-secrets
+                  key: {{ $name }}
+            {{- end }}
             {{- if .Values.rabbitmq.enabled }}
             - name: AMQP_HOST
               valueFrom:
@@ -126,25 +138,30 @@ spec:
       port: 80
       targetPort: api
 ---
-# Forward-auth in front of the dashboard: the operator API has no auth of its own.
 apiVersion: codemowers.cloud/v1
-kind: OIDCMiddlewareClient
+kind: OIDCClient
 metadata:
   name: {{ .Release.Name }}-operator
 spec:
   displayName: Agent operator
+  applicationType: web
+  tokenEndpointAuthMethod: none
+  pkce: true
   uri: {{ printf "https://%s/" .Values.operator.host | quote }}
-  allowedGroups:
-    {{- toYaml .Values.allowedGroups | nindent 4 }}
-  allowedUsers:
-    {{- toYaml .Values.allowedUsers | nindent 4 }}
+  redirectUris:
+    - {{ printf "https://%s/auth/callback" .Values.operator.host | quote }}
+  allowedCORSOrigins:
+    - {{ printf "https://%s" .Values.operator.host | quote }}
+  allowedResources:
+    - {{ required "operator.apiResource must be the public operator origin plus /api" .Values.operator.apiResource | quote }}
+  grantTypes: [authorization_code, refresh_token]
+  responseTypes: [code]
+  availableScopes: [openid, profile, email, groups, offline_access]
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}-operator
-  annotations:
-    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ .Release.Name }}-operator@kubernetescrd
 spec:
   rules:
     - host: {{ .Values.operator.host }}

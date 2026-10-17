@@ -1,8 +1,8 @@
 # RBAC for codemowers-agent-system.
 #
 # agent-manager ClusterRole — grants manage access to Agent and Task CRs.
-# The Agent reconciler creates a namespaced RoleBinding for each Agent's spec.access
-# principals against this ClusterRole. Apply once cluster-wide.
+# Bind this role to users/groups in each namespace. The operator checks each
+# caller's Agent get permission with a SubjectAccessReview; spec.access is ignored.
 #
 # Worker ServiceAccounts:
 #   agent-worker        (matmlazi/developer): namespaced workloads + platform CRDs
@@ -13,7 +13,7 @@
 ---
 # ── agent-manager: ClusterRole for Agent/Task CR management ──────────────────
 # Grants get/list/watch/update/patch/delete on Agent and Task CRs.
-# Namespaced access is scoped by the RoleBinding the operator creates per Agent.
+# Namespaced access is scoped by administrator-managed RoleBindings.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

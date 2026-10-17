@@ -30,18 +30,22 @@ type Agent struct {
 }
 
 type AgentSpec struct {
+	// Suspended makes newly created Tasks start suspended. Existing Tasks keep
+	// their own suspend state.
+	Suspended bool `json:"suspended,omitempty"`
+
 	// Template is the pod template for worker pods, identical in structure to
 	// Deployment/StatefulSet spec.template. template.spec is corev1.PodSpec;
 	// template.metadata carries pod-level labels and annotations. The operator:
 	//   - deep-copies template and appends workspace PVC and credential volumes
-	//   - prepends TASK_NAME, TASK_NAMESPACE and AGENT_NAME to every container's env
+	//   - supplies task, model and broker environment to the container named worker
+	//   - sets the worker image from the operator deployment's AGENT_WORKER_IMAGE
 	//   - enforces restartPolicy=Never and hostUsers=false
 	//   - defaults serviceAccountName to "agent-worker" when empty
 	Template corev1.PodTemplateSpec `json:"template"`
 
-	// Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
-	// The Agent reconciler creates a namespaced RoleBinding for these principals
-	// against the cluster-wide agent-manager ClusterRole.
+	// Access is reserved for future use. Authorization currently ignores it and
+	// checks Kubernetes Agent get rights instead.
 	Access AgentAccess `json:"access,omitempty"`
 
 	// Model selects the AI backend and its credential secret.
@@ -50,30 +54,42 @@ type AgentSpec struct {
 	// VolumeClaimTemplates is analogous to StatefulSet's volumeClaimTemplates.
 	// The operator stamps one PVC per Task per entry, using metadata.name as the
 	// volume name and PVC name suffix. Mount by name from podSpec.containers[*].volumeMounts.
-	VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates,omitempty"`
+	VolumeClaimTemplates []VolumeClaimTemplate `json:"volumeClaimTemplates,omitempty"`
 
 	// GitProviders lists git server credentials available to workers.
 	GitProviders []GitProvider `json:"gitProviders,omitempty"`
+
+	// GitHubWebhooks subscribes this Agent to GitHub hook IDs. Each signing
+	// Secret lives in the Agent's namespace and has a token key.
+	GitHubWebhooks []GitHubWebhook `json:"githubWebhooks,omitempty"`
 
 	// SlackWorkspaces lists Slack workspaces the controller can read/write.
 	// Credentials are controller-only (agent-ctrl-* prefix).
 	SlackWorkspaces []SlackWorkspace `json:"slackWorkspaces,omitempty"`
 
-	// WebhookSecretRef is the secret (agent-hook-* prefix) for GitHub/Gitea HMAC.
-	// Read by the webhook handler, not mounted in worker pods.
-	WebhookSecretRef string `json:"webhookSecretRef,omitempty"`
-
-	// CredentialRefs is the exhaustive allowlist of agent-cred-* secrets that
-	// worker pods may mount. The operator adds each as a pod volume named cred-<secret>;
-	// mount explicitly from podSpec.containers[*].volumeMounts.
-	CredentialRefs []string `json:"credentialRefs,omitempty"`
-
 	// MCPEndpoints lists MCP servers available to workers.
 	MCPEndpoints []MCPEndpoint `json:"mcpEndpoints,omitempty"`
 }
 
-// AgentAccess declares which OIDC principals may manage this Agent and its Tasks.
-// The operator creates/updates a RoleBinding in the Agent's namespace to enforce this.
+type GitHubWebhook struct {
+	ServerURL string `json:"serverURL"`
+	HookID    string `json:"hookID"`
+	SecretRef string `json:"secretRef"`
+}
+
+// VolumeClaimTemplate follows StatefulSet's metadata/spec claim shape.
+type VolumeClaimTemplate struct {
+	Metadata VolumeClaimTemplateMetadata      `json:"metadata"`
+	Spec     corev1.PersistentVolumeClaimSpec `json:"spec"`
+}
+
+type VolumeClaimTemplateMetadata struct {
+	Name        string            `json:"name"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// AgentAccess is retained in the schema but currently ignored.
 type AgentAccess struct {
 	// Groups is a list of OIDC group names (e.g. "github.com:codemowers:admins").
 	Groups []string `json:"groups,omitempty"`
@@ -85,6 +101,8 @@ type ModelSpec struct {
 	// Backend is claude or codex.
 	// +kubebuilder:validation:Enum=claude;codex
 	Backend string `json:"backend"`
+	// Name is the provider model identifier. Empty uses the CLI default.
+	Name string `json:"name,omitempty"`
 
 	// CredentialSecretRef is the secret name (agent-cred-* prefix) holding the API key.
 	CredentialSecretRef string `json:"credentialSecretRef"`
@@ -107,6 +125,7 @@ type SlackWorkspace struct {
 }
 
 type MCPEndpoint struct {
+	Name      string `json:"name,omitempty"`
 	URL       string `json:"url"`
 	TokenFile string `json:"tokenFile,omitempty"`
 	SiteURL   string `json:"siteURL,omitempty"`
@@ -178,7 +197,7 @@ type ExternalReference struct {
 
 type CompletionPolicy struct {
 	// +kubebuilder:validation:Enum=PullRequestCreated;VerifiedChecks;Approved;Merged
-	Milestone     string   `json:"milestone"`
+	Milestone      string   `json:"milestone"`
 	RequiredChecks []string `json:"requiredChecks,omitempty"`
 }
 
