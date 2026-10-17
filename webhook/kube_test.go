@@ -25,7 +25,7 @@ func TestHookIDResolvesSecretsInSubscriberNamespaces(t *testing.T) {
 		body := ""
 		status := http.StatusOK
 		switch r.URL.Path {
-		case "/apis/agents.codemowers.cloud/v1alpha1/agents":
+		case "/apis/codemowers.cloud/v1alpha1/agents":
 			listPages++
 			if r.URL.Query().Get("continue") == "" {
 				body = `{"metadata":{"continue":"next"},"items":[{"metadata":{"namespace":"team-a","name":"developer"},"spec":{"githubWebhooks":[{"serverURL":"https://github.com","hookID":"42","secretRef":"team-hook"}],"gitProviders":[{"type":"github","serverURL":"https://github.com"}]}},{"metadata":{"namespace":"team-c","name":"broken"},"spec":{"githubWebhooks":[{"serverURL":"https://ghe.example.test","hookID":"42","secretRef":"missing-hook"}],"gitProviders":[{"type":"github","serverURL":"https://ghe.example.test"}]}}]}`

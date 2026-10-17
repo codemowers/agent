@@ -5,7 +5,7 @@ metadata:
   annotations:
     kubernetes.io/description: >-
       Validates signatures from GitHub and Alertmanager and
-      publishes events with routing keys to RabbitMQ for the controller.
+      publishes events with routing keys to RabbitMQ for the operator.
 spec:
   selector:
     matchLabels:
@@ -41,22 +41,22 @@ spec:
             - name: AMQP_HOST
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-events-default-user
+                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
                   key: host
             - name: AMQP_PORT
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-events-default-user
+                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
                   key: port
             - name: AMQP_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-events-default-user
+                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
                   key: username
             - name: AMQP_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-events-default-user
+                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
                   key: password
           resources:
             {{- toYaml .Values.webhook.resources | nindent 12 }}
@@ -72,7 +72,7 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Name }}-{{ .Release.Namespace }}-webhook
 rules:
-  - apiGroups: [agents.codemowers.cloud]
+  - apiGroups: [codemowers.cloud]
     resources: [agents]
     verbs: [list]
   - apiGroups: [""]
@@ -110,6 +110,9 @@ kind: Ingress
 metadata:
   name: {{ .Release.Name }}-webhook
 spec:
+  tls:
+    - hosts:
+        - {{ .Values.webhook.host | default "webhook" }}
   rules:
     - host: {{ .Values.webhook.host | default "webhook" }}
       http:

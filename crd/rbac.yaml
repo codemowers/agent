@@ -8,10 +8,10 @@ metadata:
   labels:
     codemowers.cloud/component: agent-operator
 rules:
-  - apiGroups: [agents.codemowers.cloud]
+  - apiGroups: [codemowers.cloud]
     resources: [agents, tasks]
     verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [agents.codemowers.cloud]
+  - apiGroups: [codemowers.cloud]
     resources: [agents/status, tasks/status]
     verbs: [get, update, patch]
   - apiGroups: ['']
@@ -59,10 +59,10 @@ metadata:
   labels:
     codemowers.cloud/component: agent-namespace-admin
 rules:
-  - apiGroups: [agents.codemowers.cloud]
+  - apiGroups: [codemowers.cloud]
     resources: [agents, tasks]
     verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [agents.codemowers.cloud]
+  - apiGroups: [codemowers.cloud]
     resources: [agents/status, tasks/status]
     verbs: [get]
   # Allow managing the allowed secret prefixes only

@@ -2,17 +2,17 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ .Release.Name }}-operator
+  name: {{ .Release.Name }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: {{ .Release.Name }}-{{ .Release.Namespace }}-operator
 rules:
-  - apiGroups: [agents.codemowers.cloud]
+  - apiGroups: [codemowers.cloud]
     resources: [agents, tasks]
     verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [agents.codemowers.cloud]
+  - apiGroups: [codemowers.cloud]
     resources: [agents/status, tasks/status]
     verbs: [get, update, patch]
   - apiGroups: [""]
@@ -44,14 +44,14 @@ roleRef:
   name: {{ .Release.Name }}-{{ .Release.Namespace }}-operator
 subjects:
   - kind: ServiceAccount
-    name: {{ .Release.Name }}-operator
+    name: {{ .Release.Name }}
     namespace: {{ .Release.Namespace }}
 ---
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-operator
+  name: {{ .Release.Name }}
   annotations:
     kubernetes.io/description: >-
       Reconciles Agent and Task CRDs. Manages worker Pod and workspace PVC
@@ -59,13 +59,13 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app: {{ .Release.Name }}-operator
+      app: {{ .Release.Name }}
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}-operator
+        app: {{ .Release.Name }}
     spec:
-      serviceAccountName: {{ .Release.Name }}-operator
+      serviceAccountName: {{ .Release.Name }}
       securityContext:
         seccompProfile:
           type: RuntimeDefault
@@ -93,34 +93,34 @@ spec:
               port: healthz
           env:
             - name: AGENT_WORKER_IMAGE
-              value: {{ printf "%s%s" (ternary (printf "%s/" .Values.imageRegistry) "" (ne .Values.imageRegistry "")) (.Values.workerImage | default .Values.image) | quote }}
+              value: {{ printf "%s%s" (ternary (printf "%s/" .Values.imageRegistry) "" (ne .Values.imageRegistry "")) .Values.workerImage | quote }}
             {{- range $name := list "OIDC_IDP_URI" "OIDC_CLIENT_ID" "OIDC_CLIENT_ORIGIN" "OIDC_REDIRECT_URIS" }}
             - name: {{ $name }}
               valueFrom:
                 secretKeyRef:
-                  name: oidc-client-{{ $.Release.Name }}-operator-owner-secrets
+                  name: oidc-client-{{ $.Release.Name }}-owner-secrets
                   key: {{ $name }}
             {{- end }}
-            {{- if .Values.rabbitmq.enabled }}
+            {{- if or .Values.rabbitmq.enabled .Values.rabbitmq.existingName }}
             - name: AMQP_HOST
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-events-default-user
+                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
                   key: host
             - name: AMQP_PORT
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-events-default-user
+                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
                   key: port
             - name: AMQP_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-events-default-user
+                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
                   key: username
             - name: AMQP_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-events-default-user
+                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
                   key: password
             {{- end }}
           resources:
@@ -129,10 +129,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-operator
+  name: {{ .Release.Name }}
 spec:
   selector:
-    app: {{ .Release.Name }}-operator
+    app: {{ .Release.Name }}
   ports:
     - name: api
       port: 80
@@ -141,7 +141,7 @@ spec:
 apiVersion: codemowers.cloud/v1
 kind: OIDCClient
 metadata:
-  name: {{ .Release.Name }}-operator
+  name: {{ .Release.Name }}
 spec:
   displayName: Agent operator
   applicationType: web
@@ -161,8 +161,11 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ .Release.Name }}-operator
+  name: {{ .Release.Name }}
 spec:
+  tls:
+    - hosts:
+        - {{ .Values.operator.host }}
   rules:
     - host: {{ .Values.operator.host }}
       http:
@@ -171,6 +174,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ .Release.Name }}-operator
+                name: {{ .Release.Name }}
                 port:
                   name: api

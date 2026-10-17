@@ -128,8 +128,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	events := api.NewEvents(mgr.GetCache())
+	if err := mgr.Add(events); err != nil {
+		ctrl.Log.Error(err, "unable to add API event stream")
+		os.Exit(1)
+	}
 	if err := mgr.Add(&api.Handler{
 		Client:      mgr.GetClient(),
+		Events:      events,
 		AMQP:        amqpMgr,
 		Addr:        apiAddr,
 		Verifier:    verifier,

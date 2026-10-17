@@ -1,7 +1,7 @@
 apiVersion: skaffold/v4beta11
 kind: Config
 metadata:
-  name: agent
+  name: agent-operator
 build:
   platforms:
     - linux/amd64
@@ -16,10 +16,6 @@ build:
       context: .
       kaniko:
         target: runner
-    - image: agent-controller
-      context: .
-      kaniko:
-        target: controller
     - image: agent-webhook
       context: webhook
       kaniko: {}
@@ -32,20 +28,19 @@ manifests:
       global:
         - --kube-version=1.36.3
     releases:
-      - name: agent
+      - name: agent-operator
         chartPath: chart
         skipBuildDependencies: true
         setValues:
-          host: controller
-          env.AGENT_SHARING_MODE: public
+          operator.host: sloperator
+          webhook.host: webhook
+          rabbitmq.enabled: false
+          rabbitmq.existingName: agent-events
           imageRegistry: ""
         setValueTemplates:
-          image: "{{.IMAGE_FULLY_QUALIFIED_agent_controller}}"
           workerImage: "{{.IMAGE_FULLY_QUALIFIED_agent}}"
           webhook.image: "{{.IMAGE_FULLY_QUALIFIED_agent_webhook}}"
           operator.image: "{{.IMAGE_FULLY_QUALIFIED_agent_operator}}"
-          env.AGENT_KUBE_CONTEXT: "{{.AGENT_KUBE_CONTEXT}}"
-          apiResource: "{{.AGENT_API_RESOURCE}}"
           operator.apiResource: "{{.AGENT_OPERATOR_API_RESOURCE}}"
 
 deploy:
@@ -54,12 +49,3 @@ deploy:
       # Keep labeled chart resources when Skaffold cleans up.
       delete:
         - --selector=skaffold.dev/keep!=true
-
-profiles:
-  - name: dev-test
-    activation:
-      - kubeContext: dev-test
-    patches:
-      - op: replace
-        path: /manifests/helm/releases/0/setValueTemplates/env.AGENT_KUBE_CONTEXT
-        value: dev-test/codemowers-agent-system
