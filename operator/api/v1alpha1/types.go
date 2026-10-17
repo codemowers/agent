@@ -1,4 +1,4 @@
-// Package v1alpha1 contains the Agent and Task CRD types for agents.codemowers.cloud.
+// Package v1alpha1 contains the Agent and Task CRD types for codemowers.cloud.
 package v1alpha1
 
 import (
@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	GroupVersion = schema.GroupVersion{Group: "agents.codemowers.cloud", Version: "v1alpha1"}
+	GroupVersion = schema.GroupVersion{Group: "codemowers.cloud", Version: "v1alpha1"}
 )
 
 // +kubebuilder:object:root=true

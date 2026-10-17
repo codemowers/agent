@@ -1,28 +1,28 @@
 # RBAC for codemowers-agent-system.
 #
-# agent-manager ClusterRole — grants manage access to Agent and Task CRs.
+# agent-operator-manager ClusterRole — grants manage access to Agent and Task CRs.
 # Bind this role to users/groups in each namespace. The operator checks each
 # caller's Agent get permission with a SubjectAccessReview; spec.access is ignored.
 #
 # Worker ServiceAccounts:
-#   agent-worker        (matmlazi/developer): namespaced workloads + platform CRDs
-#   agent-worker-readonly (patpalouk/support): automountServiceAccountToken=false, no bindings
-#   agent-worker-admin  (krtek/admin): ClusterRoleBinding to cluster-admin
+#   agent-operator-worker          (matmlazi/developer): namespaced workloads + platform CRDs
+#   agent-operator-worker-readonly (patpalouk/support): no Kubernetes API token
+#   agent-operator-worker-admin    (krtek/admin): ClusterRoleBinding to cluster-admin
 #
 # Apply: kubectl apply -f examples/rbac.yaml
 ---
-# ── agent-manager: ClusterRole for Agent/Task CR management ──────────────────
+# ── agent-operator-manager: ClusterRole for Agent/Task CR management ──────────────────
 # Grants get/list/watch/update/patch/delete on Agent and Task CRs.
 # Namespaced access is scoped by administrator-managed RoleBindings.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: agent-manager
+  name: agent-operator-manager
 rules:
-  - apiGroups: [agents.codemowers.cloud]
+  - apiGroups: [codemowers.cloud]
     resources: [agents, tasks]
     verbs: [get, list, watch, update, patch, delete]
-  - apiGroups: [agents.codemowers.cloud]
+  - apiGroups: [codemowers.cloud]
     resources: [agents/status, tasks/status]
     verbs: [get]
 ---
@@ -30,7 +30,7 @@ rules:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: agent-worker
+  name: agent-operator-worker
   namespace: codemowers-agent-system
 ---
 # Developer gets full control over approved namespaced resources in their
@@ -38,7 +38,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: agent-worker-developer
+  name: agent-operator-worker-developer
 rules:
   # Core workload types
   - apiGroups: [""]
@@ -107,22 +107,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: agent-worker-developer
+  name: agent-operator-worker-developer
   namespace: codemowers-agent-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: agent-worker-developer
+  name: agent-operator-worker-developer
 subjects:
   - kind: ServiceAccount
-    name: agent-worker
+    name: agent-operator-worker
     namespace: codemowers-agent-system
 ---
 # ── patpalouk: customer support SA ───────────────────────────────────────────
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: agent-worker-readonly
+  name: agent-operator-worker-readonly
   namespace: codemowers-agent-system
   annotations:
     codemowers.cloud/description: "No Kubernetes API access; token mount disabled."
@@ -135,18 +135,18 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: agent-worker-admin
+  name: agent-operator-worker-admin
   namespace: codemowers-agent-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: agent-worker-admin-cluster-admin
+  name: agent-operator-worker-admin-cluster-admin
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: cluster-admin
 subjects:
   - kind: ServiceAccount
-    name: agent-worker-admin
+    name: agent-operator-worker-admin
     namespace: codemowers-agent-system

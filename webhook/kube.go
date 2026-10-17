@@ -139,7 +139,7 @@ func (resolver *kubeHookResolver) Resolve(ctx context.Context, hookID string) ([
 		return nil, fmt.Errorf("invalid GitHub hook ID")
 	}
 	var agents hookAgentList
-	path := "/apis/agents.codemowers.cloud/v1alpha1/agents?limit=50"
+	path := "/apis/codemowers.cloud/v1alpha1/agents?limit=50"
 	for {
 		var page hookAgentList
 		if err := resolver.get(ctx, path, &page); err != nil {
@@ -149,7 +149,7 @@ func (resolver *kubeHookResolver) Resolve(ctx context.Context, hookID string) ([
 		if page.Metadata.Continue == "" {
 			break
 		}
-		path = "/apis/agents.codemowers.cloud/v1alpha1/agents?limit=50&continue=" + url.QueryEscape(page.Metadata.Continue)
+		path = "/apis/codemowers.cloud/v1alpha1/agents?limit=50&continue=" + url.QueryEscape(page.Metadata.Continue)
 	}
 	var hooks []agentHook
 	var unavailable error

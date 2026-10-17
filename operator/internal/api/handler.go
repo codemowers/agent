@@ -28,6 +28,7 @@ type Publisher interface {
 // Handler serves the web UI and REST API for Task management.
 type Handler struct {
 	Client      client.Client
+	Events      *Events
 	AMQP        Publisher // nil if RabbitMQ not configured
 	Addr        string
 	Verifier    tokenVerifier
@@ -44,7 +45,11 @@ func (h *Handler) Start(ctx context.Context) error {
 	srv := &http.Server{Addr: h.Addr, Handler: mux}
 	go func() {
 		<-ctx.Done()
-		srv.Shutdown(context.Background()) //nolint:errcheck
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if srv.Shutdown(shutdownCtx) != nil {
+			srv.Close() //nolint:errcheck
+		}
 	}()
 	logger.Info("API server listening", "addr", h.Addr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
@@ -58,6 +63,7 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("GET /config", h.config)
 	mux.HandleFunc("GET /api/agents", h.listAgents)
 	mux.HandleFunc("GET /api/tasks", h.listTasks)
+	mux.HandleFunc("POST /api/events", h.streamEvents)
 	mux.HandleFunc("POST /api/tasks", h.createTask)
 	mux.HandleFunc("POST /api/tasks/{namespace}/{name}/prompts", h.sendPrompt)
 	mux.HandleFunc("DELETE /api/tasks/{namespace}/{name}", h.deleteTask)
@@ -507,9 +513,14 @@ button { border: none; border-radius: 6px; padding: 7px 14px; font: inherit; cur
 <script>
 let agents = [], tasks = [], selectedTask = null;
 let oidc, tokens, discovery;
+let authRedirecting = false, loadPromise = null, refreshPromise = null, streamController = null;
+let needsAgents = false, needsTasks = false;
+let lastAgents = '', lastTasks = '';
 const status = message => { document.getElementById('authStatus').textContent = message; };
 const encode = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 async function signIn() {
+  if (authRedirecting) return;
+  authRedirecting = true;
   const state = encode(crypto.getRandomValues(new Uint8Array(24)));
   const verifier = encode(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = encode(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
@@ -555,26 +566,108 @@ async function initializeAuth() {
 async function apiFetch(path, options = {}) {
   if (tokens.expires_at < Date.now() + 30000) {
     if (!tokens.refresh_token) { sessionStorage.removeItem('operator-oidc-tokens'); await signIn(); throw new Error('Sign-in expired'); }
-    await exchange(new URLSearchParams({grant_type: 'refresh_token', refresh_token: tokens.refresh_token}));
+    if (!refreshPromise) {
+      refreshPromise = exchange(new URLSearchParams({grant_type: 'refresh_token', refresh_token: tokens.refresh_token}))
+        .finally(() => { refreshPromise = null; });
+    }
+    try { await refreshPromise; }
+    catch { sessionStorage.removeItem('operator-oidc-tokens'); await signIn(); throw new Error('Sign-in expired'); }
   }
   const response = await fetch(path, {...options, headers: {...options.headers, Authorization: 'Bearer ' + tokens.access_token}});
   if (response.status === 401) { sessionStorage.removeItem('operator-oidc-tokens'); await signIn(); throw new Error('Sign-in expired'); }
   return response;
 }
 
-async function load() {
-  try {
-    const responses = await Promise.all([apiFetch('/api/agents'), apiFetch('/api/tasks')]);
-    for (const response of responses) if (!response.ok) throw new Error((await response.json()).error || 'API request failed');
-    [agents, tasks] = await Promise.all(responses.map(r => r.json()));
-    if (!Array.isArray(agents) || !Array.isArray(tasks)) throw new Error('Invalid API response');
-    status('Signed in');
-  } catch (error) { status(error.message); return; }
-  renderAgentSelect();
-  renderTaskList();
-  if (selectedTask) {
-    const t = tasks.find(t => t.namespace === selectedTask.namespace && t.name === selectedTask.name);
-    if (t) renderDetail(t);
+async function load(kind = 'all') {
+  if (authRedirecting) return;
+  if (kind !== 'tasks') needsAgents = true;
+  needsTasks = true;
+  if (loadPromise) return loadPromise;
+  loadPromise = (async () => {
+    while (needsAgents || needsTasks) {
+      const readAgents = needsAgents, readTasks = needsTasks;
+      needsAgents = needsTasks = false;
+      try {
+        const paths = [...(readAgents ? ['/api/agents'] : []), ...(readTasks ? ['/api/tasks'] : [])];
+        const responses = await Promise.all(paths.map(path => apiFetch(path)));
+        for (const response of responses) if (!response.ok) throw new Error((await response.json()).error || 'API request failed');
+        const values = await Promise.all(responses.map(response => response.json()));
+        let index = 0;
+        if (readAgents) {
+          const nextAgents = values[index++];
+          if (!Array.isArray(nextAgents)) throw new Error('Invalid Agent response');
+          const signature = JSON.stringify(nextAgents);
+          if (signature !== lastAgents) {
+            agents = nextAgents;
+            lastAgents = signature;
+            renderAgentSelect();
+            streamController?.abort(); // Reopen with the current authorized Agent topics.
+          }
+        }
+        if (readTasks) {
+          const nextTasks = values[index];
+          if (!Array.isArray(nextTasks)) throw new Error('Invalid Task response');
+          const signature = JSON.stringify(nextTasks);
+          if (signature !== lastTasks) {
+            tasks = nextTasks;
+            lastTasks = signature;
+            renderTaskList();
+            if (selectedTask) {
+              const task = tasks.find(t => t.namespace === selectedTask.namespace && t.name === selectedTask.name);
+              if (task) renderDetail(task, true);
+            }
+          }
+        }
+        status('Signed in');
+      } catch (error) { status(error.message); }
+    }
+  })().finally(() => { loadPromise = null; });
+  return loadPromise;
+}
+
+async function runEvents() {
+  let retry = 1000;
+  while (!authRedirecting) {
+    streamController = new AbortController();
+    let changedTopics = false;
+    const controller = streamController;
+    try {
+      const response = await apiFetch('/api/events', {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, signal: controller.signal,
+        body: JSON.stringify({agents: agents.map(a => ({namespace: a.namespace, name: a.name}))})});
+      if (!response.ok) throw new Error('Event stream returned ' + response.status);
+      retry = 1000;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+      while (true) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        pending += decoder.decode(value, {stream: true});
+        if (pending.length > 65536) throw new Error('Event stream frame too large');
+        let boundary;
+        while ((boundary = pending.indexOf('\n\n')) !== -1) {
+          const frame = pending.slice(0, boundary);
+          pending = pending.slice(boundary + 2);
+          const event = frame.match(/^event: (agents|tasks)$/m)?.[1];
+          if (event) {
+            const previousAgents = lastAgents;
+            await load(event === 'agents' ? 'all' : 'tasks');
+            if (lastAgents !== previousAgents) { changedTopics = true; controller.abort(); break; }
+          }
+        }
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError' && !authRedirecting) status(error.message);
+    } finally {
+      if (streamController === controller) streamController = null;
+    }
+    if (authRedirecting) return;
+    if (!changedTopics) {
+      await new Promise(resolve => setTimeout(resolve, retry));
+      retry = Math.min(retry * 2, 30000);
+      await load(); // Reconcile changes missed while disconnected.
+    }
   }
 }
 
@@ -611,7 +704,10 @@ function select(ns, name) {
   renderTaskList();
 }
 
-function renderDetail(t) {
+function renderDetail(t, preserveDraft = false) {
+  const previousInput = preserveDraft ? document.getElementById('promptInput') : null;
+  const draft = previousInput?.value || '';
+  const focused = previousInput && document.activeElement === previousInput;
   document.getElementById('detail').innerHTML =
     '<div class="detail-header">'+
       '<h2>'+t.name+'</h2>'+
@@ -628,6 +724,11 @@ function renderDetail(t) {
         '<button class="btn-send" onclick="sendPrompt(\''+t.namespace+'\',\''+t.name+'\')">Send</button>'+
       '</div>'+
     '</div>';
+  if (previousInput) {
+    const input = document.getElementById('promptInput');
+    input.value = draft;
+    if (focused) input.focus();
+  }
 }
 
 async function createTask() {
@@ -664,7 +765,12 @@ async function deleteTask(ns, name) {
 
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-initializeAuth().then(ready => { if (ready) { load(); setInterval(load, 5000); } }).catch(error => status(error.message));
+initializeAuth().then(async ready => {
+  if (!ready) return;
+  await load();
+  runEvents();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') load(); });
+}).catch(error => status(error.message));
 </script>
 </body>
 </html>`

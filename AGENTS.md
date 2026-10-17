@@ -96,9 +96,19 @@ Tasks. The parallel operator has namespaced Agent and Task CRDs, RabbitMQ event
 routing, and worker Pods derived from `Agent.spec.template` as a Kubernetes
 `PodTemplateSpec` plus StatefulSet-shaped `volumeClaimTemplates`. These CRD Tasks
 are separate from existing Redis Tasks; no cutover or data migration has occurred.
+Agent and Task CRDs use `codemowers.cloud/v1alpha1` directly, with resource names
+`agents.codemowers.cloud` and `tasks.codemowers.cloud`.
+This checkout deploys the Go operator as `agent-operator` and the webhook
+receiver as `agent-operator-webhook` in the existing
+`codemowers-agent-system` namespace. Their hosts are `sloperator` and `webhook`. The
+previous `../agent` controller retains `controller` and Redis Tasks; it does
+not use the Agent/Task CRDs. This release reuses the existing `agent-events`
+RabbitMQ cluster; retain its queues and PVCs.
 The operator sets the `worker` container image from the Skaffold runner image,
 overriding stale `image` values in Agent CRs. Signed forge events create
 Tasks only after checking the configured account and current assignment.
+Operator worker Pods are named `agent-<Agent name>-<Task prefix>-<incarnation ID>`;
+the Agent segment is shortened as needed to fit Kubernetes Pod name limits.
 The operator Task API exposes the latest worker response from
 `Task.status.progress.summary`; the UI shows it in Task detail after completion.
 GitHub and GHES hooks use one `/hooks/github` URL. `X-GitHub-Hook-ID` selects Agents
@@ -109,6 +119,10 @@ again before routing to Tasks. Signed pings are acknowledged without routing;
 the operator records bounded per-Task delivery receipts. Use distinct keys for distinct GitHub hooks since
 the hook ID header is not signed. The operator UI uses its native OIDCClient owner
 Secret and bearer tokens, then SubjectAccessReview for Agent `get` rights.
+Its API streams Agent and Task cache invalidations to the browser over an
+authenticated HTTP event stream. Task subscriptions are scoped to Agent names
+and checked with SubjectAccessReview; the browser fetches changed state from
+the access-controlled API. RabbitMQ is not exposed to browsers.
 `spec.access` remains in the CRD but is ignored; the operator removes its old
 owned access RoleBindings. Grant read access through Kubernetes RBAC.
 Gitea webhook ingestion is deferred pending a hook ID equivalent. Helm has no
@@ -124,28 +138,28 @@ existing services. Codemowers.cloud is an optional ready-configured environment.
 Do not add legacy tool-copying fallbacks for unsupported runtimes.
 
 Read the deployment context and namespace from the ignored local `skaffold.env`.
-The short host defaults to `controller` and admission expands it. Keep unrelated
-workloads untouched. Browser TLS terminates at Ingress; Ingress-to-controller traffic
-uses HTTP for now. OIDCClient registers explicit short source URLs; Passmower
-has no Ingress discovery. Read issuer, client ID, internal URI, external origin,
-redirect URIs and allowed groups from the provisioned owner Secret.
+The old controller uses `controller`; this checkout uses `sloperator` for the
+operator UI and `webhook` for its receiver. Admission expands short hosts. Keep
+unrelated workloads untouched. Browser TLS terminates at Ingress;
+Ingress-to-service traffic uses HTTP for now. OIDCClient registers explicit
+short source URLs; Passmower has no Ingress discovery. Read issuer, client ID,
+internal URI, external origin, redirect URIs and allowed groups from the
+provisioned owner Secret.
 
 Use only the Pod `metadata.namespace` fieldRef for namespace context. Redis keys
 and signed-link scope use namespace name and release. No namespace UID field,
 lookup, labels or environment variable, and no additional Namespace RBAC.
 Pod UID remains necessary for execution identity and safe adoption.
 
-`chart/values.yaml` exposes generic `host` and requires an explicit public
-`apiResource` for OIDC `allowedResources`.
-`skaffold.yaml` reads it from `AGENT_API_RESOURCE` in local `skaffold.env`.
-The `dev-test` profile sets that cluster's verified public API resource. Map the generated
-`OIDC_ALLOWED_USERS` owner Secret key to controller `OIDC_ALLOWED_SUBJECTS` so
-both Passmower and the Task API enforce the individual allowlist.
+`chart/values.yaml` exposes `operator.host` and requires an explicit public
+`operator.apiResource` for OIDC `allowedResources`.
+`skaffold.yaml` reads it from `AGENT_OPERATOR_API_RESOURCE` in local `skaffold.env`.
 Do not use the short host for this resource: OIDC admission expands URI,
 redirect and CORS fields but does not expand `allowedResources`.
-`skaffold.yaml` injects image references/runtime env. `AGENT_KUBE_CONTEXT` comes
-from local `skaffold.env`; there is no separate cluster values file. Storage,
-operator and tool-image defaults live in the chart. Controller updates use
+`skaffold.yaml` injects image references; there is no separate cluster values
+file. Operator, worker and RabbitMQ defaults live in the chart. The old
+controller maps its generated `OIDC_ALLOWED_USERS` owner Secret key to
+`OIDC_ALLOWED_SUBJECTS` for its Task API. Controller updates use
 RollingUpdate with maxSurge 1 and maxUnavailable 0; a Lease fences reconciliation
 while replicas overlap.
 

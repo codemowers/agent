@@ -1,4 +1,4 @@
-{{- if .Values.rabbitmq.enabled }}
+{{- if and .Values.rabbitmq.enabled (not .Values.rabbitmq.existingName) }}
 ---
 # RabbitMQ cluster for event persistence and deduplication.
 # skaffold.dev/keep=true is added automatically by the cluster admission policy

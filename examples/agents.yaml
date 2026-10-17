@@ -15,7 +15,7 @@
 #   kubectl version -o json | jq -r .serverVersion.gitVersion
 # The operator fills an omitted worker image from the Skaffold-built runner.
 ---
-apiVersion: agents.codemowers.cloud/v1alpha1
+apiVersion: codemowers.cloud/v1alpha1
 kind: Agent
 metadata:
   name: matmlazi
@@ -25,7 +25,7 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: agent-worker
+      serviceAccountName: agent-operator-worker
       containers:
       - name: worker
         securityContext:
@@ -41,9 +41,6 @@ spec:
             mountPath: /workspace
           - name: cache
             mountPath: /home/user/.cache
-          - name: agent-config
-            mountPath: /etc/agent
-            readOnly: true
           - name: kubectl
             mountPath: /opt/tools/kubectl
             readOnly: true
@@ -52,9 +49,6 @@ spec:
             subPath: usr/bin
             readOnly: true
       volumes:
-        - name: agent-config
-          configMap:
-            name: agent-worker-config
         - name: kubectl
           image:
             reference: registry.k8s.io/kubectl:v1.36.3
@@ -89,7 +83,7 @@ spec:
       credentialSecretRef: agent-worker-github-token
   githubWebhooks:
     - serverURL: https://github.com
-      hookID: "123456"
+      hookID: "698893022"
       secretRef: agent-hook-codemowers-agent
   mcpEndpoints:
     - name: codemowers
@@ -99,7 +93,7 @@ spec:
       url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
       tokenFile: /var/run/agent-mcp/driftmower
 ---
-apiVersion: agents.codemowers.cloud/v1alpha1
+apiVersion: codemowers.cloud/v1alpha1
 kind: Agent
 metadata:
   name: patpalouk
@@ -109,7 +103,7 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: agent-worker-readonly
+      serviceAccountName: agent-operator-worker-readonly
       securityContext:
         fsGroup: 65534
       containers:
@@ -129,14 +123,14 @@ spec:
       credentialSecretRef: agent-worker-github-token
   githubWebhooks:
     - serverURL: https://github.com
-      hookID: "123456"
+      hookID: "698893022"
       secretRef: agent-hook-codemowers-agent
   mcpEndpoints:
     - name: codemowers
       url: https://mcp.codemowers.io/mcp
       siteURL: https://mcp.codemowers.io
 ---
-apiVersion: agents.codemowers.cloud/v1alpha1
+apiVersion: codemowers.cloud/v1alpha1
 kind: Agent
 metadata:
   name: krtek
@@ -146,7 +140,7 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: agent-worker-admin
+      serviceAccountName: agent-operator-worker-admin
       containers:
       - name: worker
         securityContext:

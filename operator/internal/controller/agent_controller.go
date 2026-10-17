@@ -48,6 +48,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.removeLegacyAccessBinding(ctx, &agent); err != nil {
 		return ctrl.Result{}, err
 	}
+	if agent.Status.TaskCount == len(taskList.Items) {
+		return ctrl.Result{}, nil
+	}
 
 	patch := client.MergeFrom(agent.DeepCopy())
 	agent.Status.TaskCount = len(taskList.Items)
@@ -402,7 +405,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "WorkerImageMissing")
 	}
 
-	podName := fmt.Sprintf("agent-worker-%s-%s", task.Name[:min(8, len(task.Name))], randSuffix())
+	podName := workerPodName(agent.Name, task.Name, randSuffix())
 	pod := r.buildWorkerPod(podName, task, agent, "agent-worker")
 
 	if err := r.Create(ctx, pod); err != nil {
@@ -677,4 +680,15 @@ func randSuffix() string {
 	b := make([]byte, 4)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
+}
+
+// workerPodName keeps the owning Agent visible while leaving room for a Task
+// prefix and a fresh incarnation ID on every worker restart.
+func workerPodName(agentName, taskName, incarnation string) string {
+	taskPrefix := taskName[:min(8, len(taskName))]
+	maxAgentLength := 63 - len("agent---") - len(taskPrefix) - len(incarnation)
+	if len(agentName) > maxAgentLength {
+		agentName = strings.TrimRight(agentName[:maxAgentLength], "-")
+	}
+	return fmt.Sprintf("agent-%s-%s-%s", agentName, taskPrefix, incarnation)
 }

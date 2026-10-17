@@ -1,13 +1,10 @@
-host: "controller"
-
 # imageRegistry: prefix prepended to all built image names.
 # Set to "ghcr.io" (default) to pull release images from GitHub Container Registry.
 # Set to "" in Skaffold so rendered names match artifact names and Skaffold
 # replaces them with the locally built digest automatically.
 imageRegistry: "ghcr.io/codemowers"
 
-# image / workerImage: short name without registry; imageRegistry is prepended.
-image: "agent-controller"
+# workerImage: short name without registry; imageRegistry is prepended.
 workerImage: "agent"
 
 # bootstrapRbac: apply Roles, ClusterRoles and bindings (ServiceAccounts always exist).
@@ -18,8 +15,7 @@ bootstrapRbac: true
 webhook:
   image: agent-webhook
   # host: short hostname for the webhook ingress (admission expands it).
-  # Defaults to webhook.<host> if unset.
-  host: ""
+  host: webhook
   resources:
     requests:
       memory: 32Mi
@@ -44,4 +40,6 @@ operator:
 
 rabbitmq:
   enabled: true
+  # Existing cluster name when enabled=false; its durable queues are retained.
+  existingName: ""
   storage: 10Gi

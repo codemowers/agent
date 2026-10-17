@@ -1,13 +1,13 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ .Release.Name }}-operator-api
+  name: {{ .Release.Name }}-api
   labels:
     skaffold.dev/keep: "true"
 spec:
   podSelector:
     matchLabels:
-      app: {{ .Release.Name }}-operator
+      app: {{ .Release.Name }}
   policyTypes:
     - Ingress
   ingress:

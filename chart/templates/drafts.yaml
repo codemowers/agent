@@ -1,9 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ .Release.Name }}-drafts
-data:
-  {{- range $path, $_ := .Files.Glob "drafts/*.md" }}
-  {{ base $path | quote }}: |
-    {{- $.Files.Get $path | nindent 4 }}
-  {{- end }}
