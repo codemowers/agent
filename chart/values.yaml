@@ -1,6 +1,4 @@
 host: "controller"
-allowedGroups: []
-allowedUsers: []
 
 # imageRegistry: prefix prepended to all built image names.
 # Set to "ghcr.io" (default) to pull release images from GitHub Container Registry.
@@ -12,17 +10,13 @@ imageRegistry: "ghcr.io/codemowers"
 image: "agent-controller"
 workerImage: "agent"
 
-# bootstrapRbac: apply ServiceAccounts, Roles, ClusterRoles and bindings.
+# bootstrapRbac: apply Roles, ClusterRoles and bindings (ServiceAccounts always exist).
 # Requires cluster-admin or namespace-admin. Set false when deploying from
 # a worker pod that lacks RBAC write permissions; apply RBAC separately first.
 bootstrapRbac: true
 
 webhook:
   image: agent-webhook
-  # agents: list of agent names for which to mount agent-hook-<name> secrets.
-  # Each secret must have a 'token' key containing the HMAC webhook secret.
-  # GitHub webhook URL: https://<webhook-host>/hooks/github/<agent-name>
-  agents: []
   # host: short hostname for the webhook ingress (admission expands it).
   # Defaults to webhook.<host> if unset.
   host: ""
@@ -38,6 +32,8 @@ operator:
   image: agent-operator
   # host: short hostname for the dashboard (admission expands it).
   host: sloperator
+  apiResource: ""
+  ingressNamespace: traefik
   resources:
     requests:
       memory: 64Mi

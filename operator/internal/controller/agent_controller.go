@@ -4,7 +4,9 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/codemowers/agent/operator/internal/rabbitmq"
@@ -23,8 +25,6 @@ import (
 // AgentReconciler reconciles Agent CRs: counts owned Tasks and updates status.
 type AgentReconciler struct {
 	client.Client
-	// APIReader is the non-cached client used for RoleBinding reads, avoiding
-	// a cluster-wide informer that the operator SA is not permitted to start.
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 }
@@ -45,11 +45,8 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list tasks: %w", err)
 	}
-
-	if err := r.reconcileAccessBinding(ctx, &agent); err != nil {
-		// RBAC permission to manage RoleBindings may not be granted in all
-		// installations. Log and continue so the rest of the reconcile succeeds.
-		log.FromContext(ctx).Info("skipping access binding (no RoleBinding RBAC)", "err", err)
+	if err := r.removeLegacyAccessBinding(ctx, &agent); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	patch := client.MergeFrom(agent.DeepCopy())
@@ -62,96 +59,39 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	return ctrl.Result{}, nil
 }
 
-// reconcileAccessBinding creates or updates a RoleBinding that grants the principals
-// listed in spec.access manage access to this Agent and its Tasks.
-func (r *AgentReconciler) reconcileAccessBinding(ctx context.Context, agent *agentsv1alpha1.Agent) error {
-	bindingName := "agent-access-" + agent.Name
-	subjects := accessSubjects(agent.Spec.Access)
-
-	var existing rbacv1.RoleBinding
-	err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: bindingName}, &existing)
-
-	if errors.IsNotFound(err) {
-		if len(subjects) == 0 {
-			return nil // nothing to create
+func (r *AgentReconciler) removeLegacyAccessBinding(ctx context.Context, agent *agentsv1alpha1.Agent) error {
+	var binding rbacv1.RoleBinding
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: "agent-access-" + agent.Name}, &binding); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
 		}
-		rb := r.buildAccessBinding(bindingName, agent, subjects)
-		return r.Create(ctx, rb)
+		return fmt.Errorf("read legacy access binding: %w", err)
 	}
-	if err != nil {
-		return fmt.Errorf("get access binding: %w", err)
+	for _, owner := range binding.OwnerReferences {
+		if owner.UID == agent.UID && owner.Kind == "Agent" && owner.APIVersion == agentsv1alpha1.GroupVersion.String() {
+			if err := r.Delete(ctx, &binding); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("delete legacy access binding: %w", err)
+			}
+			return nil
+		}
 	}
-
-	// Update subjects if they changed.
-	if len(subjects) == 0 {
-		return r.Delete(ctx, &existing)
-	}
-	patch := client.MergeFrom(existing.DeepCopy())
-	existing.Subjects = subjects
-	return r.Patch(ctx, &existing, patch)
-}
-
-func (r *AgentReconciler) buildAccessBinding(name string, agent *agentsv1alpha1.Agent, subjects []rbacv1.Subject) *rbacv1.RoleBinding {
-	return &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: agent.Namespace,
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion:         agentsv1alpha1.GroupVersion.String(),
-				Kind:               "Agent",
-				Name:               agent.Name,
-				UID:                agent.UID,
-				BlockOwnerDeletion: boolPtr(true),
-				Controller:         boolPtr(true),
-			}},
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: rbacv1.GroupName,
-			Kind:     "ClusterRole",
-			Name:     "agent-manager",
-		},
-		Subjects: subjects,
-	}
-}
-
-// accessSubjects converts AgentAccess into RBAC subject entries.
-// Groups use the OIDC group format from Passmower (e.g. "github.com:codemowers:admins").
-// Subjects are individual user emails, matched as User kind.
-func accessSubjects(access agentsv1alpha1.AgentAccess) []rbacv1.Subject {
-	var subjects []rbacv1.Subject
-	for _, g := range access.Groups {
-		subjects = append(subjects, rbacv1.Subject{
-			Kind:     rbacv1.GroupKind,
-			APIGroup: rbacv1.GroupName,
-			Name:     g,
-		})
-	}
-	for _, s := range access.Subjects {
-		subjects = append(subjects, rbacv1.Subject{
-			Kind:     rbacv1.UserKind,
-			APIGroup: rbacv1.GroupName,
-			Name:     s,
-		})
-	}
-	return subjects
+	return nil
 }
 
 func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentsv1alpha1.Agent{}).
 		Owns(&agentsv1alpha1.Task{}).
-		// RoleBindings are owned via ownerReference (GC cascade) but not watched:
-		// the cluster role does not permit cluster-wide RoleBinding list/watch, and
-		// re-reconciliation on RoleBinding changes is not needed for correctness.
 		Complete(r)
 }
 
 // TaskReconciler reconciles Task CRs: manages worker Pod and workspace PVC lifecycle.
 type TaskReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	AMQP    AMQPManager // nil when RabbitMQ is not configured
-	AMQPURL string      // injected into worker pods as AMQP_URL
+	Scheme      *runtime.Scheme
+	AMQP        AMQPManager // nil when RabbitMQ is not configured
+	AMQPURL     string      // injected into worker pods as AMQP_URL
+	WorkerImage string      // approved runner image injected by deployment/Skaffold
 }
 
 func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -184,14 +124,51 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *TaskReconciler) reconcileSuspended(ctx context.Context, task *agentsv1alpha1.Task) (ctrl.Result, error) {
-	// Delete running worker pod if any.
+	// Check the recorded UID before touching a Pod with a reused name.
 	if task.Status.WorkerPodName != "" {
 		var pod corev1.Pod
 		err := r.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: task.Status.WorkerPodName}, &pod)
 		if err == nil {
-			if err := r.Delete(ctx, &pod); err != nil && !errors.IsNotFound(err) {
+			if !ownedByTask(&pod, task) {
+				return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "WorkerOwnerMismatch")
+			}
+			if task.Status.WorkerPodUID != "" && task.Status.WorkerPodUID != string(pod.UID) {
+				return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "WorkerUIDMismatch")
+			}
+		} else if !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	}
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(task.Namespace),
+		client.MatchingLabels{"codemowers.cloud/task": task.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+	stopping := false
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if !ownedByTask(pod, task) || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		stopping = true
+		if pod.DeletionTimestamp == nil {
+			if err := r.Delete(ctx, pod); err != nil && !errors.IsNotFound(err) {
 				return ctrl.Result{}, err
 			}
+		}
+	}
+	if stopping {
+		if _, err := r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, "WorkerStopping"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	if task.Status.WorkerPodName != "" {
+		patch := client.MergeFrom(task.DeepCopy())
+		task.Status.WorkerPodName = ""
+		task.Status.WorkerPodUID = ""
+		if err := r.Status().Patch(ctx, task, patch); err != nil {
+			return ctrl.Result{}, err
 		}
 	}
 	return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, "Suspended")
@@ -205,9 +182,9 @@ func (r *TaskReconciler) ensureWorkspacePVCs(ctx context.Context, task *agentsv1
 	patch := client.MergeFrom(task.DeepCopy())
 	changed := false
 	for _, tmpl := range agent.Spec.VolumeClaimTemplates {
-		name := tmpl.Name
+		name := tmpl.Metadata.Name
 		if name == "" {
-			name = "workspace"
+			return fmt.Errorf("volumeClaimTemplates metadata.name is required")
 		}
 		if _, exists := task.Status.WorkspacePVCs[name]; exists {
 			continue
@@ -216,13 +193,10 @@ func (r *TaskReconciler) ensureWorkspacePVCs(ctx context.Context, task *agentsv1
 		spec := tmpl.Spec.DeepCopy()
 		pvc := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      pvcName,
-				Namespace: task.Namespace,
-				Labels: map[string]string{
-					"codemowers.cloud/task":     task.Name,
-					"codemowers.cloud/agent":    agent.Name,
-					"codemowers.cloud/pvc-role": name,
-				},
+				Name:            pvcName,
+				Namespace:       task.Namespace,
+				Labels:          mergeManagedLabels(tmpl.Metadata.Labels, task, agent),
+				Annotations:     tmpl.Metadata.Annotations,
 				OwnerReferences: []metav1.OwnerReference{taskOwnerRef(task)},
 			},
 			Spec: *spec,
@@ -239,18 +213,87 @@ func (r *TaskReconciler) ensureWorkspacePVCs(ctx context.Context, task *agentsv1
 	return nil
 }
 
+// Replace only a worker that has never started and is stuck pulling an old
+// image. Pod updates are unsafe here because admission may inject pull Secrets
+// on UPDATE, which Kubernetes rejects as an immutable field change.
+func (r *TaskReconciler) replaceUnstartedWorkerImage(ctx context.Context, task *agentsv1alpha1.Task, pod *corev1.Pod) (bool, error) {
+	if r.WorkerImage == "" || pod.Status.Phase != corev1.PodPending {
+		return false, nil
+	}
+	oldImage := false
+	for _, container := range pod.Spec.Containers {
+		if container.Name == "worker" && container.Image != r.WorkerImage {
+			oldImage = true
+		}
+	}
+	if !oldImage {
+		return false, nil
+	}
+	blocked := false
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name == "worker" && status.State.Waiting != nil {
+			blocked = status.State.Waiting.Reason == "ErrImagePull" || status.State.Waiting.Reason == "ImagePullBackOff"
+		}
+	}
+	if !blocked {
+		return false, nil
+	}
+	if task.Annotations["codemowers.cloud/retry-worker"] != "true" {
+		patch := client.MergeFrom(task.DeepCopy())
+		if task.Annotations == nil {
+			task.Annotations = make(map[string]string)
+		}
+		task.Annotations["codemowers.cloud/retry-worker"] = "true"
+		if err := r.Client.Patch(ctx, task, patch); err != nil {
+			return false, fmt.Errorf("mark worker image retry: %w", err)
+		}
+	}
+	if pod.DeletionTimestamp == nil {
+		if err := r.Delete(ctx, pod); err != nil && !errors.IsNotFound(err) {
+			return false, fmt.Errorf("delete unstarted worker: %w", err)
+		}
+	}
+	return true, nil
+}
+
 func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) (ctrl.Result, error) {
 	// Check if a worker pod already exists for this task.
 	if task.Status.WorkerPodName != "" {
 		var pod corev1.Pod
 		err := r.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: task.Status.WorkerPodName}, &pod)
 		if err == nil {
+			if !ownedByTask(&pod, task) {
+				return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "WorkerOwnerMismatch")
+			}
+			if task.Status.WorkerPodUID != "" && task.Status.WorkerPodUID != string(pod.UID) {
+				return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "WorkerUIDMismatch")
+			}
+			if replaced, err := r.replaceUnstartedWorkerImage(ctx, task, &pod); err != nil {
+				return ctrl.Result{}, err
+			} else if replaced {
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
 			// If the pod completed and a new wake signal arrived (event consumer
 			// set codemowers.cloud/wake-pending), clear the pod name so we
 			// spawn a fresh worker below. The worker's AMQP queue already holds
 			// the prompt; the new pod will consume it on startup.
-			if pod.Status.Phase == corev1.PodSucceeded &&
+			if (pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed) &&
 				task.Annotations["codemowers.cloud/wake-pending"] == "true" {
+				if r.AMQP == nil {
+					return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePending, "RabbitMQUnavailable")
+				}
+				depth, err := r.AMQP.QueueDepth(taskQueue(task.Namespace, task.Name))
+				if err != nil {
+					return ctrl.Result{}, fmt.Errorf("inspect task queue: %w", err)
+				}
+				if depth == 0 {
+					annPatch := client.MergeFrom(task.DeepCopy())
+					delete(task.Annotations, "codemowers.cloud/wake-pending")
+					if err := r.Client.Patch(ctx, task, annPatch); err != nil {
+						return ctrl.Result{}, err
+					}
+					return r.syncPhaseFromPod(ctx, task, &pod)
+				}
 				annPatch := client.MergeFrom(task.DeepCopy())
 				delete(task.Annotations, "codemowers.cloud/wake-pending")
 				if err := r.Client.Patch(ctx, task, annPatch); err != nil {
@@ -268,7 +311,16 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		} else if !errors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		} else {
-			// Pod disappeared; clear and re-create on next reconcile.
+			// A vanished worker might still have an uncertain native result.
+			// A new prompt does not authorize replacing it against the same PVC.
+			if task.Annotations["codemowers.cloud/retry-worker"] != "true" {
+				return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, "WorkerDisappeared")
+			}
+			annPatch := client.MergeFrom(task.DeepCopy())
+			delete(task.Annotations, "codemowers.cloud/retry-worker")
+			if err := r.Client.Patch(ctx, task, annPatch); err != nil {
+				return ctrl.Result{}, err
+			}
 			patch := client.MergeFrom(task.DeepCopy())
 			task.Status.WorkerPodName = ""
 			task.Status.WorkerPodUID = ""
@@ -276,6 +328,40 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 				return ctrl.Result{}, err
 			}
 		}
+	}
+	// The API may have created a Pod just before the operator lost the status
+	// update. Adopt that exact Task-owned Pod instead of running a second worker
+	// against the same workspace.
+	var candidates corev1.PodList
+	if err := r.List(ctx, &candidates, client.InNamespace(task.Namespace),
+		client.MatchingLabels{"codemowers.cloud/task": task.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+	var existing *corev1.Pod
+	for i := range candidates.Items {
+		pod := &candidates.Items[i]
+		if !ownedByTask(pod, task) || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		if existing != nil {
+			return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "MultipleWorkers")
+		}
+		existing = pod
+	}
+	if existing != nil {
+		patch := client.MergeFrom(task.DeepCopy())
+		task.Status.WorkerPodName = existing.Name
+		task.Status.WorkerPodUID = string(existing.UID)
+		if err := r.Status().Patch(ctx, task, patch); err != nil {
+			return ctrl.Result{}, err
+		}
+		return r.syncPhaseFromPod(ctx, task, existing)
+	}
+	if r.AMQP == nil || r.AMQPURL == "" {
+		if _, err := r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePending, "RabbitMQUnavailable"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// Ensure the per-task RabbitMQ queue exists and publish the objective once.
@@ -288,7 +374,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 			return ctrl.Result{}, fmt.Errorf("declare task queue: %w", err)
 		}
 		if task.Annotations["codemowers.cloud/objective-published"] != "true" {
-			msg := rabbitmq.PromptMessage{Type: "objective", Body: task.Spec.Objective}
+			msg := rabbitmq.PromptMessage{Type: "objective", Body: task.Spec.Objective, MessageID: string(task.UID) + ":objective"}
 			if err := r.AMQP.Publish(ctx, queue, msg); err != nil {
 				return ctrl.Result{}, fmt.Errorf("publish objective: %w", err)
 			}
@@ -303,8 +389,17 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		}
 	}
 
-	if len(agent.Spec.Template.Spec.Containers) == 0 {
-		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "AgentMissingContainers")
+	workerContainers := 0
+	for _, container := range agent.Spec.Template.Spec.Containers {
+		if container.Name == "worker" {
+			workerContainers++
+		}
+	}
+	if workerContainers != 1 {
+		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "AgentMissingWorkerContainer")
+	}
+	if r.WorkerImage == "" {
+		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "WorkerImageMissing")
 	}
 
 	podName := fmt.Sprintf("agent-worker-%s-%s", task.Name[:min(8, len(task.Name))], randSuffix())
@@ -346,6 +441,25 @@ func (r *TaskReconciler) syncPhaseFromPod(ctx context.Context, task *agentsv1alp
 	default:
 		return ctrl.Result{}, nil
 	}
+	if phase == agentsv1alpha1.TaskPhaseWaiting || phase == agentsv1alpha1.TaskPhaseFailed {
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.State.Terminated == nil || status.State.Terminated.Message == "" {
+				continue
+			}
+			var report struct {
+				Summary string `json:"summary"`
+			}
+			if err := json.Unmarshal([]byte(status.State.Terminated.Message), &report); err == nil && report.Summary != "" &&
+				(task.Status.Progress == nil || task.Status.Progress.Summary != report.Summary) {
+				patch := client.MergeFrom(task.DeepCopy())
+				task.Status.Progress = &agentsv1alpha1.TaskProgress{Summary: report.Summary, UpdatedAt: metav1.Now()}
+				if err := r.Status().Patch(ctx, task, patch); err != nil {
+					return ctrl.Result{}, err
+				}
+				break
+			}
+		}
+	}
 
 	return r.setPhase(ctx, task, phase, reason)
 }
@@ -367,6 +481,9 @@ func (r *TaskReconciler) ownerAgent(ctx context.Context, task *agentsv1alpha1.Ta
 			if err := r.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: ref.Name}, &agent); err != nil {
 				return nil, fmt.Errorf("get owner agent %s: %w", ref.Name, err)
 			}
+			if ref.UID != agent.UID {
+				return nil, fmt.Errorf("task %s/%s Agent owner UID does not match", task.Namespace, task.Name)
+			}
 			return &agent, nil
 		}
 	}
@@ -382,15 +499,23 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	if ps.ServiceAccountName == "" {
 		ps.ServiceAccountName = sa
 	}
+	if len(agent.Spec.VolumeClaimTemplates) == 0 {
+		ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+		for i := range ps.Containers {
+			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts,
+				corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"})
+		}
+	}
 
 	// Workspace PVC volumes from VolumeClaimTemplates; containers mount by name.
 	for _, tmpl := range agent.Spec.VolumeClaimTemplates {
-		pvcName, ok := task.Status.WorkspacePVCs[tmpl.Name]
+		name := tmpl.Metadata.Name
+		pvcName, ok := task.Status.WorkspacePVCs[name]
 		if !ok {
 			continue
 		}
 		ps.Volumes = append(ps.Volumes, corev1.Volume{
-			Name: tmpl.Name,
+			Name: name,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: pvcName,
@@ -399,21 +524,56 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		})
 	}
 
-	// Credential secret volumes named cred-<secretName>; containers mount explicitly.
-	for _, secretName := range agent.Spec.CredentialRefs {
-		ps.Volumes = append(ps.Volumes, corev1.Volume{
-			Name: "cred-" + secretName,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{SecretName: secretName},
-			},
-		})
-	}
-
-	// Operator-managed env vars prepended to every container; user entries follow.
+	// Execution credentials belong only to the named coding container.
 	opEnv := []corev1.EnvVar{
 		{Name: "TASK_NAME", Value: task.Name},
 		{Name: "TASK_NAMESPACE", Value: task.Namespace},
 		{Name: "AGENT_NAME", Value: agent.Name},
+		{Name: "AGENT_MODE", Value: "task-worker"},
+	}
+	if task.Status.Progress != nil && task.Status.Progress.Summary != "" {
+		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_PREVIOUS_SUMMARY", Value: task.Status.Progress.Summary})
+	}
+	if len(agent.Spec.MCPEndpoints) > 0 {
+		endpoints, _ := json.Marshal(agent.Spec.MCPEndpoints)
+		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MCP_ENDPOINTS", Value: string(endpoints)})
+	}
+	model := agent.Spec.Model
+	if task.Spec.Model != nil {
+		model = *task.Spec.Model
+	}
+	credentialName := "ANTHROPIC_API_KEY"
+	if model.Backend == "codex" {
+		credentialName = "OPENAI_API_KEY"
+	}
+	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_BACKEND", Value: model.Backend},
+		corev1.EnvVar{Name: credentialName, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: model.CredentialSecretRef}, Key: "token"}}})
+	if model.Name != "" {
+		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MODEL", Value: model.Name})
+	}
+gitReferences:
+	for _, ref := range task.Spec.ExternalReferences {
+		if ref.RepositoryOwner == "" || ref.RepositoryName == "" || (ref.Source != "github" && ref.Source != "gitea") {
+			continue
+		}
+		serverURL := strings.TrimRight(ref.ServerURL, "/")
+		if serverURL == "" && ref.Source == "github" {
+			serverURL = "https://github.com"
+		}
+		for _, provider := range agent.Spec.GitProviders {
+			if provider.Type != ref.Source || strings.TrimRight(provider.ServerURL, "/") != serverURL {
+				continue
+			}
+			opEnv = append(opEnv,
+				corev1.EnvVar{Name: "AGENT_FORGE_PROVIDER", Value: provider.Type},
+				corev1.EnvVar{Name: "AGENT_FORGE_URL", Value: serverURL},
+				corev1.EnvVar{Name: "AGENT_REPOSITORY", Value: ref.RepositoryOwner + "/" + ref.RepositoryName},
+				corev1.EnvVar{Name: "GH_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: provider.CredentialSecretRef}, Key: "token"}}},
+			)
+			break gitReferences
+		}
 	}
 	if r.AMQPURL != "" {
 		opEnv = append(opEnv,
@@ -422,24 +582,56 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		)
 	}
 	for i := range ps.Containers {
-		ps.Containers[i].Env = append(opEnv, ps.Containers[i].Env...)
-	}
-	for i := range ps.InitContainers {
-		ps.InitContainers[i].Env = append(opEnv, ps.InitContainers[i].Env...)
+		if ps.Containers[i].Name == "worker" {
+			ps.Containers[i].Image = r.WorkerImage
+			ps.Containers[i].Env = append(ps.Containers[i].Env, opEnv...)
+			for _, endpoint := range agent.Spec.MCPEndpoints {
+				if endpoint.TokenFile != "/var/run/agent-mcp/driftmower" {
+					continue
+				}
+				mounted := false
+				for _, mount := range ps.Containers[i].VolumeMounts {
+					if mount.MountPath == "/var/run/agent-mcp" {
+						mounted = true
+					}
+				}
+				if !mounted {
+					ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-driftmower-token", VolumeSource: corev1.VolumeSource{
+						Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{
+							ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+								Audience:          "http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp",
+								ExpirationSeconds: int64Ptr(3600), Path: "driftmower",
+							},
+						}}},
+					}})
+					ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts,
+						corev1.VolumeMount{Name: "agent-driftmower-token", MountPath: "/var/run/agent-mcp", ReadOnly: true})
+				}
+				break
+			}
+		}
 	}
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: task.Namespace,
-			Labels: map[string]string{
-				"codemowers.cloud/task":  task.Name,
-				"codemowers.cloud/agent": agent.Name,
-			},
+			Name:            name,
+			Namespace:       task.Namespace,
+			Labels:          mergeManagedLabels(agent.Spec.Template.ObjectMeta.Labels, task, agent),
+			Annotations:     agent.Spec.Template.ObjectMeta.Annotations,
 			OwnerReferences: []metav1.OwnerReference{taskOwnerRef(task)},
 		},
 		Spec: *ps,
 	}
+}
+
+func mergeManagedLabels(labels map[string]string, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) map[string]string {
+	out := make(map[string]string, len(labels)+2)
+	for key, value := range labels {
+		out[key] = value
+	}
+	out["codemowers.cloud/task"] = task.Name
+	out["codemowers.cloud/agent"] = agent.Name
+	return out
 }
 
 func (r *TaskReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -461,7 +653,18 @@ func taskOwnerRef(task *agentsv1alpha1.Task) metav1.OwnerReference {
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
+func ownedByTask(pod *corev1.Pod, task *agentsv1alpha1.Task) bool {
+	for _, owner := range pod.OwnerReferences {
+		if owner.APIVersion == agentsv1alpha1.GroupVersion.String() && owner.Kind == "Task" &&
+			owner.Name == task.Name && owner.UID == task.UID {
+			return true
+		}
+	}
+	return false
+}
+
+func boolPtr(b bool) *bool    { return &b }
+func int64Ptr(n int64) *int64 { return &n }
 
 func min(a, b int) int {
 	if a < b {

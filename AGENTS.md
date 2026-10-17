@@ -2,14 +2,15 @@
 
 This file is the consolidated implementation contract and repository guidance.
 Keep it updated when behavior or architecture changes. README.md covers user
-setup and operation; the future operator design below is not implemented.
+setup and operation. The Agent/Task operator refactor is running alongside the
+existing controller; its cutover is incomplete.
 
 The project goal is a GitOps-centric, Kubernetes-native agent harness that is
 reasonably safe to use out of the box through confinement, scoped credentials,
 authenticated inputs and human review. Kubernetes is the execution/deployment
-target; Docker/Compose runtime deployments are outside scope. Local Docker is
-used only to build this repository's harness images during development. Workers
-build application images in separate Kaniko Pods through Skaffold.
+target; Docker/Compose runtime deployments are outside scope. Skaffold builds
+this repository's harness images in cluster Kaniko Pods. Workers build
+application images in separate Kaniko Pods through Skaffold.
 
 In the README segmentation example, customer support has the greatest external
 prompt-injection exposure, developer has the greatest supply-chain and
@@ -27,8 +28,8 @@ or prevent abuse of credentials and data available to an agent.
   directly; do not add migration paths or existing-installation instructions.
 - Use single quotes for JavaScript strings and template literals for interpolation.
   Quotes embedded in JSON, selectors and CLI configuration are data.
-- Build this harness with local Docker through Skaffold and the configured Zot
-  repository. Worker application builds use the separate sandbox workflow below.
+- Build this harness with Skaffold's cluster Kaniko builder and the configured
+  Zot repository. Worker application builds use the separate sandbox workflow below.
 - Keep tooling and dependency Docker stages independent of source/frontend stages.
   Pin dependencies and coding CLIs; production images receive pruned dependencies.
   Exclude credentials, local configuration, generated output and editor files from
@@ -90,10 +91,31 @@ does not run a coding CLI or delegate routing authority to an LLM.
 | Task PVC | Git checkout, edits, artifacts, caches, progress notes and native CLI session files |
 | Existing platform | Namespace ordering, tenancy, quotas, isolation, workload admission, storage and registry |
 
-There are no Agent, Task, Trigger or Workspace CRDs in this release. Redis/
-Dragonfly is the Task authority. PostgreSQL, memory checkpoint/restore, Agent
-Substrate and a new sandbox management system are unnecessary for the harness.
-Existing platform offerings remain available to applications built by workers.
+The existing controller still treats Redis/Dragonfly as the authority for its
+Tasks. The parallel operator has namespaced Agent and Task CRDs, RabbitMQ event
+routing, and worker Pods derived from `Agent.spec.template` as a Kubernetes
+`PodTemplateSpec` plus StatefulSet-shaped `volumeClaimTemplates`. These CRD Tasks
+are separate from existing Redis Tasks; no cutover or data migration has occurred.
+The operator sets the `worker` container image from the Skaffold runner image,
+overriding stale `image` values in Agent CRs. Signed forge events create
+Tasks only after checking the configured account and current assignment.
+The operator Task API exposes the latest worker response from
+`Task.status.progress.summary`; the UI shows it in Task detail after completion.
+GitHub and GHES hooks use one `/hooks/github` URL. `X-GitHub-Hook-ID` selects Agents
+subscribed through `spec.githubWebhooks`, keyed by server URL and hook ID; each references a signing Secret in its
+own namespace. The receiver verifies each key and publishes a RabbitMQ message
+only for valid subscribers. The operator checks the Agent subscription and key
+again before routing to Tasks. Signed pings are acknowledged without routing;
+the operator records bounded per-Task delivery receipts. Use distinct keys for distinct GitHub hooks since
+the hook ID header is not signed. The operator UI uses its native OIDCClient owner
+Secret and bearer tokens, then SubjectAccessReview for Agent `get` rights.
+`spec.access` remains in the CRD but is ignored; the operator removes its old
+owned access RoleBindings. Grant read access through Kubernetes RBAC.
+Gitea webhook ingestion is deferred pending a hook ID equivalent. Helm has no
+organization source or group allowlist configuration.
+Keep the existing controller, IMAP/SMTP, MCP configuration, and Task PVCs intact
+while replacing their behavior deliberately. PostgreSQL, memory checkpoint/restore,
+Agent Substrate and a new sandbox management system remain unnecessary.
 
 The supported baseline is Kubernetes 1.36+ with OCI image volumes, Pod user
 namespaces, persistent storage, Redis and OIDC. The chart uses platform operators;
@@ -113,12 +135,10 @@ and signed-link scope use namespace name and release. No namespace UID field,
 lookup, labels or environment variable, and no additional Namespace RBAC.
 Pod UID remains necessary for execution identity and safe adoption.
 
-`chart/values.yaml` exposes generic `host`, `allowedGroups` and `allowedUsers`
-defaults and
-requires an explicit public `apiResource` for OIDC `allowedResources`.
+`chart/values.yaml` exposes generic `host` and requires an explicit public
+`apiResource` for OIDC `allowedResources`.
 `skaffold.yaml` reads it from `AGENT_API_RESOURCE` in local `skaffold.env`.
-The `dev-test` profile binds `laurivosandi` as its sole allowed account and
-sets that cluster's verified public API resource. Map the generated
+The `dev-test` profile sets that cluster's verified public API resource. Map the generated
 `OIDC_ALLOWED_USERS` owner Secret key to controller `OIDC_ALLOWED_SUBJECTS` so
 both Passmower and the Task API enforce the individual allowlist.
 Do not use the short host for this resource: OIDC admission expands URI,
@@ -297,7 +317,8 @@ restore and filesystem snapshots are not needed.
 The runner uses Ubuntu 24.04 with Node 24.18.0, Git, SSH, Bash, coreutils, find,
 tar, unzip, ripgrep, jq, curl, gh, Python with venv/pip, make and C++ build tools. Preinstall
 both pinned npm CLIs: Claude Code 2.1.296 and Codex 0.162.1. Install Skaffold
-v2.18.0 and Helm v3.17.3 from their binary releases. Workers do not apt-install tools at startup.
+v2.18.0 from its binary release; Helm comes from an OCI image volume when an
+Agent template requests it. Workers do not apt-install tools at startup.
 The controller image contains Node, application code, schema and SPA; kubectl is
 provided by an OCI image volume.
 
@@ -892,9 +913,9 @@ spec:
     name: backend-developer
   source:
     github:
+      serverURL: https://github.com
       repository: example/backend
-      webhookSecretRef:
-        name: github-webhook
+      hookID: "123456"
       events:
         - issues
         - issue_comment

@@ -8,10 +8,12 @@
 # Prerequisite secrets (create before applying):
 #   agent-worker-anthropic-api-token  — key: token  (Claude API key)
 #   agent-worker-github-token         — key: token  (GitHub PAT)
-#   agent-hook-<name>                 — key: token  (webhook HMAC; see examples/webhook-secrets.yaml)
+#   agent-hook-codemowers-agent      — key: token  (GitHub hook signing key)
+# Replace the example hookID below with X-GitHub-Hook-ID from a delivery.
 #
 # Kubectl image version must match the API server:
 #   kubectl version -o json | jq -r .serverVersion.gitVersion
+# The operator fills an omitted worker image from the Skaffold-built runner.
 ---
 apiVersion: agents.codemowers.cloud/v1alpha1
 kind: Agent
@@ -26,7 +28,6 @@ spec:
       serviceAccountName: agent-worker
       containers:
       - name: worker
-        image: codemowers/agent:latest
         securityContext:
           readOnlyRootFilesystem: false
           allowPrivilegeEscalation: false
@@ -47,20 +48,21 @@ spec:
             mountPath: /opt/tools/kubectl
             readOnly: true
           - name: helm
-            mountPath: /opt/tools/helm
+            mountPath: /opt/tools/helm/bin
+            subPath: usr/bin
             readOnly: true
-    volumes:
-      - name: agent-config
-        configMap:
-          name: agent-worker-config
-      - name: kubectl
-        image:
-          reference: registry.k8s.io/kubectl:v1.36.3
-          pullPolicy: IfNotPresent
-      - name: helm
-        image:
-          reference: alpine/helm:3.17.3
-          pullPolicy: IfNotPresent
+      volumes:
+        - name: agent-config
+          configMap:
+            name: agent-worker-config
+        - name: kubectl
+          image:
+            reference: registry.k8s.io/kubectl:v1.36.3
+            pullPolicy: IfNotPresent
+        - name: helm
+          image:
+            reference: alpine/helm:3.17.3
+            pullPolicy: IfNotPresent
   volumeClaimTemplates:
     - metadata:
         name: workspace
@@ -78,11 +80,6 @@ spec:
         resources:
           requests:
             storage: 5Gi
-  access:
-    groups:
-      - github.com:codemowers:admins
-    subjects:
-      - lauri.vosandi@gmail.com
   model:
     backend: claude
     credentialSecretRef: agent-worker-anthropic-api-token
@@ -90,15 +87,17 @@ spec:
     - type: github
       serverURL: https://github.com
       credentialSecretRef: agent-worker-github-token
-  webhookSecretRef: agent-hook-matmlazi
+  githubWebhooks:
+    - serverURL: https://github.com
+      hookID: "123456"
+      secretRef: agent-hook-codemowers-agent
   mcpEndpoints:
-    - url: https://mcp.codemowers.io/mcp
+    - name: codemowers
+      url: https://mcp.codemowers.io/mcp
       siteURL: https://mcp.codemowers.io
-    - url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
+    - name: driftmower
+      url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
       tokenFile: /var/run/agent-mcp/driftmower
-  credentialRefs:
-    - agent-worker-anthropic-api-token
-    - agent-worker-github-token
 ---
 apiVersion: agents.codemowers.cloud/v1alpha1
 kind: Agent
@@ -111,20 +110,16 @@ spec:
   template:
     spec:
       serviceAccountName: agent-worker-readonly
+      securityContext:
+        fsGroup: 65534
       containers:
       - name: worker
-        image: codemowers/agent:latest
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
           runAsNonRoot: true
           runAsUser: 65534
   # No volumeClaimTemplates — tasks are stateless; no PVCs created.
-  access:
-    groups:
-      - github.com:codemowers:admins
-    subjects:
-      - lauri.vosandi@gmail.com
   model:
     backend: claude
     credentialSecretRef: agent-worker-anthropic-api-token
@@ -132,13 +127,14 @@ spec:
     - type: github
       serverURL: https://github.com
       credentialSecretRef: agent-worker-github-token
-  webhookSecretRef: agent-hook-patpalouk
+  githubWebhooks:
+    - serverURL: https://github.com
+      hookID: "123456"
+      secretRef: agent-hook-codemowers-agent
   mcpEndpoints:
-    - url: https://mcp.codemowers.io/mcp
+    - name: codemowers
+      url: https://mcp.codemowers.io/mcp
       siteURL: https://mcp.codemowers.io
-  credentialRefs:
-    - agent-worker-anthropic-api-token
-    - agent-worker-github-token
 ---
 apiVersion: agents.codemowers.cloud/v1alpha1
 kind: Agent
@@ -153,7 +149,6 @@ spec:
       serviceAccountName: agent-worker-admin
       containers:
       - name: worker
-        image: codemowers/agent:latest
         securityContext:
           readOnlyRootFilesystem: false
           allowPrivilegeEscalation: false
@@ -169,17 +164,18 @@ spec:
             mountPath: /opt/tools/kubectl
             readOnly: true
           - name: helm
-            mountPath: /opt/tools/helm
+            mountPath: /opt/tools/helm/bin
+            subPath: usr/bin
             readOnly: true
-    volumes:
-      - name: kubectl
-        image:
-          reference: registry.k8s.io/kubectl:v1.36.3
-          pullPolicy: IfNotPresent
-      - name: helm
-        image:
-          reference: alpine/helm:3.17.3
-          pullPolicy: IfNotPresent
+      volumes:
+        - name: kubectl
+          image:
+            reference: registry.k8s.io/kubectl:v1.36.3
+            pullPolicy: IfNotPresent
+        - name: helm
+          image:
+            reference: alpine/helm:3.17.3
+            pullPolicy: IfNotPresent
   volumeClaimTemplates:
     - metadata:
         name: workspace
@@ -189,11 +185,6 @@ spec:
         resources:
           requests:
             storage: 10Gi
-  access:
-    groups:
-      - github.com:codemowers:admins
-    subjects:
-      - lauri.vosandi@gmail.com
   model:
     backend: claude
     credentialSecretRef: agent-worker-anthropic-api-token
@@ -201,12 +192,10 @@ spec:
     - type: github
       serverURL: https://github.com
       credentialSecretRef: agent-worker-github-token
-  # No webhookSecretRef — triggered manually or via UI only.
   mcpEndpoints:
-    - url: https://mcp.codemowers.io/mcp
+    - name: codemowers
+      url: https://mcp.codemowers.io/mcp
       siteURL: https://mcp.codemowers.io
-    - url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
+    - name: driftmower
+      url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
       tokenFile: /var/run/agent-mcp/driftmower
-  credentialRefs:
-    - agent-worker-anthropic-api-token
-    - agent-worker-github-token

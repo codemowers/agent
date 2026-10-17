@@ -53,11 +53,13 @@ spec:
             type: object
           spec:
             properties:
+              suspended:
+                description: Suspended makes newly created Tasks start suspended. Existing Tasks keep their own suspend state.
+                type: boolean
               access:
                 description: |-
-                  Access declares which OIDC groups and subjects may manage this Agent and its Tasks.
-                  The Agent reconciler creates a namespaced RoleBinding for these principals
-                  against the cluster-wide agent-manager ClusterRole.
+                  Access is reserved for future use. Authorization currently ignores it and
+                  checks Kubernetes Agent get rights instead.
                 properties:
                   groups:
                     description: Groups is a list of OIDC group names (e.g. "github.com:codemowers:admins").
@@ -71,14 +73,6 @@ spec:
                       type: string
                     type: array
                 type: object
-              credentialRefs:
-                description: |-
-                  CredentialRefs is the exhaustive allowlist of agent-cred-* secrets that
-                  worker pods may mount. The operator adds each as a pod volume named cred-<secret>;
-                  mount explicitly from podSpec.containers[*].volumeMounts.
-                items:
-                  type: string
-                type: array
               gitProviders:
                 description: GitProviders lists git server credentials available to
                   workers.
@@ -101,10 +95,29 @@ spec:
                   - type
                   type: object
                 type: array
+              githubWebhooks:
+                description: GitHub hook subscriptions with same-namespace signing Secrets.
+                type: array
+                x-kubernetes-list-type: map
+                x-kubernetes-list-map-keys: [serverURL, hookID]
+                items:
+                  type: object
+                  properties:
+                    serverURL:
+                      type: string
+                      pattern: '^https://'
+                    hookID:
+                      type: string
+                      pattern: '^[0-9]+$'
+                    secretRef:
+                      type: string
+                  required: [serverURL, hookID, secretRef]
               mcpEndpoints:
                 description: MCPEndpoints lists MCP servers available to workers.
                 items:
                   properties:
+                    name:
+                      type: string
                     siteURL:
                       type: string
                     tokenFile:
@@ -127,6 +140,9 @@ spec:
                   credentialSecretRef:
                     description: CredentialSecretRef is the secret name (agent-cred-*
                       prefix) holding the API key.
+                    type: string
+                  name:
+                    description: Name is the provider model identifier. Empty uses the CLI default.
                     type: string
                 required:
                 - backend
@@ -160,7 +176,7 @@ spec:
                   Deployment/StatefulSet spec.template. template.spec is corev1.PodSpec;
                   template.metadata carries pod-level labels and annotations. The operator:
                     - deep-copies template and appends workspace PVC and credential volumes
-                    - prepends TASK_NAME, TASK_NAMESPACE and AGENT_NAME to every container's env
+                    - supplies task, model and broker environment to the container named worker
                     - enforces restartPolicy=Never and hostUsers=false
                     - defaults serviceAccountName to "agent-worker" when empty
                 properties:
@@ -168,6 +184,15 @@ spec:
                     description: |-
                       Standard object's metadata.
                       More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+                    properties:
+                      labels:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        type: object
                     type: object
                   spec:
                     description: |-
@@ -8056,6 +8081,8 @@ spec:
                     required:
                     - containers
                     type: object
+                required:
+                - spec
                 type: object
               volumeClaimTemplates:
                 description: |-
@@ -8085,6 +8112,19 @@ spec:
                       description: |-
                         Standard object's metadata.
                         More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+                      properties:
+                        name:
+                          type: string
+                        labels:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        annotations:
+                          additionalProperties:
+                            type: string
+                          type: object
+                      required:
+                      - name
                       type: object
                     spec:
                       description: |-
@@ -8473,13 +8513,11 @@ spec:
                           description: phase represents the current phase of PersistentVolumeClaim.
                           type: string
                       type: object
+                  required:
+                  - metadata
+                  - spec
                   type: object
                 type: array
-              webhookSecretRef:
-                description: |-
-                  WebhookSecretRef is the secret (agent-hook-* prefix) for GitHub/Gitea HMAC.
-                  Read by the webhook handler, not mounted in worker pods.
-                type: string
             required:
             - model
             - template

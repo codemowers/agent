@@ -1,5 +1,39 @@
 # Codemowers Agent
 
+The Agent/Task CRD operator is being developed alongside the existing Redis
+controller. The deployment and feature instructions below describe the existing
+controller until the operator replaces those paths. Existing Task workspaces and
+mail configuration are retained during the refactor.
+
+The new Agent uses `spec.template` as a Kubernetes `PodTemplateSpec` and
+`volumeClaimTemplates` in the StatefulSet shape. The operator sets the
+`worker` container image from the Skaffold-built runner image, overriding stale
+`image` values in Agent CRs. Signed GitHub issue and PR events create Tasks only after the
+configured forge account and current open assignment are verified. Follow-up
+prompts use durable RabbitMQ Task queues. Mail and the full existing UI remain
+on the current controller until their replacement paths are ready; no migration
+or compatibility layer is planned.
+
+Each Agent subscribes through `spec.githubWebhooks`, listing GitHub server URLs,
+hook IDs and same-namespace signing Secret names. The operator UI uses native
+OIDC and Kubernetes Agent `get` rights; `spec.access` is ignored. All GitHub hooks use the webhook Ingress path `/hooks/github`; the
+receiver uses `X-GitHub-Hook-ID` to find subscribers across namespaces. It checks
+the signature against each subscriber's local Secret, checks the signed repository
+URL against that subscription's server, and publishes one RabbitMQ
+message per valid Agent. An invalid key cannot receive events. Copy the hook's
+signing key into each subscribing namespace through its own Secret; the Secret
+name can differ. The operator checks the subscription and key again before
+routing to Tasks. Use a distinct signing key for each hook, because the hook ID
+header is not covered by the payload signature. No organization routing table
+belongs in Helm. For the example GitHub hook the URL is
+`https://webhook.codemowers-agent-system.ee-lte-1.codemowers.io/hooks/github`.
+Use `application/json`, each referenced Secret's `token` as the signing secret,
+and select issues, issue comments, pull requests, pull request reviews and pull
+request review comments. Signed pings are acknowledged without creating Tasks;
+the operator retains a bounded delivery receipt history per Task for redelivery.
+Check a test delivery after the new Deployments are
+ready. The operator UI host remains behind OIDC.
+
 Always thought that having an agent run commands on your personal laptop was nuts?
 Give it a workspace in Kubernetes.
 
@@ -123,6 +157,7 @@ SKAFFOLD_KUBE_CONTEXT=your-kubeconfig-context
 SKAFFOLD_NAMESPACE=your-agent-namespace
 AGENT_KUBE_CONTEXT=your-cluster-name/your-agent-namespace
 AGENT_API_RESOURCE=https://your-public-controller-host/api
+AGENT_OPERATOR_API_RESOURCE=https://your-public-operator-host/api
 SKAFFOLD_DEFAULT_REPO=registry.example.com/your-project
 SKAFFOLD_CLEANUP=false
 ```
@@ -130,10 +165,12 @@ SKAFFOLD_CLEANUP=false
 Skaffold reads this file automatically; it is gitignored. `SKAFFOLD_CLEANUP=false`
 keeps deployed resources when you stop the development loop.
 
-Helm values configure `host` (default `controller`), `allowedGroups`,
-`allowedUsers` and the required `apiResource`. The controller reads the generated
-OIDC `allowedUsers` list as its subject allowlist, so provider and API checks
-agree. Set `AGENT_API_RESOURCE` to the public controller origin
+Helm values configure `host` (default `controller`) and the required
+`apiResource`. The operator has its own native OIDCClient and public
+`operator.apiResource`; its API audience derives from the OIDC owner Secret's
+`OIDC_CLIENT_ORIGIN`. Grant Agent `get` through Kubernetes RBAC to surface an
+Agent and its Tasks in the operator UI. `spec.access` is retained but ignored.
+Set `AGENT_API_RESOURCE` to the public controller origin
 followed by `/api`, matching the OIDC owner's `OIDC_CLIENT_ORIGIN` plus `/api`.
 OIDC hostname admission expands the short `host` in redirect and CORS URLs, but
 does not expand `allowedResources`; a short API resource makes sign-in fail with
@@ -144,8 +181,8 @@ Pod namespace fieldRef. `AGENT_KUBE_CONTEXT` names the prepared controller/worke
 context; it uses the in-cluster API and ServiceAccount authentication rather than
 the human credentials selected by `SKAFFOLD_KUBE_CONTEXT`.
 
-The `dev-test` Skaffold profile activates for the `dev-test` kube context. It
-allows only the `laurivosandi` account and sets the verified public API resource.
+The `dev-test` Skaffold profile activates for the `dev-test` kube context and
+sets its verified public API resource. Skaffold builds through cluster Kaniko.
 
 The application needs Redis, persistent volumes, and an OIDC public client using
 Authorization Code with PKCE. The bundled [chart](chart/) integrates with

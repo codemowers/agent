@@ -1,4 +1,6 @@
 node_modules/
+.go-build/
+.tmp/
 public/
 skaffold.env
 skaffold.*.env

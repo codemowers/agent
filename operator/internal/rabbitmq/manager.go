@@ -24,8 +24,8 @@ type PromptMessage struct {
 // Manager holds a lazily-established, auto-reconnecting AMQP connection.
 // All exported methods are safe for concurrent use.
 type Manager struct {
-	url string
-	mu  sync.Mutex
+	url  string
+	mu   sync.Mutex
 	conn *amqp.Connection
 }
 
@@ -74,6 +74,20 @@ func (m *Manager) DeclareQueue(name string) error {
 	return err
 }
 
+// QueueDepth returns the number of ready messages waiting for a worker.
+func (m *Manager) QueueDepth(name string) (int, error) {
+	ch, err := m.channel()
+	if err != nil {
+		return 0, err
+	}
+	defer ch.Close()
+	queue, err := ch.QueueInspect(name)
+	if err != nil {
+		return 0, err
+	}
+	return queue.Messages, nil
+}
+
 // DeleteQueue removes the task queue. Silently succeeds if the queue does not exist.
 func (m *Manager) DeleteQueue(name string) error {
 	ch, err := m.channel()
@@ -97,7 +111,14 @@ func (m *Manager) Publish(ctx context.Context, queue string, msg PromptMessage) 
 		return err
 	}
 	defer ch.Close()
-	return ch.PublishWithContext(ctx,
+	if err := ch.Confirm(false); err != nil {
+		return fmt.Errorf("enable publisher confirms: %w", err)
+	}
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+	returns := ch.NotifyReturn(make(chan amqp.Return, 1))
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := ch.PublishWithContext(ctx,
 		"",    // default exchange — routes directly to queue by name
 		queue, // routing key = queue name
 		true,  // mandatory: fail if queue does not exist
@@ -105,8 +126,25 @@ func (m *Manager) Publish(ctx context.Context, queue string, msg PromptMessage) 
 		amqp.Publishing{
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent,
+			MessageId:    msg.MessageID,
 			Timestamp:    time.Now(),
 			Body:         body,
 		},
-	)
+	); err != nil {
+		return err
+	}
+	select {
+	case confirmation, ok := <-confirms:
+		if !ok || !confirmation.Ack {
+			return fmt.Errorf("broker did not confirm prompt delivery")
+		}
+		select {
+		case returned := <-returns:
+			return fmt.Errorf("prompt was returned by broker: %s", returned.ReplyText)
+		default:
+			return nil
+		}
+	case <-ctx.Done():
+		return fmt.Errorf("prompt confirmation: %w", ctx.Err())
+	}
 }

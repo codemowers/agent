@@ -5,25 +5,27 @@ metadata:
 build:
   platforms:
     - linux/amd64
-  local:
-    push: true
+  cluster:
+    namespace: codemowers-agent-system
+    dockerConfig:
+      secretName: zot-registry-cluster-push-kaniko
   tagPolicy:
     inputDigest: {}
   artifacts:
     - image: agent
       context: .
-      docker:
+      kaniko:
         target: runner
     - image: agent-controller
       context: .
-      docker:
+      kaniko:
         target: controller
     - image: agent-webhook
       context: webhook
-      docker: {}
+      kaniko: {}
     - image: agent-operator
       context: operator
-      docker: {}
+      kaniko: {}
 manifests:
   helm:
     flags:
@@ -35,12 +37,16 @@ manifests:
         skipBuildDependencies: true
         setValues:
           host: controller
-          "allowedGroups[0]": github.com:codemowers:admins
           env.AGENT_SHARING_MODE: public
           imageRegistry: ""
         setValueTemplates:
+          image: "{{.IMAGE_FULLY_QUALIFIED_agent_controller}}"
+          workerImage: "{{.IMAGE_FULLY_QUALIFIED_agent}}"
+          webhook.image: "{{.IMAGE_FULLY_QUALIFIED_agent_webhook}}"
+          operator.image: "{{.IMAGE_FULLY_QUALIFIED_agent_operator}}"
           env.AGENT_KUBE_CONTEXT: "{{.AGENT_KUBE_CONTEXT}}"
-          "webhook.agents[0]": codemowers-agent
+          apiResource: "{{.AGENT_API_RESOURCE}}"
+          operator.apiResource: "{{.AGENT_OPERATOR_API_RESOURCE}}"
 
 deploy:
   kubectl:
@@ -50,44 +56,10 @@ deploy:
         - --selector=skaffold.dev/keep!=true
 
 profiles:
-  - name: cluster
-    patches:
-      - op: add
-        path: /manifests/helm/releases/0/setValues/bootstrapRbac
-        value: "false"
-    build:
-      platforms:
-        - linux/amd64
-      tagPolicy:
-        inputDigest: {}
-      cluster:
-        namespace: codemowers-agent-system
-        dockerConfig:
-          secretName: zot-registry-cluster-push-kaniko
-      artifacts:
-        - image: agent
-          context: .
-          kaniko:
-            target: runner
-        - image: agent-controller
-          context: .
-          kaniko:
-            target: controller
-        - image: agent-webhook
-          context: webhook
-          kaniko: {}
-        - image: agent-operator
-          context: operator
-          kaniko: {}
   - name: dev-test
     activation:
       - kubeContext: dev-test
     patches:
-      - op: remove
-        path: /manifests/helm/releases/0/setValues/allowedGroups[0]
-      - op: add
-        path: /manifests/helm/releases/0/setValues/allowedUsers[0]
-        value: laurivosandi
       - op: replace
         path: /manifests/helm/releases/0/setValueTemplates/env.AGENT_KUBE_CONTEXT
         value: dev-test/codemowers-agent-system

@@ -2,12 +2,10 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
-
 
 var (
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
@@ -59,27 +57,41 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	in.Template.DeepCopyInto(&out.Template)
 	in.Access.DeepCopyInto(&out.Access)
 	if in.VolumeClaimTemplates != nil {
-		out.VolumeClaimTemplates = make([]corev1.PersistentVolumeClaim, len(in.VolumeClaimTemplates))
+		out.VolumeClaimTemplates = make([]VolumeClaimTemplate, len(in.VolumeClaimTemplates))
 		for i := range in.VolumeClaimTemplates {
-			in.VolumeClaimTemplates[i].DeepCopyInto(&out.VolumeClaimTemplates[i])
+			out.VolumeClaimTemplates[i].Metadata = in.VolumeClaimTemplates[i].Metadata
+			out.VolumeClaimTemplates[i].Metadata.Labels = copyStringMap(in.VolumeClaimTemplates[i].Metadata.Labels)
+			out.VolumeClaimTemplates[i].Metadata.Annotations = copyStringMap(in.VolumeClaimTemplates[i].Metadata.Annotations)
+			in.VolumeClaimTemplates[i].Spec.DeepCopyInto(&out.VolumeClaimTemplates[i].Spec)
 		}
 	}
 	if in.GitProviders != nil {
 		out.GitProviders = make([]GitProvider, len(in.GitProviders))
 		copy(out.GitProviders, in.GitProviders)
 	}
+	if in.GitHubWebhooks != nil {
+		out.GitHubWebhooks = make([]GitHubWebhook, len(in.GitHubWebhooks))
+		copy(out.GitHubWebhooks, in.GitHubWebhooks)
+	}
 	if in.SlackWorkspaces != nil {
 		out.SlackWorkspaces = make([]SlackWorkspace, len(in.SlackWorkspaces))
 		copy(out.SlackWorkspaces, in.SlackWorkspaces)
-	}
-	if in.CredentialRefs != nil {
-		out.CredentialRefs = make([]string, len(in.CredentialRefs))
-		copy(out.CredentialRefs, in.CredentialRefs)
 	}
 	if in.MCPEndpoints != nil {
 		out.MCPEndpoints = make([]MCPEndpoint, len(in.MCPEndpoints))
 		copy(out.MCPEndpoints, in.MCPEndpoints)
 	}
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (in *AgentStatus) DeepCopyInto(out *AgentStatus) {

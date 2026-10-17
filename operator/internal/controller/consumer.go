@@ -3,12 +3,22 @@ package controller
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -20,6 +30,7 @@ import (
 // Defined as an interface so tests can substitute a stub and main.go can pass nil.
 type AMQPManager interface {
 	DeclareQueue(name string) error
+	QueueDepth(name string) (int, error)
 	DeleteQueue(name string) error
 	Publish(ctx context.Context, queue string, msg rabbitmq.PromptMessage) error
 }
@@ -32,11 +43,75 @@ func taskQueue(namespace, name string) string {
 
 // EventConsumer reads webhook events from a RabbitMQ queue and wakes matched Tasks.
 type EventConsumer struct {
-	Client   client.Client
-	AMQPURL  string
-	Queue    string
-	Exchange string
-	AMQP     AMQPManager // publishes follow-up prompts to per-task queues; nil = disabled
+	Client     client.Client
+	APIReader  client.Reader
+	HTTPClient *http.Client
+	AMQPURL    string
+	Queue      string
+	Exchange   string
+	AMQP       AMQPManager // publishes follow-up prompts to per-task queues; nil = disabled
+}
+
+var errSourceCredentialUnavailable = errors.New("webhook source credential unavailable")
+
+func (c *EventConsumer) verifyAgentEvent(ctx context.Context, d amqp.Delivery, ev parsedEvent) (*agentsv1alpha1.Agent, error) {
+	namespace, _ := d.Headers["x-namespace"].(string)
+	name, _ := d.Headers["x-agent"].(string)
+	event, _ := d.Headers["x-event"].(string)
+	hookID, _ := d.Headers["x-hook-id"].(string)
+	signature, _ := d.Headers["x-source-signature"].(string)
+	provider, _ := d.Headers["x-source"].(string)
+	if namespace == "" || name == "" || hookID == "" || event == "" || signature == "" || provider != "github" || provider != ev.source || c.APIReader == nil {
+		return nil, fmt.Errorf("forge event has no verified Agent envelope")
+	}
+	var agent agentsv1alpha1.Agent
+	if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &agent); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("Agent no longer exists")
+		}
+		return nil, fmt.Errorf("get webhook Agent: %w", err)
+	}
+	host := ev.serverURL
+	if ev.source == "github" && host == "" {
+		host = "github.com"
+	}
+	configured := false
+	for _, git := range agent.Spec.GitProviders {
+		if git.Type == ev.source && serverHost(git.ServerURL) == host {
+			configured = true
+			break
+		}
+	}
+	if !configured {
+		return nil, fmt.Errorf("forge event does not match Agent Git provider")
+	}
+	got, err := hex.DecodeString(signature)
+	if err != nil {
+		return nil, fmt.Errorf("malformed webhook signature")
+	}
+	for _, subscription := range agent.Spec.GitHubWebhooks {
+		if subscription.HookID != hookID || subscription.SecretRef == "" || serverHost(subscription.ServerURL) != host {
+			continue
+		}
+		var secret corev1.Secret
+		if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: subscription.SecretRef}, &secret); err != nil {
+			return nil, fmt.Errorf("%w: %v", errSourceCredentialUnavailable, err)
+		}
+		key := secret.Data["token"]
+		if len(key) == 0 {
+			return nil, fmt.Errorf("webhook credential is empty")
+		}
+		mac := hmac.New(sha256.New, key)
+		for _, field := range []string{namespace, name, hookID, provider, event, d.RoutingKey, d.MessageId} {
+			mac.Write([]byte(field))
+			mac.Write([]byte{0})
+		}
+		mac.Write(d.Body)
+		if hmac.Equal(got, mac.Sum(nil)) {
+			return &agent, nil
+		}
+	}
+	return nil, fmt.Errorf("webhook signature mismatch or Agent is not subscribed")
 }
 
 // Start connects to RabbitMQ and runs the consume loop until ctx is done.
@@ -110,9 +185,13 @@ func (c *EventConsumer) consume(ctx context.Context, ch *amqp.Channel) error {
 			}
 			if err := c.handle(ctx, d); err != nil {
 				logger.Error(err, "handle message", "routingKey", d.RoutingKey, "messageId", d.MessageId)
-				// Nack without requeue so the message goes to the dead-letter queue
-				// rather than looping indefinitely on a bad payload.
-				d.Nack(false, false)
+				// API or broker failures are transient. Preserve the event for a retry.
+				d.Nack(false, true)
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(time.Second):
+				}
 				continue
 			}
 			d.Ack(false)
@@ -156,10 +235,13 @@ func parseRoutingKey(key string) (parsedEvent, bool) {
 		return ev, false
 	}
 
-	// sourcePart is "github" or "github.ghe.example.com"
+	// sourcePart is "github", "github.ghe.example.com", or "gitea.host".
 	if strings.HasPrefix(sourcePart, "github.") {
 		ev.source = "github"
 		ev.serverURL = strings.TrimPrefix(sourcePart, "github.")
+	} else if strings.HasPrefix(sourcePart, "gitea.") {
+		ev.source = "gitea"
+		ev.serverURL = strings.TrimPrefix(sourcePart, "gitea.")
 	} else if sourcePart == "github" || sourcePart == "gitea" {
 		ev.source = sourcePart
 	} else {
@@ -194,37 +276,88 @@ func parseRoutingKey(key string) (parsedEvent, bool) {
 
 func (c *EventConsumer) handle(ctx context.Context, d amqp.Delivery) error {
 	logger := log.FromContext(ctx).WithName("consumer")
-
 	ev, actionable := parseRoutingKey(d.RoutingKey)
 	if !actionable {
 		logger.Info("ignoring non-actionable routing key", "routingKey", d.RoutingKey)
 		return nil
 	}
-
-	// Find Tasks whose externalReferences match this event.
-	var taskList agentsv1alpha1.TaskList
-	if err := c.Client.List(ctx, &taskList); err != nil {
-		return fmt.Errorf("list tasks: %w", err)
-	}
-
-	matched := 0
-	for i := range taskList.Items {
-		task := &taskList.Items[i]
-		if !refMatches(task, ev) {
-			continue
+	var agents agentsv1alpha1.AgentList
+	if ev.source == "github" || ev.source == "gitea" {
+		agent, err := c.verifyAgentEvent(ctx, d, ev)
+		if err != nil {
+			if errors.Is(err, errSourceCredentialUnavailable) {
+				return err
+			}
+			logger.Error(err, "ignoring unverified forge event", "messageId", d.MessageId)
+			return nil
 		}
-		matched++
-		if err := c.wakeTask(ctx, task, d.RoutingKey, d.MessageId); err != nil {
-			logger.Error(err, "wake task failed", "task", task.Name, "namespace", task.Namespace)
-		} else {
-			logger.Info("woke task", "task", task.Name, "namespace", task.Namespace, "routingKey", d.RoutingKey)
+		agents.Items = append(agents.Items, *agent)
+	} else {
+		agentName, _ := d.Headers["x-agent"].(string)
+		namespace, _ := d.Headers["x-namespace"].(string)
+		if agentName == "" || namespace == "" {
+			return nil
 		}
+		var agent agentsv1alpha1.Agent
+		if err := c.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agentName}, &agent); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("get event Agent: %w", err)
+		}
+		agents.Items = append(agents.Items, agent)
 	}
-
-	if matched == 0 {
-		logger.Info("no task matched", "routingKey", d.RoutingKey, "source", ev.source, "kind", ev.kind, "id", ev.id)
+	for i := range agents.Items {
+		agent := &agents.Items[i]
+		var taskList agentsv1alpha1.TaskList
+		if err := c.Client.List(ctx, &taskList, client.InNamespace(agent.Namespace),
+			client.MatchingLabels{"codemowers.cloud/agent": agent.Name}); err != nil {
+			return fmt.Errorf("list Agent Tasks: %w", err)
+		}
+		matched := 0
+		for j := range taskList.Items {
+			task := &taskList.Items[j]
+			if !ownedByAgent(task, agent.Name, agent.UID) || !refMatches(task, ev) {
+				continue
+			}
+			matched++
+			if taskHasDelivery(task, d.MessageId) {
+				continue
+			}
+			if err := c.wakeTask(ctx, task, d.RoutingKey, d.MessageId); err != nil {
+				return fmt.Errorf("wake Task %s/%s: %w", task.Namespace, task.Name, err)
+			}
+		}
+		if matched == 0 && (ev.source == "github" || ev.source == "gitea") {
+			if _, err := c.createTaskForAssignedIssue(ctx, agent.Namespace, agent.Name, ev, d.MessageId); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func ownedByAgent(task *agentsv1alpha1.Task, name string, uid types.UID) bool {
+	for _, owner := range task.OwnerReferences {
+		if owner.APIVersion == agentsv1alpha1.GroupVersion.String() && owner.Kind == "Agent" && owner.Name == name && owner.UID == uid {
+			return true
+		}
+	}
+	return false
+}
+
+func serverHost(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		return strings.ToLower(raw)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
 }
 
 // refMatches returns true if any of the Task's externalReferences match the event.
@@ -233,8 +366,12 @@ func refMatches(task *agentsv1alpha1.Task, ev parsedEvent) bool {
 		if ref.Source != ev.source {
 			continue
 		}
-		// ServerURL must match when set (GitHub Enterprise).
-		if ev.serverURL != "" && ref.ServerURL != ev.serverURL {
+		refHost := serverHost(ref.ServerURL)
+		eventHost := strings.ToLower(ev.serverURL)
+		if ev.source == "github" && eventHost == "" {
+			eventHost = "github.com"
+		}
+		if refHost != eventHost && !(ev.source == "github" && refHost == "" && eventHost == "github.com") {
 			continue
 		}
 		// For alertmanager, match by kind and id only.
@@ -260,12 +397,38 @@ func refMatches(task *agentsv1alpha1.Task, ev parsedEvent) bool {
 // via AMQP push without polling.
 func (c *EventConsumer) wakeTask(ctx context.Context, task *agentsv1alpha1.Task, routingKey, messageID string) error {
 	now := time.Now().UnixMilli()
+	if c.AMQP != nil {
+		queue := taskQueue(task.Namespace, task.Name)
+		msg := rabbitmq.PromptMessage{
+			Type:       "event",
+			Body:       fmt.Sprintf("New event on %s — read the latest updates and decide what to do next.", routingKey),
+			RoutingKey: routingKey,
+			MessageID:  messageID,
+			ReceivedAt: now,
+		}
+		if err := c.AMQP.Publish(ctx, queue, msg); err != nil {
+			return err
+		}
+	}
 	patch := client.MergeFrom(task.DeepCopy())
 	if task.Annotations == nil {
 		task.Annotations = make(map[string]string)
 	}
 	task.Annotations["codemowers.cloud/event-routing-key"] = routingKey
 	task.Annotations["codemowers.cloud/event-message-id"] = messageID
+	if messageID != "" {
+		var receipts []string
+		_ = json.Unmarshal([]byte(task.Annotations["codemowers.cloud/delivery-receipts"]), &receipts)
+		receipts = append(receipts, messageID)
+		if len(receipts) > 128 {
+			receipts = receipts[len(receipts)-128:]
+		}
+		encoded, err := json.Marshal(receipts)
+		if err != nil {
+			return err
+		}
+		task.Annotations["codemowers.cloud/delivery-receipts"] = string(encoded)
+	}
 	task.Annotations["codemowers.cloud/event-received-at"] = strconv.FormatInt(now, 10)
 	// Signal the reconciler to spawn a new worker if the previous one has exited.
 	task.Annotations["codemowers.cloud/wake-pending"] = "true"
@@ -273,16 +436,25 @@ func (c *EventConsumer) wakeTask(ctx context.Context, task *agentsv1alpha1.Task,
 		return err
 	}
 
-	if c.AMQP == nil {
-		return nil
+	return nil
+}
+
+func taskHasDelivery(task *agentsv1alpha1.Task, messageID string) bool {
+	if messageID == "" {
+		return false
 	}
-	queue := taskQueue(task.Namespace, task.Name)
-	msg := rabbitmq.PromptMessage{
-		Type:       "event",
-		Body:       fmt.Sprintf("New event on %s — read the latest updates and decide what to do next.", routingKey),
-		RoutingKey: routingKey,
-		MessageID:  messageID,
-		ReceivedAt: now,
+	if task.Annotations["codemowers.cloud/initial-delivery-id"] == messageID ||
+		task.Annotations["codemowers.cloud/event-message-id"] == messageID {
+		return true
 	}
-	return c.AMQP.Publish(ctx, queue, msg)
+	var receipts []string
+	if json.Unmarshal([]byte(task.Annotations["codemowers.cloud/delivery-receipts"]), &receipts) != nil {
+		return false
+	}
+	for _, receipt := range receipts {
+		if receipt == messageID {
+			return true
+		}
+	}
+	return false
 }

@@ -1,6 +1,6 @@
 // agent-webhook: authenticated webhook ingestion handler.
 // Validates HMAC signatures, extracts a routing key, and publishes to RabbitMQ.
-// Supports GitHub, Gitea (identical HMAC scheme), Slack and Alertmanager.
+// Supports GitHub, Slack and Alertmanager.
 package main
 
 import (
@@ -10,13 +10,18 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -31,15 +36,18 @@ func amqpURL() string {
 	user := envOrDefault("AMQP_USERNAME", "guest")
 	pass := envOrDefault("AMQP_PASSWORD", "guest")
 	vhost := envOrDefault("AMQP_VHOST", "/")
-	if vhost != "/" {
-		vhost = "/" + vhost
-	}
-	return fmt.Sprintf("amqp://%s:%s@%s:%s%s", user, pass, host, port, vhost)
+	return fmt.Sprintf("amqp://%s@%s/%s", url.UserPassword(user, pass),
+		net.JoinHostPort(host, port), url.PathEscape(vhost))
 }
 
 func main() {
 	addr := envOrDefault("LISTEN_ADDR", ":8080")
 	exchange := envOrDefault("AMQP_EXCHANGE", "agent.webhook.events")
+	resolver, err := newKubeHookResolver()
+	if err != nil {
+		slog.Error("Kubernetes Agent resolver unavailable", "err", err)
+		os.Exit(1)
+	}
 
 	url := amqpURL()
 	conn, ch, err := dialAMQP(url)
@@ -47,12 +55,11 @@ func main() {
 		slog.Error("amqp dial failed", "err", err)
 		os.Exit(1)
 	}
-	pub := &publisher{url: url, conn: conn, ch: ch, exchange: exchange}
+	pub := &publisher{url: url, conn: conn, ch: ch, exchange: exchange, namespace: os.Getenv("POD_NAMESPACE"), resolver: resolver}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
-	mux.HandleFunc("POST /hooks/github/{agent}", pub.githubHandler)
-	mux.HandleFunc("POST /hooks/gitea/{agent}", pub.giteaHandler)
+	mux.HandleFunc("POST /hooks/github", pub.githubHandler)
 	mux.HandleFunc("POST /hooks/alertmanager/{agent}", pub.alertmanagerHandler)
 	mux.HandleFunc("POST /hooks/slack/{agent}", pub.slackHandler)
 
@@ -66,53 +73,124 @@ func main() {
 // publisher holds the AMQP connection and publishes events with a routing key.
 // It reconnects transparently on channel or connection failure.
 type publisher struct {
-	url      string
-	conn     *amqp.Connection
-	ch       *amqp.Channel
-	exchange string
+	mu        sync.Mutex
+	url       string
+	conn      *amqp.Connection
+	ch        *amqp.Channel
+	confirms  <-chan amqp.Confirmation
+	exchange  string
+	namespace string
+	resolver  hookResolver
 }
 
 func (p *publisher) githubHandler(w http.ResponseWriter, r *http.Request) {
-	agent := r.PathValue("agent")
-	secret := secretForAgent(agent)
+	hookID := r.Header.Get("X-GitHub-Hook-ID")
+	if !validHookID(hookID) {
+		http.Error(w, "invalid GitHub hook ID", http.StatusBadRequest)
+		return
+	}
+	hooks, err := p.resolver.Resolve(r.Context(), hookID)
+	if err != nil {
+		slog.Error("resolve GitHub webhook subscribers", "hookID", hookID, "err", err)
+		http.Error(w, "GitHub webhook subscribers unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	deliveryID := r.Header.Get("X-GitHub-Delivery")
 	event := r.Header.Get("X-GitHub-Event")
 	sig := r.Header.Get("X-Hub-Signature-256")
-
-	body, ok := readAndVerifyHMAC(w, r, secret, sig, "sha256=")
-	if !ok {
+	if deliveryID == "" || len(deliveryID) > 160 || event == "" {
+		http.Error(w, "missing GitHub delivery identity", http.StatusBadRequest)
 		return
 	}
-
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 25<<20))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "read error", http.StatusBadRequest)
+		}
+		return
+	}
+	if len(hooks) == 0 {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
 	enterpriseHost := r.Header.Get("X-GitHub-Enterprise-Host")
+	sourceHost := "github.com"
+	if enterpriseHost != "" {
+		sourceHost = strings.ToLower(enterpriseHost)
+	}
+	var verified []agentHook
+	for _, hook := range hooks {
+		if serverHost(hook.ServerURL) == sourceHost && validHMAC(hook.Secret, sig, "sha256=", body) {
+			verified = append(verified, hook)
+		}
+	}
+	if len(verified) == 0 {
+		http.Error(w, "no valid GitHub webhook subscription", http.StatusUnauthorized)
+		return
+	}
+	if !actionableGitHubEvent(event) {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
 	routingKey, err := githubRoutingKey(enterpriseHost, event, body)
 	if err != nil {
 		slog.Warn("routing key extraction failed", "event", event, "err", err)
-		routingKey = fmt.Sprintf("github.%s.unknown", event)
-	}
-
-	p.respond(w, p.publish(routingKey, deliveryID, "github", event, body))
-}
-
-func (p *publisher) giteaHandler(w http.ResponseWriter, r *http.Request) {
-	agent := r.PathValue("agent")
-	secret := secretForAgent(agent)
-	deliveryID := r.Header.Get("X-Gitea-Delivery")
-	event := r.Header.Get("X-Gitea-Event")
-	sig := r.Header.Get("X-Hub-Signature-256")
-
-	body, ok := readAndVerifyHMAC(w, r, secret, sig, "sha256=")
-	if !ok {
+		http.Error(w, "invalid signed repository identity", http.StatusUnprocessableEntity)
 		return
 	}
 
-	// Gitea mirrors GitHub payload shapes for issues/PRs.
-	routingKey, err := githubRoutingKey("", event, body)
-	if err != nil {
-		routingKey = fmt.Sprintf("gitea.%s.unknown", event)
+	matched := 0
+	for _, hook := range verified {
+		if !hook.allowsRepository("github", body) {
+			continue
+		}
+		matched++
+		if status := p.publishForAgent(hook.Namespace, hook.Agent, hook.HookID, hook.Secret, routingKey, deliveryID, "github", event, body); status != http.StatusAccepted {
+			p.respond(w, status)
+			return
+		}
 	}
+	if matched == 0 {
+		http.Error(w, "no valid GitHub webhook subscription", http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
 
-	p.respond(w, p.publish(routingKey, deliveryID, "gitea", event, body))
+func actionableGitHubEvent(event string) bool {
+	switch event {
+	case "issues", "issue_comment", "pull_request", "pull_request_review", "pull_request_review_comment":
+		return true
+	default:
+		return false
+	}
+}
+
+func giteaRoutingKey(event string, body []byte) (string, error) {
+	var payload struct {
+		Repository struct {
+			HTMLURL string `json:"html_url"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	repoURL, err := url.Parse(payload.Repository.HTMLURL)
+	if err != nil || repoURL.Hostname() == "" {
+		return "", fmt.Errorf("repository html_url has no server host")
+	}
+	key, err := githubRoutingKey("", event, body)
+	if err != nil {
+		return "", err
+	}
+	_, rest, ok := strings.Cut(key, ":")
+	if !ok {
+		return "", fmt.Errorf("repository routing key has no separator")
+	}
+	return "gitea." + strings.ToLower(repoURL.Hostname()) + ":" + rest, nil
 }
 
 // alertmanagerHandler authenticates with a bearer token and publishes one
@@ -136,7 +214,7 @@ func (p *publisher) alertmanagerHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	for _, e := range events {
-		if status := p.publish(e.key, agent+"."+e.id, "alertmanager", "webhook", e.body); status != http.StatusAccepted {
+		if status := p.publish(agent, e.key, agent+"."+e.id, "alertmanager", "webhook", e.body); status != http.StatusAccepted {
 			http.Error(w, "publish error", status)
 			return
 		}
@@ -223,7 +301,7 @@ func (p *publisher) slackHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted) // unroutable event types are ignored
 		return
 	}
-	if status := p.publish(key, eventID, "slack", "event_callback", body); status != http.StatusAccepted {
+	if status := p.publish(agent, key, eventID, "slack", "event_callback", body); status != http.StatusAccepted {
 		http.Error(w, "publish error", status)
 		return
 	}
@@ -295,18 +373,55 @@ func (p *publisher) channel() (*amqp.Channel, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := ch.Confirm(false); err != nil {
+			ch.Close()
+			return nil, err
+		}
 		p.ch = ch
+	}
+	if p.confirms == nil {
+		p.confirms = p.ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 	}
 	return p.ch, nil
 }
 
-func (p *publisher) publish(routingKey, messageID, source, event string, body []byte) int {
+func (p *publisher) publish(agent, routingKey, messageID, source, event string, body []byte) int {
+	return p.publishScoped(p.namespace, agent, "", nil, routingKey, messageID, source, event, body)
+}
+
+func (p *publisher) publishForAgent(namespace, agent, hookID string, secret []byte, routingKey, messageID, provider, event string, body []byte) int {
+	return p.publishScoped(namespace, agent, hookID, secret, routingKey, messageID, provider, event, body)
+}
+
+func (p *publisher) publishScoped(namespace, agent, hookID string, secret []byte, routingKey, messageID, source, event string, body []byte) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if namespace == "" || agent == "" {
+		slog.Error("webhook routing scope is missing")
+		return http.StatusServiceUnavailable
+	}
+	if messageID == "" {
+		sum := sha256.Sum256(append([]byte(namespace+"\x00"+agent+"\x00"+source+"\x00"+event+"\x00"), body...))
+		messageID = hex.EncodeToString(sum[:])
+	}
 	headers := amqp.Table{
-		"x-source":   source,
-		"x-event":    event,
-		"x-routing":  routingKey,
-		"x-msg-id":   messageID,
-		"x-received": time.Now().UTC().Format(time.RFC3339),
+		"x-agent":     agent,
+		"x-namespace": namespace,
+		"x-source":    source,
+		"x-hook-id":   hookID,
+		"x-event":     event,
+		"x-routing":   routingKey,
+		"x-msg-id":    messageID,
+		"x-received":  time.Now().UTC().Format(time.RFC3339),
+	}
+	if len(secret) > 0 {
+		mac := hmac.New(sha256.New, secret)
+		for _, field := range []string{namespace, agent, hookID, source, event, routingKey, messageID} {
+			mac.Write([]byte(field))
+			mac.Write([]byte{0})
+		}
+		mac.Write(body)
+		headers["x-source-signature"] = hex.EncodeToString(mac.Sum(nil))
 	}
 
 	ch, err := p.channel()
@@ -314,8 +429,10 @@ func (p *publisher) publish(routingKey, messageID, source, event string, body []
 		slog.Error("amqp channel failed", "err", err)
 		return http.StatusServiceUnavailable
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	err = ch.PublishWithContext(
-		context.Background(),
+		ctx,
 		p.exchange,
 		routingKey,
 		false, false,
@@ -330,9 +447,25 @@ func (p *publisher) publish(routingKey, messageID, source, event string, body []
 	)
 	if err != nil {
 		// Channel may be broken; reset so next request reconnects.
+		ch.Close()
 		p.ch = nil
+		p.confirms = nil
 		slog.Error("publish failed", "routingKey", routingKey, "err", err)
 		return http.StatusInternalServerError
+	}
+	select {
+	case confirmation, ok := <-p.confirms:
+		if !ok || !confirmation.Ack {
+			ch.Close()
+			p.ch = nil
+			p.confirms = nil
+			return http.StatusServiceUnavailable
+		}
+	case <-ctx.Done():
+		ch.Close()
+		p.ch = nil
+		p.confirms = nil
+		return http.StatusServiceUnavailable
 	}
 	slog.Info("published", "routingKey", routingKey, "messageId", messageID)
 	return http.StatusAccepted
@@ -352,17 +485,29 @@ func githubRoutingKey(enterpriseHost, event string, body []byte) (string, error)
 	}
 
 	prefix := "github"
-	if enterpriseHost != "" {
-		prefix = "github." + enterpriseHost
-	}
-
 	repo := ""
 	if raw, ok := payload["repository"]; ok {
 		var repoObj struct {
 			FullName string `json:"full_name"`
+			HTMLURL  string `json:"html_url"`
 		}
 		if err := json.Unmarshal(raw, &repoObj); err == nil {
 			repo = repoObj.FullName
+			if repoObj.HTMLURL != "" {
+				repoURL, err := url.Parse(repoObj.HTMLURL)
+				if err != nil || repoURL.Hostname() == "" {
+					return "", fmt.Errorf("repository html_url has no server host")
+				}
+				host := strings.ToLower(repoURL.Hostname())
+				if enterpriseHost != "" && !strings.EqualFold(enterpriseHost, host) {
+					return "", fmt.Errorf("enterprise host does not match signed repository URL")
+				}
+				if host != "github.com" {
+					prefix = "github." + host
+				}
+			} else if enterpriseHost != "" {
+				return "", fmt.Errorf("enterprise repository URL missing from signed payload")
+			}
 		}
 	}
 
@@ -375,9 +520,13 @@ func githubRoutingKey(enterpriseHost, event string, body []byte) (string, error)
 	case "issues", "issue_comment":
 		if raw, ok := payload["issue"]; ok {
 			var issue struct {
-				Number int `json:"number"`
+				Number      int             `json:"number"`
+				PullRequest json.RawMessage `json:"pull_request"`
 			}
 			if err := json.Unmarshal(raw, &issue); err == nil && issue.Number > 0 {
+				if event == "issue_comment" && len(issue.PullRequest) > 0 && string(issue.PullRequest) != "null" {
+					return fmt.Sprintf("%s#pr:%d", base, issue.Number), nil
+				}
 				return fmt.Sprintf("%s#issue:%d", base, issue.Number), nil
 			}
 		}
@@ -416,43 +565,41 @@ func readAndVerifyHMAC(w http.ResponseWriter, r *http.Request, secret []byte, si
 		http.Error(w, "read error", http.StatusBadRequest)
 		return nil, false
 	}
-	if len(secret) == 0 {
-		http.Error(w, "webhook secret not configured", http.StatusUnauthorized)
-		return nil, false
-	}
-	if !strings.HasPrefix(sig, prefix) {
-		http.Error(w, "missing or malformed signature", http.StatusUnauthorized)
-		return nil, false
-	}
-	sigBytes, err := hex.DecodeString(strings.TrimPrefix(sig, prefix))
-	if err != nil {
-		http.Error(w, "invalid signature encoding", http.StatusUnauthorized)
-		return nil, false
-	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(body)
-	if !hmac.Equal(mac.Sum(nil), sigBytes) {
+	if !validHMAC(secret, sig, prefix, body) {
 		http.Error(w, "signature mismatch", http.StatusUnauthorized)
 		return nil, false
 	}
 	return body, true
 }
 
-// secretForAgent reads the HMAC secret for the named agent.
-// Secrets are mounted at /secrets/{agent}/token (from agent-hook-* Secrets).
-// Falls back to WEBHOOK_SECRET env var for single-agent deployments.
+func validHMAC(secret []byte, sig, prefix string, body []byte) bool {
+	if len(secret) == 0 || !strings.HasPrefix(sig, prefix) {
+		return false
+	}
+	sigBytes, err := hex.DecodeString(strings.TrimPrefix(sig, prefix))
+	if err != nil || len(sigBytes) != sha256.Size {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(body)
+	return hmac.Equal(mac.Sum(nil), sigBytes)
+}
+
+// secretForAgent reads the HMAC secret mounted for a webhook source.
 func secretForAgent(agent string) []byte {
 	return secretForAgentKey(agent, "token")
 }
 
+var agentNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
 // secretForAgentKey reads /secrets/{agent}/{key}.
 func secretForAgentKey(agent, key string) []byte {
+	if len(agent) > 63 || !agentNamePattern.MatchString(agent) {
+		return nil
+	}
 	path := fmt.Sprintf("/secrets/%s/%s", agent, key)
 	if data, err := os.ReadFile(path); err == nil {
 		return []byte(strings.TrimSpace(string(data)))
-	}
-	if s := os.Getenv("WEBHOOK_SECRET"); s != "" {
-		return []byte(s)
 	}
 	return nil
 }

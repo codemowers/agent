@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,9 +27,15 @@ type Publisher interface {
 
 // Handler serves the web UI and REST API for Task management.
 type Handler struct {
-	Client client.Client
-	AMQP   Publisher // nil if RabbitMQ not configured
-	Addr   string
+	Client      client.Client
+	AMQP        Publisher // nil if RabbitMQ not configured
+	Addr        string
+	Verifier    tokenVerifier
+	Reviewer    accessReviewer
+	Issuer      string
+	ClientID    string
+	Origin      string
+	RedirectURI string
 }
 
 func (h *Handler) Start(ctx context.Context) error {
@@ -48,6 +55,7 @@ func (h *Handler) Start(ctx context.Context) error {
 
 func (h *Handler) routes() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /config", h.config)
 	mux.HandleFunc("GET /api/agents", h.listAgents)
 	mux.HandleFunc("GET /api/tasks", h.listTasks)
 	mux.HandleFunc("POST /api/tasks", h.createTask)
@@ -63,6 +71,7 @@ type agentItem struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Backend   string `json:"backend"`
+	Suspended bool   `json:"suspended"`
 }
 
 type taskItem struct {
@@ -73,6 +82,8 @@ type taskItem struct {
 	Reason    string `json:"reason"`
 	Objective string `json:"objective"`
 	WorkerPod string `json:"workerPod,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	SummaryAt string `json:"summaryAt,omitempty"`
 }
 
 type createTaskReq struct {
@@ -85,9 +96,60 @@ type sendPromptReq struct {
 	Body string `json:"body"`
 }
 
+func (h *Handler) config(w http.ResponseWriter, r *http.Request) {
+	jsonOK(w, map[string]string{"issuer": h.Issuer, "clientId": h.ClientID, "origin": h.Origin,
+		"redirectURI": h.RedirectURI, "audience": strings.TrimRight(h.Origin, "/") + "/api"})
+}
+
+func (h *Handler) authenticatedCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
+	parts := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
+	if len(parts) != 2 || parts[0] != "Bearer" || parts[1] == "" {
+		jsonError(w, fmt.Errorf("sign in to continue"), http.StatusUnauthorized)
+		return caller{}, false
+	}
+	if h.Verifier == nil {
+		jsonError(w, fmt.Errorf("OIDC unavailable"), 503)
+		return caller{}, false
+	}
+	identity, err := h.Verifier.Verify(r.Context(), parts[1])
+	if err != nil {
+		jsonError(w, fmt.Errorf("invalid or expired access token"), http.StatusUnauthorized)
+		return caller{}, false
+	}
+	return identity, true
+}
+
+func (h *Handler) canAccessAgent(r *http.Request, identity caller, agent *agentsv1alpha1.Agent) (bool, error) {
+	if h.Reviewer == nil {
+		return false, fmt.Errorf("Kubernetes authorization unavailable")
+	}
+	return h.Reviewer.Allowed(r.Context(), identity, agent.Namespace, agent.Name)
+}
+
+func (h *Handler) canAccessTask(r *http.Request, identity caller, task *agentsv1alpha1.Task) (bool, error) {
+	for _, owner := range task.OwnerReferences {
+		if owner.APIVersion != agentsv1alpha1.GroupVersion.String() || owner.Kind != "Agent" {
+			continue
+		}
+		var agent agentsv1alpha1.Agent
+		if err := h.Client.Get(r.Context(), client.ObjectKey{Namespace: task.Namespace, Name: owner.Name}, &agent); err != nil {
+			return false, err
+		}
+		if owner.UID != agent.UID {
+			return false, nil
+		}
+		return h.canAccessAgent(r, identity, &agent)
+	}
+	return false, nil
+}
+
 // --- Handlers ---
 
 func (h *Handler) listAgents(w http.ResponseWriter, r *http.Request) {
+	identity, ok := h.authenticatedCaller(w, r)
+	if !ok {
+		return
+	}
 	var list agentsv1alpha1.AgentList
 	if err := h.Client.List(r.Context(), &list); err != nil {
 		jsonError(w, err, 500)
@@ -95,31 +157,66 @@ func (h *Handler) listAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]agentItem, 0, len(list.Items))
 	for _, a := range list.Items {
+		allowed, err := h.canAccessAgent(r, identity, &a)
+		if err != nil {
+			jsonError(w, err, 503)
+			return
+		}
+		if !allowed {
+			continue
+		}
 		out = append(out, agentItem{
 			Name:      a.Name,
 			Namespace: a.Namespace,
 			Backend:   a.Spec.Model.Backend,
+			Suspended: a.Spec.Suspended,
 		})
 	}
 	jsonOK(w, out)
 }
 
 func (h *Handler) listTasks(w http.ResponseWriter, r *http.Request) {
+	identity, ok := h.authenticatedCaller(w, r)
+	if !ok {
+		return
+	}
 	var list agentsv1alpha1.TaskList
 	if err := h.Client.List(r.Context(), &list); err != nil {
 		jsonError(w, err, 500)
 		return
 	}
+	var agents agentsv1alpha1.AgentList
+	if err := h.Client.List(r.Context(), &agents); err != nil {
+		jsonError(w, err, 500)
+		return
+	}
+	type agentKey struct{ namespace, name, uid string }
+	allowed := make(map[agentKey]bool)
+	for i := range agents.Items {
+		a := &agents.Items[i]
+		ok, err := h.canAccessAgent(r, identity, a)
+		if err != nil {
+			jsonError(w, err, 503)
+			return
+		}
+		if ok {
+			allowed[agentKey{a.Namespace, a.Name, string(a.UID)}] = true
+		}
+	}
 	out := make([]taskItem, 0, len(list.Items))
 	for _, t := range list.Items {
 		agentName := ""
 		for _, ref := range t.OwnerReferences {
-			if ref.Kind == "Agent" {
+			if ref.APIVersion == agentsv1alpha1.GroupVersion.String() && ref.Kind == "Agent" &&
+				allowed[agentKey{t.Namespace, ref.Name, string(ref.UID)}] {
 				agentName = ref.Name
 				break
 			}
 		}
-		out = append(out, taskItem{
+		if agentName == "" {
+			continue
+		}
+		item := taskItem{
 			Name:      t.Name,
 			Namespace: t.Namespace,
 			AgentName: agentName,
@@ -127,14 +224,25 @@ func (h *Handler) listTasks(w http.ResponseWriter, r *http.Request) {
 			Reason:    t.Status.Reason,
 			Objective: t.Spec.Objective,
 			WorkerPod: t.Status.WorkerPodName,
-		})
+		}
+		if t.Status.Progress != nil {
+			item.Summary = t.Status.Progress.Summary
+			if !t.Status.Progress.UpdatedAt.IsZero() {
+				item.SummaryAt = t.Status.Progress.UpdatedAt.Time.Format(time.RFC3339)
+			}
+		}
+		out = append(out, item)
 	}
 	jsonOK(w, out)
 }
 
 func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
+	identity, ok := h.authenticatedCaller(w, r)
+	if !ok {
+		return
+	}
 	var req createTaskReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		jsonError(w, err, 400)
 		return
 	}
@@ -146,6 +254,15 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 	var agent agentsv1alpha1.Agent
 	if err := h.Client.Get(r.Context(), client.ObjectKey{Namespace: req.AgentNamespace, Name: req.AgentName}, &agent); err != nil {
 		jsonError(w, err, 404)
+		return
+	}
+	allowed, err := h.canAccessAgent(r, identity, &agent)
+	if err != nil {
+		jsonError(w, err, 503)
+		return
+	}
+	if !allowed {
+		jsonError(w, fmt.Errorf("access to Agent denied"), http.StatusForbidden)
 		return
 	}
 
@@ -168,6 +285,7 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		},
 		Spec: agentsv1alpha1.TaskSpec{
 			Objective: req.Objective,
+			Suspend:   agent.Spec.Suspended,
 		},
 	}
 	if err := h.Client.Create(r.Context(), task); err != nil {
@@ -180,12 +298,16 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
+	identity, ok := h.authenticatedCaller(w, r)
+	if !ok {
+		return
+	}
 	if h.AMQP == nil {
 		jsonError(w, fmt.Errorf("RabbitMQ not configured"), 503)
 		return
 	}
 	var req sendPromptReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		jsonError(w, err, 400)
 		return
 	}
@@ -196,35 +318,67 @@ func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
 	queue := ns + "/" + name
+	var task agentsv1alpha1.Task
+	if err := h.Client.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: name}, &task); err != nil {
+		jsonError(w, err, http.StatusNotFound)
+		return
+	}
+	allowed, err := h.canAccessTask(r, identity, &task)
+	if err != nil {
+		jsonError(w, err, 503)
+		return
+	}
+	if !allowed {
+		jsonError(w, fmt.Errorf("access to Task denied"), http.StatusForbidden)
+		return
+	}
+	if task.Spec.Suspend {
+		jsonError(w, fmt.Errorf("task is suspended"), http.StatusConflict)
+		return
+	}
 
 	if err := h.AMQP.DeclareQueue(queue); err != nil {
 		jsonError(w, fmt.Errorf("declare queue: %w", err), 500)
 		return
 	}
-	msg := rabbitmq.PromptMessage{Type: "prompt", Body: req.Body}
+	msg := rabbitmq.PromptMessage{Type: "prompt", Body: req.Body, MessageID: randHex(16)}
 	if err := h.AMQP.Publish(r.Context(), queue, msg); err != nil {
 		jsonError(w, fmt.Errorf("publish: %w", err), 500)
 		return
 	}
 	// Annotate task so the TaskReconciler ensures a worker pod is running.
-	var task agentsv1alpha1.Task
-	if err := h.Client.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: name}, &task); err == nil {
-		patch := client.MergeFrom(task.DeepCopy())
-		if task.Annotations == nil {
-			task.Annotations = make(map[string]string)
-		}
-		task.Annotations["codemowers.cloud/prompt-sent-at"] = fmt.Sprintf("%d", metav1.Now().UnixMilli())
-		h.Client.Patch(r.Context(), &task, patch) //nolint:errcheck
+	patch := client.MergeFrom(task.DeepCopy())
+	if task.Annotations == nil {
+		task.Annotations = make(map[string]string)
+	}
+	task.Annotations["codemowers.cloud/prompt-sent-at"] = fmt.Sprintf("%d", metav1.Now().UnixMilli())
+	task.Annotations["codemowers.cloud/wake-pending"] = "true"
+	if err := h.Client.Patch(r.Context(), &task, patch); err != nil {
+		jsonError(w, err, http.StatusServiceUnavailable)
+		return
 	}
 	jsonOK(w, map[string]string{"status": "published"})
 }
 
 func (h *Handler) deleteTask(w http.ResponseWriter, r *http.Request) {
+	identity, ok := h.authenticatedCaller(w, r)
+	if !ok {
+		return
+	}
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
 	var task agentsv1alpha1.Task
 	if err := h.Client.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: name}, &task); err != nil {
 		jsonError(w, err, 404)
+		return
+	}
+	allowed, err := h.canAccessTask(r, identity, &task)
+	if err != nil {
+		jsonError(w, err, 503)
+		return
+	}
+	if !allowed {
+		jsonError(w, fmt.Errorf("access to Task denied"), http.StatusForbidden)
 		return
 	}
 	if err := h.Client.Delete(r.Context(), &task); err != nil {
@@ -255,7 +409,11 @@ func slugify(s string) string {
 	if len(slug) > 48 {
 		slug = slug[:48]
 	}
-	return strings.Trim(slug, "-")
+	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		return "task"
+	}
+	return slug
 }
 
 func randHex(n int) string {
@@ -333,7 +491,7 @@ button { border: none; border-radius: 6px; padding: 7px 14px; font: inherit; cur
 </style>
 </head>
 <body>
-<header>Agent Tasks</header>
+<header>Agent Tasks <span id="authStatus" style="float:right;font-size:12px;color:#8b949e"></span></header>
 <main>
   <aside>
     <div class="new-task">
@@ -348,12 +506,70 @@ button { border: none; border-radius: 6px; padding: 7px 14px; font: inherit; cur
 </main>
 <script>
 let agents = [], tasks = [], selectedTask = null;
+let oidc, tokens, discovery;
+const status = message => { document.getElementById('authStatus').textContent = message; };
+const encode = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+async function signIn() {
+  const state = encode(crypto.getRandomValues(new Uint8Array(24)));
+  const verifier = encode(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = encode(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  sessionStorage.setItem('operator-oidc-state', JSON.stringify({state, verifier}));
+  const url = new URL(discovery.authorization_endpoint);
+  for (const [key, value] of Object.entries({client_id: oidc.clientId, redirect_uri: oidc.redirectURI,
+    response_type: 'code', scope: 'openid profile email groups offline_access', resource: oidc.audience,
+    state, code_challenge: challenge, code_challenge_method: 'S256'})) url.searchParams.set(key, value);
+  location.assign(url);
+}
+async function exchange(params) {
+  params.set('client_id', oidc.clientId);
+  params.set('resource', oidc.audience);
+  const response = await fetch(discovery.token_endpoint, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: params});
+  if (!response.ok) throw new Error('OIDC token exchange failed');
+  const next = await response.json();
+  tokens = {...tokens, ...next, expires_at: Date.now() + next.expires_in * 1000};
+  sessionStorage.setItem('operator-oidc-tokens', JSON.stringify(tokens));
+}
+async function initializeAuth() {
+  oidc = await fetch('/config').then(r => r.json());
+  if (!oidc.issuer || !oidc.clientId || !oidc.origin) throw new Error('OIDC configuration unavailable');
+  if (location.origin !== oidc.origin) {
+    location.replace(oidc.origin + location.pathname + location.search);
+    return false;
+  }
+  discovery = await fetch(new URL('.well-known/openid-configuration', oidc.issuer)).then(r => r.json());
+  if (discovery.issuer !== oidc.issuer) throw new Error('OIDC issuer mismatch');
+  const query = new URLSearchParams(location.search);
+  if (query.has('error')) throw new Error(query.get('error_description') || query.get('error'));
+  if (query.has('code')) {
+    const pending = JSON.parse(sessionStorage.getItem('operator-oidc-state') || 'null');
+    if (!pending || pending.state !== query.get('state')) throw new Error('OIDC state mismatch');
+    sessionStorage.removeItem('operator-oidc-state');
+    await exchange(new URLSearchParams({grant_type: 'authorization_code', code: query.get('code'),
+      redirect_uri: oidc.redirectURI, code_verifier: pending.verifier}));
+    history.replaceState(null, '', '/');
+  } else tokens = JSON.parse(sessionStorage.getItem('operator-oidc-tokens') || 'null');
+  if (!tokens) { await signIn(); return false; }
+  status('Signed in');
+  return true;
+}
+async function apiFetch(path, options = {}) {
+  if (tokens.expires_at < Date.now() + 30000) {
+    if (!tokens.refresh_token) { sessionStorage.removeItem('operator-oidc-tokens'); await signIn(); throw new Error('Sign-in expired'); }
+    await exchange(new URLSearchParams({grant_type: 'refresh_token', refresh_token: tokens.refresh_token}));
+  }
+  const response = await fetch(path, {...options, headers: {...options.headers, Authorization: 'Bearer ' + tokens.access_token}});
+  if (response.status === 401) { sessionStorage.removeItem('operator-oidc-tokens'); await signIn(); throw new Error('Sign-in expired'); }
+  return response;
+}
 
 async function load() {
-  [agents, tasks] = await Promise.all([
-    fetch('/api/agents').then(r => r.json()),
-    fetch('/api/tasks').then(r => r.json()),
-  ]);
+  try {
+    const responses = await Promise.all([apiFetch('/api/agents'), apiFetch('/api/tasks')]);
+    for (const response of responses) if (!response.ok) throw new Error((await response.json()).error || 'API request failed');
+    [agents, tasks] = await Promise.all(responses.map(r => r.json()));
+    if (!Array.isArray(agents) || !Array.isArray(tasks)) throw new Error('Invalid API response');
+    status('Signed in');
+  } catch (error) { status(error.message); return; }
   renderAgentSelect();
   renderTaskList();
   if (selectedTask) {
@@ -364,9 +580,15 @@ async function load() {
 
 function renderAgentSelect() {
   const sel = document.getElementById('agentSelect');
-  sel.innerHTML = agents.map(a =>
-    '<option value="'+a.name+'|'+a.namespace+'">'+a.namespace+'/'+a.name+' ('+a.backend+')</option>'
-  ).join('') || '<option value="">No agents</option>';
+  const choices = agents.map(a => ({value: a.name+'|'+a.namespace,
+    label: a.namespace+'/'+a.name+' ('+a.backend+(a.suspended ? ', suspended' : '')+')'}))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const signature = JSON.stringify(choices);
+  if (sel.dataset.choices === signature) return;
+  const selected = sel.value;
+  sel.replaceChildren(...(choices.length ? choices.map(a => new Option(a.label, a.value)) : [new Option('No agents', '')]));
+  if (choices.some(a => a.value === selected)) sel.value = selected;
+  sel.dataset.choices = signature;
 }
 
 function renderTaskList() {
@@ -399,6 +621,7 @@ function renderDetail(t) {
     '<div class="detail-section"><label>Phase</label><pre>'+(t.phase||'—')+' '+(t.reason ? '('+t.reason+')' : '')+'</pre></div>'+
     (t.workerPod ? '<div class="detail-section"><label>Worker Pod</label><pre>'+t.workerPod+'</pre></div>' : '')+
     '<div class="detail-section"><label>Objective</label><pre>'+esc(t.objective)+'</pre></div>'+
+    (t.summary ? '<div class="detail-section"><label>Latest response'+(t.summaryAt ? ' · '+esc(t.summaryAt) : '')+'</label><pre>'+esc(t.summary)+'</pre></div>' : '')+
     '<div class="detail-section"><label>Send Prompt</label>'+
       '<div class="prompt-row">'+
         '<input type="text" id="promptInput" placeholder="Follow-up prompt…" onkeydown="if(event.key===\'Enter\')sendPrompt(\''+t.namespace+'\',\''+t.name+'\')">'+
@@ -412,7 +635,7 @@ async function createTask() {
   const obj = document.getElementById('objective').value.trim();
   if (!sel || !obj) return alert('Select an agent and enter an objective.');
   const [agentName, agentNamespace] = sel.split('|');
-  const res = await fetch('/api/tasks', {method:'POST', headers:{'Content-Type':'application/json'},
+  const res = await apiFetch('/api/tasks', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({agentName, agentNamespace, objective: obj})});
   if (!res.ok) { const e = await res.json(); return alert(e.error); }
   document.getElementById('objective').value = '';
@@ -424,7 +647,7 @@ async function createTask() {
 async function sendPrompt(ns, name) {
   const body = document.getElementById('promptInput').value.trim();
   if (!body) return;
-  const res = await fetch('/api/tasks/'+ns+'/'+name+'/prompts', {method:'POST',
+  const res = await apiFetch('/api/tasks/'+ns+'/'+name+'/prompts', {method:'POST',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify({body})});
   if (!res.ok) { const e = await res.json(); return alert(e.error); }
   document.getElementById('promptInput').value = '';
@@ -432,7 +655,8 @@ async function sendPrompt(ns, name) {
 
 async function deleteTask(ns, name) {
   if (!confirm('Delete task '+name+'?')) return;
-  await fetch('/api/tasks/'+ns+'/'+name, {method:'DELETE'});
+  const response = await apiFetch('/api/tasks/'+ns+'/'+name, {method:'DELETE'});
+  if (!response.ok) { const error = await response.json(); return alert(error.error); }
   selectedTask = null;
   document.getElementById('detail').innerHTML = '<div class="empty">Task deleted.</div>';
   await load();
@@ -440,8 +664,7 @@ async function deleteTask(ns, name) {
 
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-load();
-setInterval(load, 5000);
+initializeAuth().then(ready => { if (ready) { load(); setInterval(load, 5000); } }).catch(error => status(error.message));
 </script>
 </body>
 </html>`
