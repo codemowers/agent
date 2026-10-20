@@ -1,0 +1,25 @@
+# One event per Alertmanager notification; Alertmanager already groups alerts.
+# A retried notification has the same body and therefore the same deliveryID.
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterWebhookReceiver
+metadata:
+  name: alertmanager
+spec:
+  verification:
+    algorithm: none
+  event:
+    eventsCEL: >-
+      [{
+        'source': 'alertmanager',
+        'deliveryID': sha256Hex(rawBody),
+        'type': body.status,
+        'actor': 'Alertmanager',
+        'text': '[' + body.status + ':' + string(size(body.alerts)) + '] ' +
+          (has(body.commonLabels.alertname) ? body.commonLabels.alertname : 'alerts') +
+          (has(body.commonAnnotations.summary) ?
+            ': ' + body.commonAnnotations.summary : ''),
+        'url': has(body.externalURL) ? body.externalURL : '',
+        'key': ['alertmanager', sha256Hex(bytes(body.groupKey))]
+      }]
+  response:
+    status: 202

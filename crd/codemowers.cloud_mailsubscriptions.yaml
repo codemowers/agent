@@ -1,0 +1,136 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mailsubscriptions.codemowers.cloud
+spec:
+  group: codemowers.cloud
+  scope: Namespaced
+  names:
+    plural: mailsubscriptions
+    singular: mailsubscription
+    kind: MailSubscription
+    listKind: MailSubscriptionList
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [mailboxRef, agentRef, match, event, routing]
+              properties:
+                mailboxRef:
+                  description: Same-namespace Mailbox watched by the Node.js IMAP Pod.
+                  type: string
+                agentRef:
+                  description: Same-namespace Agent whose Tasks this subscription wakes.
+                  type: string
+                match:
+                  type: object
+                  description: All conditions must match. Header names are case-insensitive; duplicate values for a matched header are rejected.
+                  x-kubernetes-validations:
+                    - rule: has(self.fromDomain) || (has(self.headers) && size(self.headers) > 0)
+                      message: A From domain or at least one header rule is required
+                  properties:
+                    fromDomain:
+                      description: Case-insensitive exact RFC 5322 From domain.
+                      type: string
+                      maxLength: 253
+                    exceptFromAddresses:
+                      description: Exact sender addresses excluded before header matching.
+                      type: array
+                      x-kubernetes-list-type: set
+                      items:
+                        type: string
+                        maxLength: 254
+                    headers:
+                      type: array
+                      maxItems: 16
+                      items:
+                        type: object
+                        required: [name]
+                        x-kubernetes-validations:
+                          - rule: has(self.pattern) || has(self.startsWith) || has(self.notEquals)
+                            message: Each header rule needs pattern, startsWith or notEquals
+                        properties:
+                          name:
+                            description: Case-insensitive RFC 5322 header name.
+                            type: string
+                            minLength: 1
+                            maxLength: 80
+                          startsWith:
+                            description: Literal prefix of an unfolded header value.
+                            type: string
+                            maxLength: 512
+                          pattern:
+                            description: RE2 pattern; named capture groups become event template variables.
+                            type: string
+                            maxLength: 2048
+                          notEquals:
+                            description: Exact value to exclude after other checks.
+                            type: string
+                            maxLength: 512
+                event:
+                  type: object
+                  description: One event per accepted message. Templates expand named captures and documented mail metadata only.
+                  required: [type, actor, text, key]
+                  properties:
+                    type:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                    actor:
+                      type: string
+                      minLength: 1
+                      maxLength: 512
+                    text:
+                      type: string
+                      minLength: 1
+                      maxLength: 2048
+                    url:
+                      description: Optional link to the source message or thread, expanded from the same metadata variables.
+                      type: string
+                      maxLength: 2048
+                    key:
+                      description: Ordered key segments; the intake prepends external after template expansion.
+                      type: array
+                      minItems: 1
+                      maxItems: 16
+                      items:
+                        type: string
+                        maxLength: 512
+                routing:
+                  type: object
+                  required: [existingTask]
+                  properties:
+                    existingTask:
+                      type: string
+                      enum: [exactKey]
+                    otherwise:
+                      type: object
+                      properties:
+                        taskRef:
+                          type: string
+                    coalesceFor:
+                      type: string
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                lastReceivedAt:
+                  type: string
+                  format: date-time
+                lastRoutedAt:
+                  type: string
+                  format: date-time
+                lastError:
+                  type: string
+                  maxLength: 512
+      subresources:
+        status: {}

@@ -4,26 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/main.js",
-    "build": "esbuild web/app.js --bundle --format=esm --outfile=public/app.js && cp web/index.html web/style.css public/",
+    "start": "node src/task-worker-main.js",
+    "build:operator-ui": "esbuild operator/internal/api/public/markdown.js --bundle --format=iife --minify --legal-comments=inline --outfile=operator/internal/api/public/markdown.bundle.js",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "ajv": "8.20.0",
-    "amqplib": "0.10.9",
-    "dompurify": "3.4.16",
-    "express": "5.1.0",
-    "imapflow": "2.4.0",
-    "jose": "6.1.0",
-    "mailparser": "3.9.38",
-    "marked": "18.1.0",
-    "nodemailer": "10.1.0",
-    "oidc-client-ts": "3.3.0",
-    "redis": "5.8.2",
-    "ws": "^8.18.0",
-    "yaml": "2.9.1"
+    "amqplib": "2.2.0",
+    "imapflow": "2.5.8",
+    "nodemailer": "10.1.7"
   },
   "devDependencies": {
-    "esbuild": "0.25.10"
+    "dompurify": "3.4.17",
+    "esbuild": "0.28.2",
+    "marked": "18.1.1"
   }
 }

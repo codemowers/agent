@@ -10,29 +10,89 @@ metadata:
   name: {{ .Release.Name }}-{{ .Release.Namespace }}-operator
 rules:
   - apiGroups: [codemowers.cloud]
-    resources: [agents, tasks]
-    verbs: [get, list, watch, create, update, patch, delete]
+    resources:
+      - agents
+    verbs:
+      - get
+      - list
+      - watch
   - apiGroups: [codemowers.cloud]
-    resources: [agents/status, tasks/status]
-    verbs: [get, update, patch]
+    resources:
+      - taskcreationpolicies
+      - mailsubscriptions
+    verbs:
+      - list
+  - apiGroups: [codemowers.cloud]
+    resources:
+      - mailboxes
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: [codemowers.cloud]
+    resources:
+      - tasks
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups: [codemowers.cloud]
+    resources:
+      - agents/status
+      - tasks/status
+      - mailboxes/status
+    verbs:
+      - get
+      - update
+      - patch
   - apiGroups: [""]
-    resources: [pods, persistentvolumeclaims]
-    verbs: [get, list, watch, create, update, patch, delete]
+    resources:
+      - pods
+      - persistentvolumeclaims
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
   - apiGroups: [""]
-    resources: [pods/log]
-    verbs: [get]
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [get]
+    resources:
+      - secrets
+    resourceNames:
+      - agent-operator-provider-tokens
+    verbs:
+      - get
   - apiGroups: [authorization.k8s.io]
-    resources: [subjectaccessreviews]
-    verbs: [create]
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+  - apiGroups: [authentication.k8s.io]
+    resources:
+      - tokenreviews
+    verbs:
+      - create
   - apiGroups: [rbac.authorization.k8s.io]
-    resources: [rolebindings]
-    verbs: [get, delete]
+    resources:
+      - rolebindings
+    verbs:
+      - get
+      - delete
   - apiGroups: [coordination.k8s.io]
-    resources: [leases]
-    verbs: [get, create, update, patch]
+    resources:
+      - leases
+    verbs:
+      - get
+      - create
+      - update
+      - patch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -79,6 +139,8 @@ spec:
           ports:
             - name: api
               containerPort: 8080
+            - name: agent-mcp
+              containerPort: 8083
             - name: metrics
               containerPort: 8081
             - name: healthz
@@ -92,8 +154,12 @@ spec:
               path: /healthz
               port: healthz
           env:
+            - name: AGENT_WEBHOOK_ORIGIN
+              value: {{ .Values.webhook.publicOrigin | quote }}
             - name: AGENT_WORKER_IMAGE
               value: {{ printf "%s%s" (ternary (printf "%s/" .Values.imageRegistry) "" (ne .Values.imageRegistry "")) .Values.workerImage | quote }}
+            - name: AGENT_MAILBOX_IMAGE
+              value: {{ printf "%s%s" (ternary (printf "%s/" .Values.imageRegistry) "" (ne .Values.imageRegistry "")) .Values.mailbox.image | quote }}
             {{- range $name := list "OIDC_IDP_URI" "OIDC_CLIENT_ID" "OIDC_CLIENT_ORIGIN" "OIDC_REDIRECT_URIS" }}
             - name: {{ $name }}
               valueFrom:
@@ -101,28 +167,30 @@ spec:
                   name: oidc-client-{{ $.Release.Name }}-owner-secrets
                   key: {{ $name }}
             {{- end }}
-            {{- if or .Values.rabbitmq.enabled .Values.rabbitmq.existingName }}
+            # Only events whose broker-verified user_id is the webhook
+            # receiver's ServiceAccount are routed.
+            - name: AGENT_WEBHOOK_PUBLISHER
+              value: system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-webhook
             - name: AMQP_HOST
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
+                  name: {{ include "agent.rabbitmq" . }}-default-user
                   key: host
             - name: AMQP_PORT
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
+                  name: {{ include "agent.rabbitmq" . }}-default-user
                   key: port
             - name: AMQP_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
+                  name: {{ include "agent.rabbitmq" . }}-default-user
                   key: username
             - name: AMQP_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
+                  name: {{ include "agent.rabbitmq" . }}-default-user
                   key: password
-            {{- end }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
 ---
@@ -137,6 +205,12 @@ spec:
     - name: api
       port: 80
       targetPort: api
+    - name: agent-mcp
+      port: 8083
+      targetPort: agent-mcp
+    - name: metrics
+      port: 8081
+      targetPort: metrics
 ---
 apiVersion: codemowers.cloud/v1
 kind: OIDCClient
@@ -171,9 +245,32 @@ spec:
       http:
         paths:
           - path: /
+            pathType: Exact
+            backend:
+              service:
+                name: {{ .Release.Name }}
+                port:
+                  name: api
+          {{- range $path := list "/config" "/auth/callback" "/drafts.json" "/markdown.bundle.js" "/sidebar-resize.js" "/taglines.js" }}
+          - path: {{ $path }}
+            pathType: Exact
+            backend:
+              service:
+                name: {{ $.Release.Name }}
+                port:
+                  name: api
+          {{- end }}
+          - path: /api
             pathType: Prefix
             backend:
               service:
                 name: {{ .Release.Name }}
                 port:
                   name: api
+          - path: /devices/
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-devices
+                port:
+                  name: http

@@ -1,0 +1,13 @@
+apiVersion: codemowers.cloud/v1alpha1
+kind: Task
+metadata:
+  name: laurivosandi-gitea-intake
+  namespace: codemowers-agent-system
+spec:
+  agentRef: laurivosandi
+  title: Gitea intake
+  objective: >-
+    Review verified Gitea events that do not match an existing Task and cannot
+    yet create an assigned issue or pull request Task. Preserve the source and
+    delivery receipt. Ask for human direction before changing code or workloads.
+  suspend: false

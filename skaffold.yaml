@@ -22,6 +22,14 @@ build:
     - image: agent-operator
       context: operator
       kaniko: {}
+    - image: agent-devices
+      context: operator
+      kaniko:
+        dockerfile: devicebridge/Dockerfile
+    - image: agent-mailbox
+      context: .
+      kaniko:
+        target: mailbox
 manifests:
   helm:
     flags:
@@ -32,16 +40,18 @@ manifests:
         chartPath: chart
         skipBuildDependencies: true
         setValues:
-          operator.host: sloperator
+          operator.host: dashboard
           webhook.host: webhook
-          rabbitmq.enabled: false
-          rabbitmq.existingName: agent-events
+          rabbitmq.name: agent-events
           imageRegistry: ""
         setValueTemplates:
           workerImage: "{{.IMAGE_FULLY_QUALIFIED_agent}}"
           webhook.image: "{{.IMAGE_FULLY_QUALIFIED_agent_webhook}}"
           operator.image: "{{.IMAGE_FULLY_QUALIFIED_agent_operator}}"
+          deviceBridge.image: "{{.IMAGE_FULLY_QUALIFIED_agent_devices}}"
+          mailbox.image: "{{.IMAGE_FULLY_QUALIFIED_agent_mailbox}}"
           operator.apiResource: "{{.AGENT_OPERATOR_API_RESOURCE}}"
+          webhook.publicOrigin: "{{.AGENT_WEBHOOK_PUBLIC_ORIGIN}}"
 
 deploy:
   kubectl:

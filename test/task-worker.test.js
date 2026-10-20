@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {mkdtemp, mkdir, readFile, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {seedTaskContext, nativeSessionExists} from '../src/task-worker.js';
+import {EventEmitter} from 'node:events';
+import {seedTaskContext, nativeSessionExists, brokerConnect} from '../src/task-worker.js';
 
 test('Task context preserves edits and native session recovery sees retained state', async () => {
   const root = await mkdtemp(join(tmpdir(), 'agent-task-worker-'));
@@ -28,6 +29,29 @@ test('Task context preserves edits and native session recovery sees retained sta
   } finally {
     if (previousName === undefined) delete process.env.TASK_NAME; else process.env.TASK_NAME = previousName;
     if (previousAgent === undefined) delete process.env.AGENT_NAME; else process.env.AGENT_NAME = previousAgent;
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test('Worker logs in to RabbitMQ with its rotating ServiceAccount token', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-broker-token-'));
+  const saved = {...process.env};
+  const tokenFile = join(root, 'token');
+  process.env.AMQP_URL = 'amqp://broker.ns.svc:5672/%2F';
+  process.env.AGENT_RABBITMQ_TOKEN_FILE = tokenFile;
+  try {
+    await writeFile(tokenFile, 'first.jwt\n');
+    let connected;
+    const secrets = [];
+    const connection = Object.assign(new EventEmitter(), {updateSecret: async secret => { secrets.push(secret.toString()); }});
+    await brokerConnect(async url => { connected = url; return connection; }, 10);
+    assert.equal(connected, 'amqp://:first.jwt@broker.ns.svc:5672/%2F');
+    await writeFile(tokenFile, 'second.jwt\n');
+    await new Promise(resolve => setTimeout(resolve, 40));
+    connection.emit('close');
+    assert.equal(secrets.at(-1), 'second.jwt');
+  } finally {
+    process.env = saved;
     await rm(root, {recursive: true, force: true});
   }
 });

@@ -21,8 +21,10 @@ import (
 )
 
 type caller struct {
-	user   string
-	groups []string
+	user     string
+	groups   []string
+	name     string
+	username string
 }
 
 type tokenVerifier interface {
@@ -185,5 +187,10 @@ func (v *oidcVerifier) Verify(ctx context.Context, raw string) (caller, error) {
 			}
 		}
 	}
-	return caller{user: v.issuer + "#" + sub, groups: groups}, nil
+	name, _ := claims["name"].(string)
+	username, _ := claims["preferred_username"].(string)
+	if username == "" {
+		username = sub
+	}
+	return caller{user: v.issuer + "#" + sub, groups: groups, name: name, username: username}, nil
 }

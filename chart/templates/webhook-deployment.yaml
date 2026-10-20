@@ -4,8 +4,8 @@ metadata:
   name: {{ .Release.Name }}-webhook
   annotations:
     kubernetes.io/description: >-
-      Validates signatures from GitHub and Alertmanager and
-      publishes events with routing keys to RabbitMQ for the operator.
+      Evaluates ClusterWebhookReceiver and WebhookReceiver resources,
+      verifies requests, and publishes normalized events to RabbitMQ.
 spec:
   selector:
     matchLabels:
@@ -29,6 +29,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: internal
+              containerPort: 8083
           readinessProbe:
             httpGet:
               path: /healthz
@@ -38,28 +40,28 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            - name: AMQP_HOST
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
-                  key: host
-            - name: AMQP_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
-                  key: port
-            - name: AMQP_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
-                  key: username
-            - name: AMQP_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.rabbitmq.existingName | default (printf "%s-events" .Release.Name) }}-default-user
-                  key: password
+            # Logs in with the projected token below; RabbitMQ verifies the
+            # user_id stamped on each event against the token subject.
+            - name: AMQP_URL
+              value: amqp://{{ include "agent.rabbitmq" . }}.{{ .Release.Namespace }}.svc:5672/%2F
+            - name: AMQP_USER_ID
+              value: system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-webhook
+            - name: AGENT_RABBITMQ_TOKEN_FILE
+              value: /var/run/agent-rabbitmq/token
+          volumeMounts:
+            - name: agent-rabbitmq-token
+              mountPath: /var/run/agent-rabbitmq
+              readOnly: true
           resources:
             {{- toYaml .Values.webhook.resources | nindent 12 }}
+      volumes:
+        - name: agent-rabbitmq-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: agent-rabbitmq-publisher
+                  expirationSeconds: 3600
+                  path: token
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -73,11 +75,23 @@ metadata:
   name: {{ .Release.Name }}-{{ .Release.Namespace }}-webhook
 rules:
   - apiGroups: [codemowers.cloud]
-    resources: [agents]
-    verbs: [list]
+    resources:
+      - webhookreceivers
+    verbs:
+      - list
+      - get
+  - apiGroups: [codemowers.cloud]
+    resources:
+      - clusterwebhookreceivers
+    verbs:
+      - get
   - apiGroups: [""]
-    resources: [secrets]
-    verbs: [get]
+    resources:
+      - secrets
+    resourceNames:
+      - agent-operator-webhook-keys
+    verbs:
+      - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -104,6 +118,18 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-webhook-internal
+spec:
+  selector:
+    app: {{ .Release.Name }}-webhook
+  ports:
+    - name: http
+      port: 8083
+      targetPort: internal
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress

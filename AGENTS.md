@@ -2,8 +2,7 @@
 
 This file is the consolidated implementation contract and repository guidance.
 Keep it updated when behavior or architecture changes. README.md covers user
-setup and operation. The Agent/Task operator refactor is running alongside the
-existing controller; its cutover is incomplete.
+setup and operation.
 
 The project goal is a GitOps-centric, Kubernetes-native agent harness that is
 reasonably safe to use out of the box through confinement, scoped credentials,
@@ -78,46 +77,318 @@ for diagnostics. Do not expand RBAC to silence inventory warnings.
 
 ## Current architecture and deployment
 
-The controller is ordinary Node.js reconciliation/API code. It runs the OIDC SPA,
-Task API, authenticated receivers, IMAP/SMTP, execution-bound Agent MCP and worker
-orchestration. Claude and Codex run in separate coding worker Pods; the controller
-does not run a coding CLI or delegate routing authority to an LLM.
+The Go operator runs the OIDC SPA, Task API, execution-bound Agent MCP,
+RabbitMQ routing and worker orchestration. A Go webhook service authenticates
+receivers, and a Node.js Mailbox Pod owns IMAP/SMTP. Claude and Codex run in
+separate coding worker Pods; the operator does not run a coding CLI or delegate
+routing authority to an LLM.
 
 | Component | Responsibility |
 | --- | --- |
-| `codemowers/agent-controller` | Smaller controller image, SPA, integrations, scheduling and outcome reconciliation |
+| `agent-operator` | Go Task API, reconciliation, status, routing and Agent MCP |
+| `agent-operator-webhook` | Signed and restricted internal event intake |
+| `agent-mailbox` | Namespaced IMAP/SMTP Pod with protocol-scoped Secret projections and its own MCP |
 | `codemowers/agent` | Ubuntu coding runner, native CLIs, workspace/session adapter and project tools |
-| Redis-compatible store | Tasks, bounded timeline, queues, receipts, external mappings, execution/session identity and mail state |
 | Task PVC | Git checkout, edits, artifacts, caches, progress notes and native CLI session files |
 | Existing platform | Namespace ordering, tenancy, quotas, isolation, workload admission, storage and registry |
 
-The existing controller still treats Redis/Dragonfly as the authority for its
-Tasks. The parallel operator has namespaced Agent and Task CRDs, RabbitMQ event
+The operator has namespaced Agent and Task CRDs, RabbitMQ event
 routing, and worker Pods derived from `Agent.spec.template` as a Kubernetes
-`PodTemplateSpec` plus StatefulSet-shaped `volumeClaimTemplates`. These CRD Tasks
-are separate from existing Redis Tasks; no cutover or data migration has occurred.
+`PodTemplateSpec` plus StatefulSet-shaped `volumeClaimTemplates`.
+Namespace administrators, who are humans, define and update Agent specs. No
+automation receives RBAC to create or mutate Agents. The operator reads Agents
+and updates only `Agent.status`. Namespace administrators may also declare
+Tasks with immutable `Task.spec.agentRef` naming a same-namespace Agent; the
+operator adds their Agent ownerReference and routing label before creating a
+worker or PVC. The operator creates event/UI Tasks and owns derived Task metadata
+and status. Workers cannot write Agent or Task Kubernetes resources. Workers
+report execution results through the configured transport, and the operator
+records validated observations in `Task.status`. A namespace administrator's
+ability to edit Agent references and therefore select credential keys is part
+of this trust boundary. Worker Pods receive only the Secret keys that the
+operator references in their Pod spec, never a whole provider Secret mount.
+The operator projects every Git provider key named by the Agent into the worker
+environment. One provider of a type receives `GH_TOKEN` or `GITEA_TOKEN`;
+multiple providers of that type receive `GH_TOKEN_<HOST>` or
+`GITEA_TOKEN_<HOST>`, with uppercase ASCII and punctuation replaced by
+underscores. Ports and collision hashes disambiguate host names. A Task with
+a matching external repository reference also receives its selected key as
+`AGENT_FORGE_TOKEN` for checkout. Unbound Tasks still receive their Agent's
+configured provider credentials.
+Provider tokens live under separate keys in the namespace's
+`agent-operator-provider-tokens` Secret. Model and Git provider
+`credentialKeyRef` fields select a key. Signed webhook subscriptions use
+`secretKeyRef` to select a signing key in `agent-operator-webhook-keys`.
+The operator has get-only RBAC for the provider Secret; the webhook receiver
+has get-only RBAC for the webhook-keys Secret. Neither ServiceAccount has
+Secret list/watch.
+Unsigned in-cluster receivers use only the named route on a separate internal
+webhook Service and listener; the public Ingress reaches only the signed
+listener. Restrict internal ingress to the sender Pods with a cluster-local
+NetworkPolicy. In-cluster DNS is not authentication. Keep sender namespace,
+Pod selectors and Alertmanager routing out of Helm values; the sender-side
+egress policy is an example manifest. Sender verification is separate from the
+RabbitMQ publisher identity described below.
 Agent and Task CRDs use `codemowers.cloud/v1alpha1` directly, with resource names
 `agents.codemowers.cloud` and `tasks.codemowers.cloud`.
 This checkout deploys the Go operator as `agent-operator` and the webhook
 receiver as `agent-operator-webhook` in the existing
-`codemowers-agent-system` namespace. Their hosts are `sloperator` and `webhook`. The
-previous `../agent` controller retains `controller` and Redis Tasks; it does
-not use the Agent/Task CRDs. This release reuses the existing `agent-events`
-RabbitMQ cluster; retain its queues and PVCs.
+`codemowers-agent-system` namespace. Their hosts are `dashboard` and `webhook`. The chart owns
+the `agent-events` RabbitmqCluster (`rabbitmq.name`) and its intake topology;
+the intake Queue uses `deletionPolicy: retain` so queued events survive its
+removal.
+The Device bridge is a separate Go Deployment and image named `agent-devices`.
+The existing operator Ingress routes `/devices/` to its Service, while workers
+call its namespace-local `/mcp` endpoint. A namespaced Device CR references
+one key in the fixed `agent-device-keys` Secret. The bridge owns device-agent
+WebSockets and updates Device connection status. Every worker receives the
+`devices` MCP endpoint and a projected ServiceAccount token for audience
+`agent-devices-mcp`, never a Device key; Device RBAC alone decides access.
+Pat's separate unprivileged ServiceAccount has no RBAC and its default API
+token mount is disabled, so its device calls are denied.
+The bridge authenticates TokenReview and checks SubjectAccessReview on the exact
+Device before each command, for the custom verb `exec` (`device_shell`), `read`
+(`device_file_read`) or `write` (`device_file_write`); several worker
+ServiceAccounts may hold those grants. Standard verbs such as `get` grant
+nothing, so broad read-only roles never reach a Device. `write` can usually be
+turned into code execution by overwriting scripts or service files, so grant it
+only where `exec` would also be acceptable. Device deletion or key rotation closes the connection.
 The operator sets the `worker` container image from the Skaffold runner image,
 overriding stale `image` values in Agent CRs. Signed forge events create
 Tasks only after checking the configured account and current assignment.
 Operator worker Pods are named `agent-<Agent name>-<Task prefix>-<incarnation ID>`;
 the Agent segment is shortened as needed to fit Kubernetes Pod name limits.
-The operator Task API exposes the latest worker response from
-`Task.status.progress.summary`; the UI shows it in Task detail after completion.
-GitHub and GHES hooks use one `/hooks/github` URL. `X-GitHub-Hook-ID` selects Agents
-subscribed through `spec.githubWebhooks`, keyed by server URL and hook ID; each references a signing Secret in its
-own namespace. The receiver verifies each key and publishes a RabbitMQ message
-only for valid subscribers. The operator checks the Agent subscription and key
-again before routing to Tasks. Signed pings are acknowledged without routing;
-the operator records bounded per-Task delivery receipts. Use distinct keys for distinct GitHub hooks since
-the hook ID header is not signed. The operator UI uses its native OIDCClient owner
+`Agent.spec.idleSeconds` (default 3600, range 0–86400) is copied into
+`Task.spec.idleSeconds` on creation, including directly created Tasks. Task
+idle changes are sent to the resident worker over RabbitMQ. Worker container
+requests and limits from `Agent.spec.resources` are also copied into new Tasks
+as `Task.spec.resources`; Task edits replace the Pod, while Agent edits affect
+new Tasks. A same-backend Task model ID change is sent over RabbitMQ and starts
+a new native session epoch; backend or credential changes replace the Pod.
+Task titles are short display names in `Task.spec.title`. The initial
+worker prompt asks the worker to summarize the objective and set its own title through the
+execution-bound Agent MCP; only the operator writes the Task spec. The Task
+metadata name remains the stable ID, and the UI updates on Task watch events.
+The Go `WorkerPodVersion` is stamped on each worker Pod and included
+in its configuration hash. Bumping it replaces all active worker Pods as the
+Task informer reconciles existing Tasks on operator startup. The replacement
+inherits the last result time for its idle deadline. Pod start, stop and
+terminal exit entries include actual Pod names in
+bounded Task conversation history. Terminal entries include OOMKilled and exit
+codes when reported by Kubernetes; failed Pods remain for diagnosis. The worker starts the idle clock
+after a successful CLI turn, continues reading its RabbitMQ queue until that
+deadline, and exits when the queue stays empty. Zero means immediate exit.
+The operator Task API exposes a bounded chat display from
+`Task.status.conversation` and the latest worker response from
+`Task.status.progress.summary`. The UI retrieves conversation through an
+authorized Task detail endpoint and updates it on Kubernetes watch events.
+The worker reports turn start and result through the operator's Agent MCP on
+internal port 8083. The operator verifies a rotating audience-bound Pod token,
+live Pod UID and current Task/Agent ownership. Result writes update only the
+owning Task's status, including the backend, configured model ID, turn duration
+and available input, output and cache token counts on its conversation bubble;
+there is no live worker log polling. A terminal Pod's
+termination message remains a fallback summary. The Task view links structured
+GitHub and Gitea references. Prometheus Task gauges are rebuilt from Task
+status at scrape time with namespace, phase and activity labels.
+`Task.spec.routingKeys` holds exact ordered event aliases, scoped by the
+Task's namespace and Agent. The webhook endpoint prepends `internal` or
+`external` after CEL extraction; senders and receiver CEL cannot choose that
+first segment. Event-created forge Tasks receive a key of
+`[external, forge, provider, server URL, owner, repository, issue|pull_request, number]`.
+Slack thread keys are `[external, slack, workspace, channel, root timestamp]`;
+internal Alertmanager fingerprint keys are `[internal, alertmanager, fingerprint]`. A Task may
+claim several keys. Duplicate exact claims within one Agent are rejected at
+routing time. `Task.spec.externalReferences` supplies starting source links
+and forge checkout context; `Task.status.externalReferences` records links
+collected later. Neither decides
+event routing. The webhook
+service reads ClusterWebhookReceiver and WebhookReceiver resources, verifies
+each sender, evaluates bounded CEL, and publishes normalized key-bearing
+events to RabbitMQ. CEL extracts the forge actor. The operator accepts only events
+whose broker-verified `user_id` is the webhook receiver's ServiceAccount and
+ignores events authored by the Agent's own probed forge login
+for the matching provider and server when that snapshot reflects the current
+Agent generation. It then resolves exact keys. It reads TaskCreationPolicy only
+when no Task claims a key; the implemented
+`currentForgeAssignment` check probes the configured forge account and current
+assignment before creating a Task. Unknown keys go to the binding's fallback
+Task. `routing.coalesceFor` wakes on the first event, records later events in
+the window, and sends one trailing wake when they arrived. Workers hold no
+broker password: they log in to RabbitMQ with a projected ServiceAccount token
+for audience `agent-rabbitmq` and refresh it with AMQP `update-secret`. The
+broker's OAuth2 backend maps that audience to read and configure on queues
+named `<token sub>:*`, so Task queues are
+`system:serviceaccount:<namespace>:<worker ServiceAccount>:<Task>`. The
+separator is `:` because scope patterns split on `/` and Kubernetes names
+cannot contain `:`. Workers cannot publish. The webhook receiver
+and Mailbox IMAP containers log in with tokens for audience
+`agent-rabbitmq-publisher`, which may only write to the intake exchange, and
+stamp their ServiceAccount as AMQP `user_id`; RabbitMQ rejects a `user_id`
+that differs from the token subject. That verified identity replaces a shared
+event HMAC key. Only the operator uses the default broker user. The broker
+fetches the ServiceAccount issuer's JWKS from `rabbitmq.jwksURI`: the API
+server on k3s, which must allow anonymous discovery, or the public issuer on
+EKS.
+Alertmanager notifications posted to Slack by a bot and human replies in that
+thread are separate arrivals. Ignore bot echoes, preserve a human reply's
+Slack source and receipt, and never merge by similar text, labels, or channel.
+Slack thread timestamps and Alertmanager fingerprints have no inherent common
+identity. A verified link must add the Slack thread key as another routing key
+on the appropriate Task; subsequent replies then reach that Task. If the link
+does not exist yet, route the reply to the Slack fallback Task so it remains
+visible. The first reply must be copied to the linked Task with its original
+source, actor, and receipt before the fallback thread is considered handled.
+Do not mark a shared fallback Task complete merely because one thread linked.
+The operator's execution-bound Agent MCP provides bounded same-Agent Task
+list/detail, create with an optional exact routing key for deduplication, and
+audited completion. A worker can report progress and set a short title only on
+its own Task. The operator performs MCP-triggered Task spec/status writes; the worker receives
+no Task write RBAC. Key claiming on an existing Task and reopening remain to
+be implemented.
+Completion must stop the owning worker, retain history/PVC for review, and not
+silently reopen on duplicate webhook delivery. A later authenticated event or
+user action may reopen according to the Task's lifecycle policy. Slack-to-alert
+linking is not implemented yet.
+The operator UI uses the dark green harness palette and a keyboard-accessible
+mobile task drawer containing the Task list and creation form.
+Within the selected Agent, the Task list sorts by the latest user, external
+(webhook or mail), or agent message, with creation as fallback. System Pod and
+probe updates do not change list order. The row shows that message time, Task
+name and phase; namespace and Agent are already selected outside the row.
+Opening a running Task requests an MCP connectivity check over a short-lived
+RabbitMQ control queue for that worker Pod. The worker checks it even during a
+CLI turn, initializes each configured MCP and lists its tools,
+then reports endpoint names and availability through the execution-bound Agent
+MCP. `Agent.spec.mcpEndpoints` lists additional endpoints; the operator adds
+`agent_operator`, `devices` and one `mailbox-<name>` per RBAC-authorized
+Mailbox. The operator accepts any sanitized report: names match
+`^[A-Za-z0-9_-]{1,64}$` without duplicates, and detail, title, instructions
+and tool names are bounded. The operator records the latest request and result in Task status and
+streams the change to the UI. Requests are coalesced for 20 seconds. A Task
+without a running worker cannot be probed by opening it. Probe messages target
+one Pod UID so replacement workers discard stale requests. Probing neither
+starts a CLI turn nor extends the worker idle deadline.
+The Task header renders MCP endpoint results as green available and red
+unavailable status dots. Buttons show the server's `serverInfo.title`, or the
+capitalized endpoint name before the first probe. The multi-line tooltip shows
+state and check time, the server's bounded `initialize` instructions and its
+tool names.
+The Device bridge's instructions list the caller's authorized Devices.
+`Agent.spec.mcpEndpoints` is a list-map keyed by `name`; the API server rejects
+duplicates and the operator-provided `agent_operator` and `devices` names.
+Apply the Agent CRD with `kubectl apply --server-side`; it is too large for
+client-side apply. Selecting one toggles it in
+`Task.spec.disabledMCPs`, which the operator sends to a running worker as
+runtime configuration; the worker omits disabled endpoints from the CLI
+configuration from its next turn. `agent_operator` cannot be disabled. It
+keeps the last completed result in `Task.status.mcpProbe` with its `checkedAt`
+time and shows it washed out while a check is pending, after a failed check or
+when the worker is stopped; only a fresh result of the current worker is shown
+at full strength. The Task title and idle
+deadline remain in the header, while namespace, Agent, Task name and phase
+stay in the Task list instead of a duplicate subtitle.
+Transitional states animate: a working turn shows a typing bubble, a starting
+or stopping worker shows a spinner line, and the Task list dot pulses. Pending
+Send and header actions show a spinner. Non-JSON proxy errors, such as a 504,
+display as readable text with their HTTP status.
+The chat composer shows a wakeup instruction as its placeholder and submits
+that instruction when Send is clicked with an empty input.
+The Task header offers Suspend/Resume, which sets `Task.spec.suspend`; the
+operator stops the worker and keeps the PVC, native session and queued
+messages. A completed Task cannot be resumed from the UI. Stop is shown during
+a working turn and sends a `stop` message on the worker Pod's control queue;
+the worker interrupts only a turn started before the request, reports it as
+stopped and stays resident. Each action adds an attributed system line.
+On desktop, the Task header offers a collapsible list of copyable kubectl
+commands for Task and Agent status, the full Task and worker Pods. It also
+includes a `kubectl apply -f - <<'EOF'` Task manifest template using the
+current Agent and namespace; the user fills in a Task name and objective.
+The New Task form and Task detail expose a Gitea webhook setup template for
+the selected Agent. Its named path uses the configured public webhook origin,
+and the UI gives copyable receiver and signing-key retrieval commands. These
+are instructions and never expose Secret values through the API. The expected
+Mittwald-generated signing key is distinct from a Gitea API token.
+The same view gives a copyable command that prints the `device-agent
+--endpoint` line for each Device in the Agent's namespace, reading the key
+through its connectionSecretRef with the user's own kubectl.
+Task selection is encoded as `namespace` and `task` URL query parameters,
+restored after OIDC callback and kept in browser history.
+The Task header calculates worker idle shutdown from `Task.spec.idleSeconds`
+and `Task.status.lastResultAt` while activity is idle. It updates locally each
+second, labels the deadline as expected, and states that Task deletion is manual.
+It records accepted UI prompts, routed webhook notices with validated source
+URLs when provided, and worker `agent_result` lines from the owned Pod's bounded logs; full native CLI
+transcripts remain private on the Task PVC. The `matmlazi-mail` Mailbox Pod
+owns the live IMAP connection and SMTP credential projection.
+External chat headers show the sender with a readable transport label, such as
+"via Gitea webhook notification" or "via mail notification". When a verified
+source URL exists, the transport label is the link. External and web chat
+messages share the same incoming bubble styling.
+The namespaced Mailbox CR has independent optional IMAP and SMTP sections.
+When a Mailbox is created, the operator reconciles one Node.js Pod with IMAP
+and/or SMTP containers. Each container receives only its protocol credential
+keys and nonsecret settings as explicit environment variables. The IMAP
+container uses IMAP IDLE, fetches headers only,
+and publishes persistent events to the existing RabbitMQ intake queue as the
+`agent-mailbox` ServiceAccount; the operator accepts mail events only from
+that ServiceAccount in the Mailbox's own namespace.
+The operator advances Mailbox.status.imap.cursor after routing the event.
+The MailSubscription CR binds one
+Mailbox to one Agent for metadata-only notification routing through declarative
+header matchers. RE2 named captures and bounded built-in mail metadata expand
+literal event templates; there is no mail CEL evaluator or provider-specific
+parser. The receiving mail server checks SPF, DKIM and DMARC during SMTP
+delivery and stamps Authentication-Results. The IMAP service exposes bounded
+RFC 5322 headers to matchers; it does not redo those checks or synthesize
+authentication verdict fields. The GitHub example matches the local receiving
+server's authserv-id and DMARC result in the stored header. Ambiguous From or
+duplicate matched headers fail closed. The matched thread alias resolves through
+exact Task key lookup. New GitHub webhook Tasks claim this thread alias as
+well as their canonical issue or pull-request key. Cross-transport duplicate
+wakeup suppression remains unimplemented; mail and webhook arrivals are both
+recorded with their own source and receipt. Mail body text is never routing
+authority.
+For an exact Task key match, the operator appends an IMAP thread external
+reference using the root RFC Message-ID, Mailbox name and UID, and folder.
+It also records the server thread ID when IMAP exposes OBJECTID or Gmail
+threading. Namespace is implicit in the Task; the Mailbox UID prevents reuse
+after a Mailbox is recreated. This source reference does not change worker
+checkout configuration or event routing. Fallback intake Tasks do not claim
+the thread reference.
+Unmatched mail goes to a configured intake Task,
+without creating a Task from untrusted headers. A MailSubscription alone
+decides which Agent a Mailbox wakes. Kubernetes RBAC is the only mail access
+knob: when creating a worker Pod, the operator attaches each same-namespace
+Mailbox on which a SubjectAccessReview grants the worker ServiceAccount verb
+`send` or `read`. Attachment is excluded from the worker configuration hash,
+so RBAC changes reach a worker with its next Pod. Each attached Mailbox becomes
+the worker MCP endpoint `mailbox-<name>`, served by an `mcp` container in that Mailbox's Pod behind
+the operator-owned Service `agent-mailbox-<name>`. Workers present a projected
+token for audience `agent-mailbox-mcp`. The `mcp` container authenticates it
+with TokenReview, accepts only ServiceAccounts of the Mailbox's namespace and
+checks a SubjectAccessReview per call for the custom verb `send` or `read` on
+that Mailbox; grant them with ordinary Roles. Only the `mcp` container
+receives the `agent-mailbox` ServiceAccount token, which needs only
+TokenReview and SubjectAccessReview creation, and it holds no mail credential.
+It forwards authorized calls over loopback to the IMAP listing and SMTP
+containers, which listen only on 127.0.0.1. A NetworkPolicy admits only worker
+Pods to the MCP port. Mail search remains pending.
+`send_email` succeeds only after SMTP acceptance;
+transport errors can leave the outcome unknown and are never retried
+automatically. Mailbox.status holds the IMAP UIDVALIDITY/UID cursor, advanced
+after Task routing. Mail bodies, outbox entries and Task bindings do not belong
+in CR status. No per-message or per-delivery CRDs exist. Optional Sent-copy
+archiving preflights a unique selectable IMAP Sent folder, then appends the
+exact SMTP message bytes with `\\Seen` after SMTP acceptance. SMTP success
+and archive failure are reported separately so a retry cannot silently send a
+duplicate.
+GitHub and GHES hooks can use `/hooks/github`, while each binding also has
+`/hooks/<namespace>/<receiver>`. Protocol and binding CRs replace
+`Agent.spec.githubWebhooks`. The fixed `agent-operator-webhook-keys` Secret
+holds sender verification keys only. Signed pings are acknowledged without routing;
+the operator records bounded per-Task delivery receipts. Use distinct keys for
+distinct GitHub hooks since the hook ID header is not signed. The operator UI uses its native OIDCClient owner
 Secret and bearer tokens, then SubjectAccessReview for Agent `get` rights.
 Its API streams Agent and Task cache invalidations to the browser over an
 authenticated HTTP event stream. Task subscriptions are scoped to Agent names
@@ -125,29 +396,37 @@ and checked with SubjectAccessReview; the browser fetches changed state from
 the access-controlled API. RabbitMQ is not exposed to browsers.
 `spec.access` remains in the CRD but is ignored; the operator removes its old
 owned access RoleBindings. Grant read access through Kubernetes RBAC.
-Gitea webhook ingestion is deferred pending a hook ID equivalent. Helm has no
-organization source or group allowlist configuration.
-Keep the existing controller, IMAP/SMTP, MCP configuration, and Task PVCs intact
-while replacing their behavior deliberately. PostgreSQL, memory checkpoint/restore,
+Gitea webhook ingestion uses the generic receiver binding; use a namespaced
+path and distinct signing key per instance. Helm has no organization source or
+group allowlist configuration.
+The Gitea protocol copies the original issue or pull request title and body,
+when present, into each bounded normalized event before appending comment text.
+This lets workers see the original post from a signed comment delivery even
+when a private repository cannot be fetched anonymously. A provider API token
+is still needed for live repository reads and assignment checks.
+The `laurivosandi` Gitea receiver routes unmatched verified events to its
+namespaced `laurivosandi-gitea-intake` Task. Gitea ping events produce no Task
+arrival. Per-issue Task creation still requires a Gitea API token in the Agent
+and a matching TaskCreationPolicy.
+PostgreSQL, memory checkpoint/restore,
 Agent Substrate and a new sandbox management system remain unnecessary.
 
 The supported baseline is Kubernetes 1.36+ with OCI image volumes, Pod user
-namespaces, persistent storage, Redis and OIDC. The chart uses platform operators;
+namespaces, persistent storage, RabbitMQ and OIDC. The chart uses platform operators;
 other clusters must provide compatible operators or adapt those resources to
 existing services. Codemowers.cloud is an optional ready-configured environment.
 Do not add legacy tool-copying fallbacks for unsupported runtimes.
 
 Read the deployment context and namespace from the ignored local `skaffold.env`.
-The old controller uses `controller`; this checkout uses `sloperator` for the
-operator UI and `webhook` for its receiver. Admission expands short hosts. Keep
+This checkout uses `dashboard` for the operator UI and `webhook` for its
+receiver. Admission expands short hosts. Keep
 unrelated workloads untouched. Browser TLS terminates at Ingress;
 Ingress-to-service traffic uses HTTP for now. OIDCClient registers explicit
 short source URLs; Passmower has no Ingress discovery. Read issuer, client ID,
 internal URI, external origin, redirect URIs and allowed groups from the
 provisioned owner Secret.
 
-Use only the Pod `metadata.namespace` fieldRef for namespace context. Redis keys
-and signed-link scope use namespace name and release. No namespace UID field,
+Use only the Pod `metadata.namespace` fieldRef for namespace context. No namespace UID field,
 lookup, labels or environment variable, and no additional Namespace RBAC.
 Pod UID remains necessary for execution identity and safe adoption.
 
@@ -157,54 +436,7 @@ Pod UID remains necessary for execution identity and safe adoption.
 Do not use the short host for this resource: OIDC admission expands URI,
 redirect and CORS fields but does not expand `allowedResources`.
 `skaffold.yaml` injects image references; there is no separate cluster values
-file. Operator, worker and RabbitMQ defaults live in the chart. The old
-controller maps its generated `OIDC_ALLOWED_USERS` owner Secret key to
-`OIDC_ALLOWED_SUBJECTS` for its Task API. Controller updates use
-RollingUpdate with maxSurge 1 and maxUnavailable 0; a Lease fences reconciliation
-while replicas overlap.
-
-### Configuration and identity
-
-| Configuration | Contract |
-| --- | --- |
-| `AGENT_USERNAME`, `AGENT_NAME`, `AGENT_EMAIL` | Git bot, displayed worker identity, Git and default mail identity |
-| `AGENT_FORGE_PROVIDER`, `AGENT_FORGE_URL`, optional `AGENT_FORGE_API_URL` | GitHub/GHE or Gitea server and API endpoints |
-| `AGENT_NAMESPACE`, `AGENT_RELEASE` | Installation scope, supplied by deployment |
-| `AGENT_WORKER_IMAGE`, provider Secret references | Approved worker image and selected CLI credentials; Git token Secret may be absent for prompt-only Tasks |
-| `AGENT_KUBE_CONTEXT`, `AGENT_TOOL_IMAGES` | Prepared kubeconfig context and image-volume tools |
-| `AGENT_STORAGE_CLASS`, `AGENT_WORKSPACE_SIZE` | Workspace provisioning defaults under platform policy |
-| `AGENT_MODEL`, `AGENT_CODEX_MODEL`, `AGENT_BUDGET_USD` | Hosted model defaults; USD cap currently applies to Claude |
-| `OIDC_IDP_URI`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_ORIGIN`, `OIDC_CLIENT_URI`, `OIDC_REDIRECT_URIS` | Provisioned OIDC configuration; API audience derives from origin plus `/api` |
-| `OIDC_ALLOWED_GROUPS`, `OIDC_ALLOWED_SUBJECTS` | API authorization allowlists |
-| `REDIS_URL`, `REDIS_PASSWORD` | Controller-only Task store connection |
-| `WEBHOOK_TOKEN`, `ALERTMANAGER_TOKEN` | Authenticated receiver bindings; GitHub uses its signing credential |
-| `IMAP_*`, `SMTP_*` | Independent controller-owned inbound and outbound mail connectivity |
-| `AGENT_REGISTRY_PREFIX` | Optional repository path; empty means registry host alone |
-| `AGENT_SHARING_MODE`, optional signing key | `disabled` (default), `signed` or `public` |
-
-Identity comes from optional, separately provisioned `<release>-identity` ConfigMap
-keys `AGENT_USERNAME`, `AGENT_NAME` and `AGENT_EMAIL`, imported into the controller
-environment. Defaults are `agent-smith`, `Agent Smith` and `agent.smith@system.gov`.
-The controller supplies the resolved identity to worker environments, Git setup,
-Task context and UI attribution. Restart consumers after configuration changes.
-Deployment-specific identities do not belong in Helm/Skaffold or source fixtures.
-
-Optional `<release>-controller-mail` ConfigMap supplies non-secret `IMAP_*` and
-`SMTP_*` settings. Controller-only `<release>-controller-imap-credentials` and
-`<release>-controller-smtp-credentials` Secrets supply their respective protocol's
-username and password keys. `IMAP_HOST` and `SMTP_HOST` independently configure the
-connectors; no enable switches or shared `MAIL_*` credentials. Missing host disables
-that protocol; present host with missing credentials reports incomplete_configuration.
-Secret values stay out of Helm values, images, source, logs, prompts and workspace
-files. Secrets also consumed by workers use `agent-worker-*`. Provider Secrets use
-a `token` key. Provisioned OIDC owner Secrets retain their operator name.
-
-Generate controller credentials in separate StringSecret resources:
-`agent-controller-redis-password` (`password`), `agent-controller-webhook-token`
-(`token`), `agent-controller-alertmanager-token` (`token`) and
-`agent-controller-github-webhook-secret` (`secret`). Controller environment names
-remain REDIS_PASSWORD, WEBHOOK_TOKEN, ALERTMANAGER_TOKEN and GITHUB_WEBHOOK_SECRET;
-Dragonfly references the same Redis password Secret.
+file. Operator, worker and RabbitMQ defaults live in the chart.
 
 ## Task identity, state and execution
 
@@ -220,83 +452,6 @@ controller prompts and recovery actions are visibly attributed to Controller;
 external actors retain connector identity; worker messages are execution-bound.
 Clients/workers cannot forge user or controller attribution. Preserve creator
 identity separately from later prompt authors and preserve original source events.
-
-Task creation and mutations persist state, queue changes and idempotency receipts
-atomically. Mutation receipts expire after seven days; creation receipts remain until
-Task deletion. The controller Lease serializes reconciliation; Redis revision checks
-handle concurrent API updates. Delivery is at least once. Reconcile Kubernetes
-and external effects after partial operations; there is no transaction spanning
-Redis, Kubernetes and GitHub. Check existing branches/PRs/workloads before
-repeating creation after uncertain outcomes.
-
-Dragonfly snapshots run every minute on operator-managed PVCs. Acknowledging an
-HTTP event does not promise zero-loss disk persistence: total store loss can lose
-changes since the last completed snapshot. Retain usage/attempt/outcome metadata
-for future diagnostics/billing and distinguish turn usage from session totals.
-
-### Worker lifecycle and controls
-
-Workers are directly managed Pods with `restartPolicy: Never`, names
-`agent-worker-<task-prefix>-<execution-prefix>`, `hostUsers: false` and no
-`runtimeClassName`. Use the regular runtime with platform user namespace isolation.
-Kata is available as a platform option, but this instance does not use it; verify
-runtime support before combining confinement mechanisms.
-
-Persist the execution/envelope before creating its Pod, then record the actual
-Pod UID. On controller startup reconcile all unfinished durable Tasks and adopt
-matching live workers. Persist terminal results before releasing the Pod
-finalizer. Delete successful Pods and execution input ConfigMaps; retain failed
-Pods for logs and exit status until Task deletion, including across retries.
-Actual container exit code overrides
-a worker claim. A disappeared or reused Pod pauses the Task for review. A user
-can resume a missing-Pod Task after the controller verifies the recorded Pod is
-absent; interrupted inputs return to the queue. Do not replace an unreachable
-worker against the same PVC until termination/fencing is confirmed. A deletion
-request or expired Lease alone is insufficient.
-
-Workers emit sequenced newline-delimited `agent_event` JSON to stdout. The
-controller ingests bounded Kubernetes logs and guards both receipts and
-`active.logSequence` before Redis mutations. Full native JSONL, stderr and result
-files remain privately on the PVC. This internal transport is separate from
-worker application diagnostics through Driftmower; Loki is optional retention.
-
-| Action/state | Behavior |
-| --- | --- |
-| Prompt while busy | Persist in the queue for the next turn; do not start another execution |
-| Remove queued prompt | Atomic removal; original prompt shows Removed, without another audit bubble |
-| Stop | Interrupt only the current CLI turn through execution-bound HTTP control; retain Pod/PVC/session |
-| Pause | Persist intent, stop the Pod, retain session, PVC and queued inputs |
-| Resume | Reconcile the same Task/PVC; restart or resume its recorded native session |
-| Cancel | Terminal intent; later notifications do not implicitly reactivate it |
-| Accept completion | User-authorized business completion; stop remaining worker |
-| Delete | Stop worker, remove scratch PVC, mail mappings/outbox and Task state through controller cleanup |
-
-Stop matches execution and prompt IDs so stale requests cannot stop a later turn.
-Pause/Cancel do not require a stale UI revision; Resume/Accept retain revision and
-terminal guards. Signals try the native process group, then the child PID on
-EACCES/EPERM. Expected denial/disappearance must not escape signal handlers.
-
-Web UI and Git issue/PR Tasks keep workers warm for 60 minutes after the last
-completed CLI response, including issue-comment replies. Active turns do not
-consume idle time. Worker/controller use the same completedAt-based deadline.
-`report_blocked` sets Waiting/AwaitingConfirmation without changing desired state
-to Paused or requesting Pod deletion. The CLI ends its turn; retain the worker
-for 60 minutes after that response, including ordinarily short-lived event workers.
-The worker rereads the execution idle timeout after each CLI response. Idle expiry
-keeps the blocker visible and the PVC/session intact. A new accepted prompt starts
-the next turn and clears the displayed blocker; it does not itself grant approval
-for the action requested in the previous turn. Manual Pause/Cancel still stop Pods.
-Resident workers poll `/executions/<task-id>/next` for queued follow-ups with
-execution credentials and the last completed sequence; claims/receipts survive
-lost responses. Other event-driven runs stop after their work; a UI Stop retains
-that worker for follow-ups. After idle expiry, the next event creates a Pod using
-the same PVC/session. CLI success alone never proves the Task objective complete. Underlying retained
-volume and backup cleanup follows platform storage policy.
-
-Quota/admission/scheduling blocks stay Pending with a visible reason and retry
-through reconciliation. Reuse sandbox resource sizing, quotas and isolation;
-do not add a fixed Agent concurrency cap or duplicate sandbox limits. Model
-spend/retry/deadline policies address separate control-loop costs.
 
 ### Workspace and native sessions
 
@@ -317,31 +472,24 @@ edits and avoid duplicate Task references. Attached draft/reference text is an
 immutable execution ConfigMap file, not an oversized CLI prompt argument.
 
 Retain native Claude/Codex session files on the PVC at stable paths and record the
-session ID early. Redis transcript/final JSON alone cannot restore a CLI session.
+session ID early. Task status alone cannot restore a CLI session.
 Missing/incompatible state starts a fresh session from objective, checkout and
-prior outcomes, increments the epoch and records why. The controller discovers
-credential-accessible hosted models at startup and refreshes the cached catalog.
-Changing CLI/model during an execution queues the selection for the next turn;
-the current turn finishes before the worker exits. The next execution starts a
-new conversation epoch while retaining workspace and history. Full process-memory
-restore and filesystem snapshots are not needed.
+prior outcomes, increments the epoch and records why. Changing CLI/model requires
+a paused Task with no active worker and a new conversation epoch; retain workspace
+and history. Full process-memory restore and filesystem snapshots are not needed.
 
 ## Runner, models and project builds
 
-The runner uses Ubuntu 24.04 with Node 24.18.0, Git, SSH, Bash, coreutils, find,
-tar, unzip, ripgrep, jq, curl, gh, Python with venv/pip, make and C++ build tools. Preinstall
-both pinned npm CLIs: Claude Code 2.1.296 and Codex 0.162.1. Install Skaffold
-v2.18.0 from its binary release; Helm comes from an OCI image volume when an
-Agent template requests it. Workers do not apt-install tools at startup.
-The controller image contains Node, application code, schema and SPA; kubectl is
-provided by an OCI image volume.
+The runner uses Ubuntu 26.04 with Node 24.22.0, Git, SSH, Bash, coreutils, find,
+tar, unzip, ripgrep, jq, curl, gh 2.102.0, tea 0.16.0, Helm 3.22.1, Python with
+venv/pip, make and C++ build tools. The forge CLIs and Helm are verified upstream
+static binaries copied into the runner image; their versions do not come from
+Helm values or Agent specs. Do not mount Alpine/musl tool images onto PATH. Preinstall
+both npm CLIs pinned in `runner/package.json`: Claude Code 2.1.304 and Codex 0.163.0. Install Skaffold
+v2.25.0 from its binary release. Workers do not apt-install tools at startup.
 
-Kubectl, Helm and Go come from OCI image volumes. Workers mount pinned
-`docker.io/alpine/helm:3.22.0` at `/opt/tools/helm/bin`; Helm is not embedded
-in the runner image. Kubectl uses upstream
-`registry.k8s.io/kubectl:v<server-version>`. The controller Deployment uses Helm
-`.Capabilities.KubeVersion.Version`; Skaffold explicitly renders with 1.36.3.
-Immediately before creating a worker Pod, query the Kubernetes API server version
+Kubectl and Go come from OCI image volumes. Kubectl uses upstream
+`registry.k8s.io/kubectl:v<server-version>`. Immediately before creating a worker Pod, query the Kubernetes API server version
 and select the matching upstream kubectl image, preserving additional tool images.
 Mount its whole `bin` directory and prepend `/opt/tools/kubectl/bin` to PATH in
 both Pod types; image subpaths must be directories. Neither image embeds kubectl.
@@ -361,27 +509,22 @@ there is no discovery, API adapter or compatibility proxy in this release.
 
 ### Namespace build contract
 
-Before builds, obtain the execution-bound Agent MCP namespace context. It reads
-only `zot-registry-cluster-push-kaniko`, using get-only named-Secret RBAC. Return
-namespace, the single verified registry host, Secret name/key and safe Skaffold
-settings; never credential data. Missing/malformed/ambiguous config is unavailable.
-Do not generate Zot users, mutate credentials or use the reflected pull Secret
-for pushing. Discovery is configuration verification, not push authorization.
+Workers reach the Kubernetes API with their own ServiceAccount. When its token
+is mounted, the worker writes an in-cluster kubeconfig (context `in-cluster`,
+rotating `tokenFile`) and sets `SKAFFOLD_KUBE_CONTEXT` and `SKAFFOLD_NAMESPACE` to
+its own namespace. If it can read `zot-registry-cluster-push-kaniko`, it sets
+`SKAFFOLD_DEFAULT_REPO` to that Secret's single registry host followed by the
+Agent name, without exposing the credential. Values from the Agent's Pod
+template environment take precedence. Do not duplicate kubeconfig or
+context in Skaffold YAML, rewrite endpoints or perform human OIDC bootstrap in a
+worker. Push only with `zot-registry-cluster-push-kaniko`, never the reflected
+pull Secret, and do not generate registry users or mutate credentials.
 
-`SKAFFOLD_DEFAULT_REPO` defaults to `<registry>/<AGENT_USERNAME>`.
-`AGENT_REGISTRY_PREFIX` overrides the path; an explicit empty value supports a
-per-user registry. Use the canonical defaultRepo consistently in Pod env,
-refreshed CLI env, workspace files and MCP examples. Also supply
-`SKAFFOLD_NAMESPACE`, `SKAFFOLD_KUBE_CONTEXT` and `KUBECONFIG=/config/kubeconfig`.
-The prepared context is `clusterName/namespace`; retain in-cluster endpoint, CA
-and rotating ServiceAccount tokenFile. Do not duplicate kubeconfig/context in
-Skaffold YAML, rewrite endpoints or perform human OIDC bootstrap in a worker.
-
-Prefer Kaniko through `skaffold build`/`skaffold run`. Prepare missing configuration
-from the controller MCP schema/example and validate it offline first.
-For v4beta11 use `manifests.rawYaml`, not invented deploy.kubectl manifest fields.
-Schemas are generated from the pinned runner CLI at image build time. Validation
-executes no commands/hooks and does not establish RBAC or admission success.
+Prefer Kaniko through `skaffold build`/`skaffold run`. Check missing
+configuration against `skaffold schema get` and validate it offline with
+`skaffold diagnose --yaml-only` first. For v4beta11 use `manifests.rawYaml`, not
+invented deploy.kubectl manifest fields. Validation executes no commands/hooks
+and does not establish RBAC or admission success.
 
 Check exact get access to the push Secret through Driftmower. Skaffold Kaniko Pod
 templates carry `skaffold-kaniko` and name the executor container `kaniko`;
@@ -405,46 +548,45 @@ public browser OAuth resource. Controller probes use controller
 identity; worker bridges reread rotating tokens per request and preserve sessions.
 Never copy personal OAuth credentials or tokens into CLI configuration.
 
-Provision MCP connections in the optional `<release>-mcp` ConfigMap with a
-`mcp.json` key, mounted at `/mcp/mcp.json` in controller and worker Pods. Do not
-add MCP URLs or configuration Helm values. Local `mcp.json` is excluded from Git
-and images. Missing configuration disables remote MCPs; built-in Agent MCP remains.
-Both Pod types always project their own Driftmower token at
-`/var/run/agent-mcp/driftmower`, without token-creation RBAC. HTTP entries specify
-`type`, `url`, optional `tokenFile` and optional `siteURL` for browser links;
-worker CLI configuration excludes display metadata. Restart consumers to apply
-MCP configuration changes and refresh the startup connectivity snapshot.
 Harness-owned HTTP requests identify as `codemowers-agent (+https://github.com/codemowers/agent)`;
 native Claude/Codex and Kubernetes API requests retain their own user agents.
 
-| Implemented Agent MCP tool | Purpose |
+| Operator Agent MCP tool (`agent_operator`) | Purpose |
 | --- | --- |
-| `get_task_context`, `declare_context_controls` | Current controls, included device IDs/status, primary communication channel, reference draft and repair context; add user-requested controls without overriding choices |
-| `get_namespace_context` | Namespace/build references fixed by execution binding |
-| `get_skaffold_schema`, `validate_skaffold_config`, `get_skaffold_example` | Pinned schema, offline validation and namespace-specific example |
+| `set_task_title` | Short display title for the worker's own Task |
 | `report_progress` | Bounded semantic progress/question, not completion |
-| `report_blocked` | Record a blocker/question after notifying the primary issue; end the turn and retain the warm worker |
-| `register_github_pull_request` | Verify and associate a PR, including another repository |
-| `send_email`, `get_email_status`, `get_email_messages` | Authorized Task-bound mail, delivery state and routed messages only |
+| `list_tasks`, `get_task`, `create_task`, `complete_task` | Same-Agent Task discovery, deduplicated creation and audited completion |
+| `report_turn_start`, `report_turn_result`, `report_mcp_probe` | Worker runtime reporting; not for model use |
 
-Device shell and file tools appear in Agent MCP only for Tasks with included
-devices. Supply selected IDs and connection status in each worker turn and in
-`get_task_context`; exclude device URLs and unrelated registered devices.
-Exclusion rejects subsequent device calls immediately. Including a device does
-not enqueue a prompt by itself. The Devices dialog shows a per-device systemd
-user service setup snippet using that device's WebSocket endpoint.
-The navbar shows registered devices as Offline, Online or Included, and keeps
-inclusion visible when a device disconnects. Prefix displayed hostnames with
-`Device`. Connected device tooltips show bounded OS details from the hello
-message; do not put those details into worker context unless requested.
+Each `mailbox-<name>` MCP provides `send_email` (verb `send`) and
+`list_mail_folders`, `list_mailbox_messages` and `read_mail_message`
+(verb `read`), as configured
+by the Mailbox's SMTP and IMAP sections.
 
-Workers authenticate through execution-scoped controller HTTP, never direct Redis.
+The `devices` MCP provides `list_devices`, `device_shell`,
+`device_file_read` and `device_file_write`. Access is granted per Device through
+Kubernetes RBAC on the worker ServiceAccount and checked on every call.
+
+Workers authenticate to the operator with audience-bound Pod tokens.
 Reject stale/cross-Task reporting; namespace and Task identity come from the
 binding, not model arguments. The controller verifies actual worker termination,
 results and external evidence. MCP progress or a model completion claim does not
 own lifecycle. Missing final reports must remain recoverable from worker output
 and observed exit state; successful exit does not establish acceptance criteria.
 
+Agents may share a namespace with the harness. The developer role has no
+Secret access apart from `get` on the Kaniko push Secret, which Skaffold checks
+before mounting it. The cluster's `agent-worker-prefix` admission policy confines
+`agent-worker-<agent>` ServiceAccounts to namespaced resources named
+`<agent>-*`: create, update, delete and exec, plus Pod and Pod-template
+ServiceAccounts, Secret references and PVC mounts. Exceptions:
+- Skaffold `kaniko-*` builder Pods labelled `skaffold-kaniko`.
+- The shared `zot-registry-cluster-push-kaniko` Secret.
+- ServiceAccounts listed in the cluster value `agentWorkerPrefixExempt`, such as
+  the cluster-admin `agent-worker-krtek`.
+
+`codemowers.io/created-by` creator annotations are immutable after creation.
+The workspace instructions tell workers to use the prefix.
 Supporting worker RBAC covers approved namespaced workloads/platform offerings
 (OIDC, S3, CNPG, Dragonfly, RabbitMQ, Redpanda, OpenSearch, Elasticsearch, EMQX,
 MongoDB), certificates, generated Secrets, monitoring and snapshots. There is no
@@ -460,71 +602,7 @@ accepted events before acknowledgement. Payloads cannot choose tenant, credentia
 or arbitrary repositories. Exact references route deterministically to canonical
 Tasks; do not run a routing LLM in the current controller.
 
-The Git token Secret is optional. Without `GH_TOKEN`, skip Git discovery, issue/PR
-reconciliation and GitHub notification-mail routing; allow prompt-only Tasks and
-workers to start without Git authentication. Git API actions report unavailable.
-
-### Git issues, pull requests, basic webhooks and alerts
-
-The Git receiver supports issue updates, timeline comments (including PR comments),
-pull request updates and review events. Verify signing credentials, the configured
-server's API, repository access and allowlists. Routing has three rules:
-
-- An existing Task receives updates even after the agent is unassigned.
-- Without an existing Task, create one only for an open issue/PR currently assigned
-  to the authenticated token's account. Self-assignment starts work.
-- Ignore the agent's own comments/reviews to prevent reply loops.
-
-Mail and webhooks use the same reference key: provider, server URL, kind (issue
-or PR), repository and number. Issue and PR identities are distinct, as are
-identical repository/number pairs on different servers. Missing indexes rebuild
-from durable Task references. Deliveries retain transport idempotency, without
-model-read cursors, comment catch-up state or updatedAt-based prompt suppression.
-The first automatic wakeup starts immediately. Store a fixed three-minute
-notificationSuppressUntil deadline per Task from that wakeup so controller
-restarts retain it. Git notifications, basic webhook deliveries and Alertmanager
-events share the deadline. Follow-up automatic notifications during the window
-record their source events but do not queue another prompt, including notification
-email for the same Git event. Later arrivals do not extend the deadline. Direct UI
-prompts and participant email replies dispatch immediately. Pause/Cancel/Delete
-retain their normal authority.
-Queued controller notifications for the same thread may fold into one pending
-prompt; preserve each source event and link it through the prompt's causedBy list,
-bounded to retained history. Coalescing uses the same
-provider/server/kind/repository/number key and persists inside the Task mutation.
-Never alter claimed/running prompts or fold human messages. Once the deadline
-expires, the next automatic notification starts a new immediate turn.
-First delivery stores one source event and controller prompt; later updates reuse
-Task/PVC. Unassignment never deletes the Task automatically. The model assesses
-updates; Pause queues them, and Cancel/Delete prevents automatic reactivation.
-Titles use issue/PR titles, with body/details kept in the original source,
-objective and workspace specification rather than duplicated controller bubbles.
-
-The elected controller discovers assigned open issues and PRs on startup and
-every five minutes, using the configured server's assigned-issue search. API-verify
-missing assignments before creating Tasks; process at most 20 new candidates per
-pass, with at most ten pages of 100 search results and a logged incomplete flag.
-Existing Tasks do not gain prompts merely because they appear in assignment search.
-Deleting an open, still-assigned remote item can cause discovery to recreate its
-Task; close/unassign it or retain a cancelled Task to stop processing.
-
-Optional identity ConfigMap keys select `AGENT_FORGE_PROVIDER` (`github` default
-or `gitea`) and `AGENT_FORGE_URL` (default `https://github.com`). GitHub Enterprise
-uses `/api/v3`; Gitea uses `/api/v1`; `AGENT_FORGE_API_URL` can override the API.
-Pass resolved endpoints to workers and UI; authenticated requests stay on that
-configured API and reject redirects. `GH_TOKEN` and the existing Git credential
-Secret supply the selected server's token. GitHub/GHE workers use gh, Gitea workers
-use its API and a server-scoped Git authorization header held in the environment.
-The receiver keeps `/hooks/github` for both providers, validating GitHub's prefixed
-signature or Gitea's hexadecimal signature and provider-specific delivery headers.
-Gitea routing/API behavior is covered by fixtures; live end-to-end validation remains
-necessary before claiming production support.
-
-Issue/comment/mail/PR-merge prompts contain just the event type, thread URL and
-an instruction to read the latest updates and decide what to do. The model uses
-its judgment about action and communication; do not add long response restrictions
-or copy issue/comment bodies into these prompts. Mounted instructions use the
-same brief guidance.
+### Communication
 
 Assume collaborators are senior engineers. Keep communication brief and direct,
 focused on outcomes, blockers and decisions requiring input. Give detailed plans,
@@ -533,110 +611,17 @@ or blockers; skip routine narration, acknowledgements and repeated summaries.
 Final reports briefly state the result, relevant validation and material limitations.
 
 For issue-backed Tasks, the original Git issue is the primary communication
-anchor. For standalone PR Tasks, that PR is the primary thread. Mail and chat are
-secondary, even when they trigger the next turn.
-Workers post meaningful results, blockers and confirmation questions to that
-issue. Post the blocker and specific question before `report_blocked` or ending
-a turn awaiting confirmation; read existing comments to avoid duplicates. A
-failed GitHub comment is included in the blocker report. `report_progress` and
-`report_blocked` record UI state and do not publish GitHub comments themselves.
-Task context and mail tools expose this priority; execution envelopes retain
-references so resident follow-ups preserve the anchor if context fetching fails.
-Summarize relevant mail/chat decisions on the issue without copying private
-messages or credentials. Incoming mail remains attributed to its sender.
-
-Verified issue closure completes the Task, blocks further prompts and wins over
-late results. The elected controller reconciles unfinished issues on startup and
-every 60 seconds; do not manually reconcile user Tasks. Register linked PRs
-immediately. Verify bot-authored legacy transcript links if recovering references;
-merges wake the same Task across repositories. PR assignments create missing
-standalone Tasks; linked PRs continue to reuse the original issue Task. Poll at startup/
-60 seconds and process signed merge hooks, deduplicate notifications, avoid replaying
-historical merges and preserve pauses. Issue closure still completes work.
-
-An issue lookup returning 404/410 marks the reference unavailable and stops its
-automatic polling, with one durable task notice. Check repository access to
-distinguish a missing issue from an unavailable repository; in the latter case
-also stop related PR polling in that repository. Unavailability does not prove
-task success or deletion rather than lost access. Retain the task/PVC and existing
-worker lifecycle. Resume or a new API-verified issue event clears the unavailable
-markers. Other lookup failures log bounded HTTP status without upstream bodies.
-
-Basic webhook input requires a stable deliveryId and an authorized Task ID or
-verified issue URL. Unassociated-event triage is planned, not implemented here.
-Alertmanager receivers authenticate batches and correlate repeated fingerprints
-to the same Task. Resolved alerts update context but do not prove code completion.
-An issue is optional; never guess a repository for an unmatched event.
+anchor; for standalone PR Tasks, that PR is. Mail and chat are secondary, even
+when they trigger the next turn. Workers post meaningful results, blockers and
+confirmation questions there, read existing comments to avoid duplicates, and
+summarize relevant mail or chat decisions without copying private messages or
+credentials. `report_progress` records UI state and publishes no comment.
 
 Log every `/hooks` hit before parsing and its completed HTTP/auth/routing outcome,
 including rejected/malformed calls. Allowlist bounded delivery/event/action,
 verified repository/issue/actor IDs and Task links; alerts expose count/status only.
 Never log raw payloads, submitted body text, signatures/auth headers, query strings,
 URLs, alert labels/annotations or credentials.
-
-### IMAP and SMTP
-
-Mail connectivity belongs to the elected controller. Keep IMAP IDLE independently
-of workers; send authorized plain-text mail through SMTP. Workers get no mail
-credentials. Outgoing messages bind deterministic Message-IDs, recipient participants
-and stable idempotency keys to the Task. Replies use In-Reply-To/References to wake
-that Task, including issue Tasks, with external sender attribution. Deduplicate
-Message-IDs and UIDVALIDITY/UID cursors. Preserve pauses; ambiguous, unmatched,
-self-authored, automated or non-participant mail does not start work. Optional
-`IMAP_ALLOWED_SENDERS` extends the participant set. Do not automatically broadcast
-GitHub events or mirror incoming mail as issue comments.
-
-GitHub notification mail resolves issue/PR identity from Message-ID/reply headers,
-then checks authoritative API state. Support singular/plural issue paths, issue_event
-and numeric comment IDs. Create missing Tasks only for assigned open issues/PRs; existing Tasks receive
-updates after unassignment. Closed issues converge to completion. GitHub Enterprise
-notification Message-IDs and senders use the configured server hostname. Gitea
-notification-email identity parsing remains deferred; task-bound mail replies work
-independently of the Git provider. A missing number or direct 404 falls back to assigned
-open issues in that repository only, bounded to ten pages of 100; authorization
-denial does not broaden a scan. Honor allowlists and webhook/mail deduplication.
-Email bodies are never routing authority or automatically executable instructions.
-First routing-enabled startup checks the latest 200 inbox headers to create missing
-assignment Tasks, without waking existing Tasks from old mail.
-
-`IMAP_HOST` and `SMTP_HOST` are independent: setting a protocol hostname means
-that connector is intended to run. Its Secret supplies `IMAP_USERNAME`/`IMAP_PASSWORD`
-or `SMTP_USERNAME`/`SMTP_PASSWORD`. Login defaults to agent username and SMTP From
-to agent email; `SMTP_FROM` and `SMTP_REPLY_TO` override sending identity. IMAP
-defaults to TLS/993 and INBOX; SMTP to TLS/465 with required STARTTLS on other ports
-when TLS is enabled. Endpoint settings and credentials are never copied to workers.
-Fetch live STATUS
-UIDNEXT/UIDVALIDITY before drains; cached UIDNEXT after EXISTS is insufficient.
-Keep IDLE plus a leader-only 30-second catch-up, reconnect with backoff and retain
-cursors on error. Read without changing Seen; bound message intake to 256 KB.
-
-Queue mail before sending and retain sent/partially_sent/failed/uncertain state.
-SMTP uncertainty is not automatically retried. `SMTP_SAVE_SENT` defaults off; enabling archival requires configured inbound IMAP.
-Discover the unique Sent-role mailbox or use `IMAP_SENT_MAILBOX`,
-APPEND a Seen copy with the same Message-ID and track archive retries separately.
-Search Message-ID before uncertain APPEND retries; enabling archival can process
-retained sent outbox messages without resending SMTP. Restore INBOX for IDLE.
-
-### Process fault recovery
-
-Install a process-wide exception/rejection handler that reports at most once per
-process lifetime, regardless of exception kind, and keeps the application running.
-Create a controller-attributed repair Task associated with codemowers/agent.
-Bound/redact diagnostics and reporting; workers include original Task/execution
-and use existing execution HTTP credentials. The controller durably gates reports
-by source process/execution and uses one active repair Task per component across
-workers/restarts. Record distinct normalized fingerprints and queue one follow-up
-for a new fingerprint in that Task. Repeated fingerprints add bounded occurrences
-without another prompt. A terminal repair Task permits a new Task for later
-reports. Repair-worker failures attach
-bounded occurrences to its root repair Task without new prompts or task chains.
-
-Caught IMAP/reconcile failures use the same guard and continue recovery on the next
-tick. Worker turn exceptions abort that turn and retain the resident Pod. Reporting
-failure must not recurse; unavailable storage/controller or pre-reporter startup
-errors can prevent durable reporting. Include safe IMAP operation/UID/status data,
-not commands/bodies. Applying a fix requires normal review and process restart;
-do not auto-merge or alter unrelated Tasks.
 
 ## Web UI, authorization and sharing
 
@@ -658,12 +643,21 @@ credentials. Anonymous public draft/shared views are separately scoped below.
 
 ### Task screens and provenance
 
-- New Task is an inline two-step wizard: Start from scratch/draft, then editable
-  prompt/reference, CLI/model and optional repository. No modal or redundant
-  landing-page New button. Repository selection is API/allowlist validated.
-- List at most ten accessible GitHub repositories with counts, external links and
-  creation destinations. Distinguish organization policy/token uncertainty; do
-  not probe by creating repositories. Creation links open GitHub.
+- A combobox selects the active Agent and filters the sidebar Task list. It is
+  in the desktop header and below Tasks in the mobile burger drawer.
+  The sidebar New button opens an editable Task objective form in the main pane.
+  Show the selected Agent's effective CPU/memory requests and limits and idle
+  timeout there. Agent status holds bounded, non-secret GitHub/Gitea capability
+  snapshots for repository and creation links; refresh on Agent and Task-count
+  changes. Show the check time and stale-data caveat in the UI. Treat uncertain
+  token or organization permission as unknown.
+  Selecting a bundled product draft copies its text into that ordinary objective;
+  there is no separate draft or reference field in the Task. The selected Agent
+  determines the CLI and a provider-discovered model can override its default.
+- List at most ten accessible repositories per configured GitHub or Gitea forge
+  with counts, external links and creation destinations. Distinguish organization
+  policy/token uncertainty; do not probe by creating repositories. Creation
+  links open the corresponding forge.
 - Task URLs select the exact Task. List labels are `org/repo #123 Title`, ellipsized
   with a full tooltip. Desktop sidebar is at least 30em and resizable by pointer/
   keyboard with locally retained width; below 900px it is a burger drawer.
@@ -673,285 +667,41 @@ credentials. Anonymous public draft/shared views are separately scoped below.
   prompts and idle time. Use Awaiting input after a completed response.
 - Human bubbles are left, agent bubbles right. Display configured agent identity
   and author/time once, without IdP URLs. GitHub names link in a new tab; GitHub
-  avatars fall back to verified-email Gravatars/stable defaults. These display
-  identities do not establish authorization. Shared views retain explicit public
-  GitHub names, not OIDC subjects.
+  avatars fall back to stable defaults. These display identities do not
+  establish authorization.
 - Merge consecutive progress/result chunks for one execution, with sanitized
   Markdown. Links/bare URLs/URL-only inline code open new tabs with noopener/noreferrer;
-  fenced code stays code. Show bounded tool routing/file/command metadata and states,
-  never raw results or credential commands in normal timelines or shared views.
-  When `AGENT_MCP_PAYLOADS_ENABLED=true`, authorized API users may expand
-  bounded, redacted MCP request/response JSON through a separate Task API.
-  Keep the payload API and UI hidden when disabled; never expose payloads in
-  shared links. Preserve expanded boxes across refreshes.
-- Render controller lifecycle/control events as compact icon lines with metadata
-  tooltips. Removed prompts show their disposition without duplicate audit bubbles.
-- Keep Pause/Resume mutually exclusive; icon actions share a row. Enter submits,
+  fenced code stays code. Never show raw tool results or credential commands in
+  the timeline.
+- Render operator lifecycle and control events as compact system lines.
+- Keep Suspend/Resume mutually exclusive; actions share a row. Enter submits,
   Shift-Enter is multiline and IME composition does not submit.
-- Report elapsed/API time, input/output/cache tokens and whole-turn output tokens/s;
-  this is not model decode speed. Show readable transient proxy errors and clear
-  them on recovery.
-- Use restrained Matrix greens, red errors and amber pending states. Preserve full
-  wrapping taglines, automatic header height and a bottom composer with a scrolling
+- Report turn duration and input/output/cache tokens on agent bubbles. Show
+  proxy errors such as a 504 as readable text with their HTTP status.
+- Use restrained Matrix greens, red errors and amber pending states. On desktop a
+  long tagline ends in an ellipsis with the full text in a tooltip; on mobile it
+  wraps. Keep automatic header height and a bottom composer with a scrolling
   timeline filling the remaining viewport. Link the brand to codemowers/agent on GitHub.
 
-### Drafts, refinement and context controls
+### Drafts
 
-Markdown sources in `chart/drafts/*.md` render into the mounted drafts ConfigMap.
-Catalog/content and editable draft composition are public without OIDC, independent
-of sharing mode. Task creation still requires admin authentication. Paint, File drop
-and Pad retain product-specific requirements, not copied MCP provisioning recipes.
-Selection loads editable text; creation snapshots it into the immutable execution
-ConfigMap, bounded to 128 KB. Preserve composer edits through PKCE login.
+Product drafts live in the embedded UI `operator/internal/api/public/drafts.json`.
+Paint, File drop and Pad retain product-specific requirements. Selecting one
+copies editable text into the ordinary Task objective. Task creation requires
+OIDC authentication and Agent `get` access.
 
-Refine this prepares an editable new Task targeting `codemowers/agent` with a bounded
-transcript reference; it does not mutate the source Task. Read-only shared headers
-contain only the title and Refine this. Authentication is required to start work.
+## Declarative examples
 
-Context knobs are generic named booleans with labels/descriptions. They come from
-an `agent-controls` fenced YAML block, draft `agentControls` front matter, API or
-user-requested MCP declaration. Render dynamic switches and preserve user choices.
-Pass current values every turn and read `get_task_context` before governed actions.
-They guide agent behavior; toggling a knob does not enforce external CI/workload state.
+Use the current [developer](examples/agents/matmlazi.yaml),
+[customer support](examples/agents/patpalouk.yaml) and
+[admin](examples/agents/krtek.yaml) Agent examples and the
+[`codemowers.cloud/v1alpha1` CRD schemas](crd/) as the executable contract.
+Namespace administrators supply the two fixed Secrets described above and
+select individual keys in Agent specs. The operator creates Tasks and owns
+Task specs; worker observations are validated and written to Task status by
+the operator.
 
-### Connectivity
-
-After verified OIDC authentication, show Codemowers MCP, Driftmower MCP, Agent MCP,
-GitHub API, Inbound mail, Outbound mail and Artifact registry. Remote MCP/GitHub/
-registry badges open their sites; local Agent/mail badges have no link. Align right
-and wrap, moving badges into the burger drawer on mobile. No button borders or
-separator above them. Logout is an icon with identity in its tooltip; Instructions
-and Connect events remain in the sidebar. Hide checks on logout/token rejection.
-
-Checks run once per controller process startup with bounded, sanitized failures.
-MCP/GitHub remain cached. Normal IMAP STATUS/connect/error and SMTP send outcomes
-update mail snapshots passively; task-list refreshes carry them without re-probing.
-Repository discovery refresh is independent. Tooltips show actual checkedAt, scope
-and outcome; green means a check passed, not continuously monitored liveness.
-
-Probe remote MCP initialization with scoped credentials, GitHub `/user`, isolated
-read-only IMAP login/inbox and SMTP verify without sending mail. Agent checks its
-shared initializer/storage, not unissued worker tokens. These checks do not mutate
-mail cursors/outbox/flags or resident IDLE. Successful handshake is not invalidated
-by session cleanup failure.
-
-Registry check pushes a uniquely tagged tiny zero-layer OCI image under the
-configured prefix and `agent-connectivity-check/<namespace>`, verifies manifest
-read-back, then deletes only that manifest digest. Credentials stay with the
-provisioned HTTPS registry; reject redirects to other destinations. Report cleanup
-failure separately from push success, with HTTP status/reference. Unreferenced
-config blobs await registry GC. This instance's push succeeds; deletion was denied
-HTTP 403. Do not add permissions or silently publish a fallback to hide that result.
-
-### Read-only sharing and deferred diagnostics
-
-Sharing modes are disabled, signed and public; development uses public. Signed
-links require HMAC but no OIDC and have no expiry. Scope to installation and Task
-share epoch; revocation increments the epoch and removes public listings. Public
-mode lists only explicitly shared Tasks to anonymous visitors. Disabled mode denies
-all shared reads. All creation/revocation/mutation requires normal admin OIDC.
-Use an explicit signing key or a domain-separated key derived from the provisioned
-webhook credential; never expose it to workers/browser. Shared views are allowlisted
-and read-only, without signing keys, execution tokens or provider credentials.
-
-Instructions view reads only the mounted worker instructions with source/revision/
-read time. Workers reread the ConfigMap directory each turn, with no subPath;
-propagation is eventual and active turns retain their starting text. This view is
-not full input-context inspection or proof of an active worker's exact config.
-Diagnostic endpoints, input-context capture, log viewers and PVC usage display
-remain deferred. Revisit their access design before implementation; do not add
-Pod exec or RBAC for diagnostics.
-
-## Future design: codemowers/agent-operator
-
-This section retains proposed declarative APIs and connectors only. These are
-not installed CRDs, current endpoint guarantees or upstream AX manifests.
-The future `codemowers/agent-operator` owns CRD reconciliation and launches the
-same coding runners; migrate state with one explicit lifecycle authority.
-Do not implement this design as part of routine work on the current harness.
-
-### Definitions and routing
-
-| Definition | Owns |
-| --- | --- |
-| Agent | Reusable instructions, CLI/model, Git identity, MCP configuration and readiness |
-| Task | Specific objective/acceptance, desired state, canonical ID, external references and scratch PVC |
-| Trigger | Exactly one authenticated event source, installation/namespace binding, filters and routing policy |
-| Workspace | No separate kind; storage belongs to Task |
-
-Resources are namespaced `agents.codemowers.io/v1alpha1`. Users declare spec;
-controller owns status. Store bounded status summaries/session/execution identity
-there, with transcripts/payloads/results outside Kubernetes objects. A configured
-Agent is ready without an idle worker. Record Agent generation and resolved image
-for attempts. Reuse sandbox ServiceAccounts, quotas and admission; no fixed Agent
-execution cap or payload-selected namespace.
-
-Exact external mappings remain deterministic and rebuildable from Task references.
-An optional routing LLM runs in a separate triage worker with namespace-scoped
-search tools. It proposes resume/create/ignore/clarification; controller validates
-repository access and persists the accepted mapping before queuing developer work.
-The triage conversation stays separate and bounded. CI/review completion policies
-may target PR creation, verified checks, approval or merge; tie evidence to the
-current PR head and required checks, not a successful CLI turn or stale commit.
-
-Slack, expanded Gitea connectors, direct CI connectors and unassociated-event triage are planned.
-For Slack, key by installation/team, channel and root thread, authenticate/deduplicate
-events, ignore self/bot chatter and acknowledge durable receipt. Multiple threads
-may link one Task. Preserve reply destinations and pending questions; channel
-membership alone does not authorize another user's controls or repository.
-
-Unassociated webhook errors would start a triage Pod using three separate keys:
-source (`cluster + namespace + pod/workload`, or `host + container`), incident
-(source plus stable error fingerprint) and delivery (integration plus deliveryId).
-Optional Pod/container IDs describe an occurrence, not namespace identity. Persist
-observations/mappings atomically, allow one triage execution per incident occurrence
-and validate a proposed repository/issue/PR before linking or creating it. A resolved
-incident followed by a new failure creates a new occurrence, not an implicit resume
-of completed developer work. Payload tenant fields never establish authorization.
-
-Future gateway/connector, API/router and reconciler can share a Deployment; coding
-and optional triage workers remain separate. IMAP belongs to long-lived connectors,
-not sleeping workers. Namespace deletion disconnects connectors/stops executions
-and applies explicit state/PVC retention. Prevent inheritance of stale deleted
-namespace records without introducing namespace UID fields into this harness.
-
-### Declarative examples
-
-These sketches illustrate the proposed contract; image versions, model IDs,
-Secret names and check names must come from the actual installation/repository.
-
-#### Agent
-
-```yaml
-apiVersion: agents.codemowers.io/v1alpha1
-kind: Agent
-metadata:
-  name: backend-developer
-  namespace: customer-sandbox
-spec:
-  backend: codex # codex or claude
-  image: codemowers/agent:v1
-  gitIdentity:
-    provider: github # gitea support later
-    serverURL: https://github.com
-    username: backend-bot
-    credentialSecretRef:
-      name: github-agent
-  instructions: |
-    Implement assigned changes and open pull requests.
-    Run relevant tests and report their results.
-    Create test workloads in this sandbox when useful.
-    Continue work after CI failures and review feedback.
-  model:
-    name: YOUR_MODEL_ID
-    credentialSecretRef:
-      name: model-api-key
-  tools:
-    mcpServers:
-      - name: github
-        url: http://github-mcp.customer-sandbox.svc:8080/mcp
-```
-
-#### Task
-
-```yaml
-apiVersion: agents.codemowers.io/v1alpha1
-kind: Task
-metadata:
-  name: implement-pagination
-  namespace: customer-sandbox
-spec:
-  agentRef:
-    name: backend-developer
-  objective: |
-    Implement pagination for GET /projects.
-    Preserve existing response fields and open a pull request.
-  acceptanceCriteria:
-    - Tests cover empty and multi-page results.
-    - Relevant CI checks pass.
-  completionPolicy:
-    milestone: VerifiedChecks # PullRequestCreated, VerifiedChecks, Approved, Merged
-    requiredChecks:
-      - unit-tests
-  externalReferences:
-    - source: github
-      repositoryId: "123456"
-      kind: issue
-      id: "42"
-  desiredState: Active # Active, Paused, or Cancelled
-```
-
-#### Task status
-
-```yaml
-status:
-  phase: Waiting
-  reason: WaitingForCI
-  observedGeneration: 1
-  scratchVolume:
-    claimName: agent-task-7c4e9d
-  session:
-    backend: codex
-    id: thread-uuid
-    epoch: 1
-  lastExecution:
-    id: execution-uuid
-    podName: agent-worker-7c4e9d-3
-    podUID: pod-uuid
-    state: Succeeded
-    exitCode: 0
-    resultRef: execution-uuid
-  progress:
-    summary: Opened PR 87; waiting for CI.
-    updatedAt: "2026-10-11T10:00:00Z"
-  outputs:
-    pullRequestURL: https://github.com/example/backend/pull/87
-  conditions:
-    - type: Ready
-      status: "True"
-      reason: Configured
-      message: Ready to process follow-up events.
-      lastTransitionTime: "2026-10-11T10:00:00Z"
-```
-
-#### Trigger
-
-```yaml
-apiVersion: agents.codemowers.io/v1alpha1
-kind: Trigger
-metadata:
-  name: backend-github
-  namespace: customer-sandbox
-spec:
-  agentRef:
-    name: backend-developer
-  source:
-    github:
-      serverURL: https://github.com
-      repository: example/backend
-      hookID: "123456"
-      events:
-        - issues
-        - issue_comment
-        - pull_request_review
-        - workflow_run
-  routing:
-    mode: ReferencesThenTriage
-    unmatchedAction: Triage
-  instructions: |
-    Start work for issues labeled agent-task.
-    Review comments, CI failures, and reviews; act only on relevant changes.
-    Ignore non-actionable updates; do not post acknowledgements.
-```
-
-Agent holds reusable identity/model/MCP behavior; Task holds the work and storage.
-Trigger endpoints/readiness belong in controller-owned status. Sessions include
-backend and epoch; record actual execution Pod identity and external outputs.
-Keep phase separate from desired state and semantic waiting reasons. A Task may
-wait for CI, review or human input after a successful native turn. Operator-side
-worker owner references apply only when the Task CRD exists.
-
-### Deferred directions
+## Deferred directions
 
 Executable image mounting for Claude/Codex, language-base selection and a static Go
 worker adapter remain exploratory. Image volumes expose read-only files, not merged
@@ -976,15 +726,3 @@ need duplicate/out-of-order delivery, loop suppression, pause and stale-report
 verification. Shared control/queue behavior must remain identical across sources.
 
 <!-- codemowers/agent task 9e36be24-a85c-4053-907d-2efe513a1346 -->
-## Agent workspace context
-
-- Read [the task specification](specs/task-9e36be24.md) before planning. Keep it updated when the user changes requirements.
-- Read [Skaffold defaults](skaffold.env). Use the worker environment and existing kubeconfig; credentials are mounted separately.
-- MCP scopes: codemowers for engineering guidance, driftmower for cluster capabilities/inventory/logs/metrics, agent for namespace configuration and current task controls.
-- codemowers: https://mcp.codemowers.io/mcp
-- driftmower: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
-- Use driftmower.query_logs for application/build logs before kubectl logs. Query admission policies and resource schemas before platform manifests.
-- Validate skaffold.yaml with agent.validate_skaffold_config. Read agent.get_task_context before actions governed by user controls.
-- Prefer Kaniko through Skaffold cluster builds: skaffold build or skaffold run. If configuration is missing, adapt agent.get_skaffold_example and validate it first. Report failed/unclear infrastructure instead of improvising Kaniko Pods or Jobs; direct invocation requires an explicitly requested, verified workflow.
-- Infrastructure uncertainty is a blocker: report it through agent.report_blocked. Do not guess builders, registries, credentials, privileges or public visibility.
-- Work in topic branches. Do not push directly to main/master, force-push, or create a remote without user direction. If codemowers/agent denies push, advise a fork under the configured Git account and a pull request from it.

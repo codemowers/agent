@@ -1,0 +1,20 @@
+apiVersion: codemowers.cloud/v1alpha1
+kind: WebhookReceiver
+metadata:
+  name: github-enterprise
+  namespace: codemowers-agent-system
+spec:
+  sourceRef:
+    kind: ClusterWebhookReceiver
+    name: github
+  agentRef: matmlazi
+  match:
+    serverURL: https://github.enterprise.example
+    hookID: "67890"
+  verificationKeyRef:
+    name: agent-operator-webhook-keys
+    key: github-enterprise
+  routing:
+    existingTask: exactKey
+    otherwise:
+      taskRef: webhook-triage

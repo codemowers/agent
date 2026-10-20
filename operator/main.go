@@ -13,10 +13,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	authenticationclient "k8s.io/client-go/kubernetes/typed/authentication/v1"
 	authclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
@@ -48,6 +50,17 @@ func buildAMQPURL() string {
 		net.JoinHostPort(host, port), url.PathEscape(vhost))
 }
 
+// workerAMQPURL drops the operator's broker credentials. Workers and Mailbox
+// Pods log in with their projected ServiceAccount token instead.
+func workerAMQPURL(amqpURL string) string {
+	parsed, err := url.Parse(amqpURL)
+	if err != nil {
+		return ""
+	}
+	parsed.User = nil
+	return parsed.String()
+}
+
 var scheme = runtime.NewScheme()
 
 func init() {
@@ -60,9 +73,11 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var apiAddr string
+	var mcpAddr string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081", "Address for the metrics endpoint.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8082", "Address for health probes.")
 	flag.StringVar(&apiAddr, "api-bind-address", ":8080", "Address for the OIDC web UI and task API.")
+	flag.StringVar(&mcpAddr, "mcp-bind-address", ":8083", "Address for the internal Agent MCP server.")
 	opts := zap.Options{Development: os.Getenv("DEBUG") == "true"}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -78,6 +93,10 @@ func main() {
 	})
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")
+		os.Exit(1)
+	}
+	if err := metrics.Registry.Register(controller.NewTaskMetrics(mgr.GetClient())); err != nil {
+		ctrl.Log.Error(err, "unable to register Task metrics")
 		os.Exit(1)
 	}
 	issuer := os.Getenv("OIDC_IDP_URI")
@@ -109,7 +128,8 @@ func main() {
 	}
 
 	// RabbitMQ is optional. When configured, per-task queues carry objectives and
-	// follow-up prompts; AMQP_URL and TASK_QUEUE are injected into every worker pod.
+	// follow-up prompts; the credential-free AMQP_URL and TASK_QUEUE are
+	// injected into every worker pod.
 	var amqpMgr *rabbitmq.Manager
 	amqpURL := buildAMQPURL()
 	if amqpURL != "" {
@@ -121,10 +141,17 @@ func main() {
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
 		AMQP:        amqpMgr,
-		AMQPURL:     amqpURL,
+		AMQPURL:     workerAMQPURL(amqpURL),
 		WorkerImage: os.Getenv("AGENT_WORKER_IMAGE"),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Task controller")
+		os.Exit(1)
+	}
+	if err := (&controller.MailboxReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+		Image: os.Getenv("AGENT_MAILBOX_IMAGE"), AMQPURL: workerAMQPURL(amqpURL),
+	}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up Mailbox controller")
 		os.Exit(1)
 	}
 
@@ -134,16 +161,20 @@ func main() {
 		os.Exit(1)
 	}
 	if err := mgr.Add(&api.Handler{
-		Client:      mgr.GetClient(),
-		Events:      events,
-		AMQP:        amqpMgr,
-		Addr:        apiAddr,
-		Verifier:    verifier,
-		Reviewer:    api.NewSubjectAccessReviewer(clientset),
-		Issuer:      issuer,
-		ClientID:    clientID,
-		Origin:      origin,
-		RedirectURI: redirectURI[0],
+		Client:        mgr.GetClient(),
+		APIReader:     mgr.GetAPIReader(),
+		Events:        events,
+		AMQP:          amqpMgr,
+		Addr:          apiAddr,
+		MCPAddr:       mcpAddr,
+		Verifier:      verifier,
+		Reviewer:      api.NewSubjectAccessReviewer(clientset),
+		TokenReviews:  authenticationclient.NewForConfigOrDie(mgr.GetConfig()),
+		WebhookOrigin: os.Getenv("AGENT_WEBHOOK_ORIGIN"),
+		Issuer:        issuer,
+		ClientID:      clientID,
+		Origin:        origin,
+		RedirectURI:   redirectURI[0],
 	}); err != nil {
 		ctrl.Log.Error(err, "unable to add API server")
 		os.Exit(1)
@@ -157,6 +188,9 @@ func main() {
 			Queue:     envOrDefault("AMQP_QUEUE", "agent.webhook.events"),
 			Exchange:  envOrDefault("AMQP_EXCHANGE", "agent.webhook.events"),
 			AMQP:      amqpMgr,
+			// The webhook receiver publishes as its ServiceAccount; RabbitMQ
+			// verifies the user_id it stamps on each event.
+			WebhookPublisher: os.Getenv("AGENT_WEBHOOK_PUBLISHER"),
 		}
 		if err := mgr.Add(consumer); err != nil {
 			ctrl.Log.Error(err, "unable to add event consumer")
@@ -173,7 +207,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting manager")
+	ctrl.Log.Info("starting manager", "workerPodVersion", controller.WorkerPodVersion)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "problem running manager")
 		os.Exit(1)

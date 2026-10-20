@@ -10,6 +10,7 @@ import (
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -48,14 +49,15 @@ func TestFirstWebhookCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: types.UID("agent-uid")},
-		Spec: agentsv1alpha1.AgentSpec{Suspended: true, GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://forge.example.test",
-			CredentialSecretRef: "git-token"}}}}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "git-token", Namespace: "team"},
-		Data: map[string][]byte{"token": []byte("configured-token")}}
-	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, secret).Build()
+		Spec: agentsv1alpha1.AgentSpec{Suspended: true, IdleSeconds: int32Ptr(120), Resources: &corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}}, GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://forge.example.test",
+			CredentialKeyRef: "git-token"}}}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agentsv1alpha1.ProviderTokensSecretName, Namespace: "team"},
+		Data: map[string][]byte{"git-token": []byte("configured-token")}}
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(agent, secret).Build()
 	consumer := &EventConsumer{Client: k8s, APIReader: k8s, HTTPClient: &http.Client{Transport: transport}}
 	event := parsedEvent{source: "github", serverURL: "forge.example.test", owner: "team", repo: "project", kind: "issue", id: "8"}
-	created, err := consumer.createTaskForAssignedIssue(context.Background(), "team", "developer", event, "delivery-1")
+	created, err := consumer.createTaskForAssignedIssue(context.Background(), "team", "developer", event, "delivery-1", "2m")
 	if err != nil || !created {
 		t.Fatalf("assigned issue was not created: created=%v err=%v", created, err)
 	}
@@ -66,12 +68,27 @@ func TestFirstWebhookCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 	if len(tasks.Items) != 1 || tasks.Items[0].Spec.ExternalReferences[0].ID != "8" {
 		t.Fatalf("wrong Task created: %+v", tasks.Items)
 	}
+	if tasks.Items[0].Annotations["codemowers.cloud/coalesce-until"] == "" {
+		t.Fatal("created Task did not start its coalesce window")
+	}
+	if !routingKeyMatches(&tasks.Items[0], eventTaskKey(event)) {
+		t.Fatalf("created Task lacks its forge routing key: %+v", tasks.Items[0].Spec.RoutingKeys)
+	}
+	if tasks.Items[0].Spec.AgentRef != agent.Name {
+		t.Fatalf("webhook Task did not reference Agent: %q", tasks.Items[0].Spec.AgentRef)
+	}
 	if !tasks.Items[0].Spec.Suspend {
 		t.Fatal("webhook Task did not inherit Agent suspension")
 	}
+	if tasks.Items[0].Spec.IdleSeconds == nil || *tasks.Items[0].Spec.IdleSeconds != 120 {
+		t.Fatalf("webhook Task did not copy Agent idle timeout: %+v", tasks.Items[0].Spec.IdleSeconds)
+	}
+	if tasks.Items[0].Spec.Resources == nil || tasks.Items[0].Spec.Resources.Limits.Memory().String() != "2Gi" {
+		t.Fatalf("webhook Task did not copy Agent resources: %+v", tasks.Items[0].Spec.Resources)
+	}
 	assigned = false
 	event.id = "9"
-	created, err = consumer.createTaskForAssignedIssue(context.Background(), "team", "developer", event, "delivery-2")
+	created, err = consumer.createTaskForAssignedIssue(context.Background(), "team", "developer", event, "delivery-2", "")
 	if err != nil {
 		t.Fatal(err)
 	}

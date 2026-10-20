@@ -1,0 +1,51 @@
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterWebhookReceiver
+metadata:
+  name: github
+spec:
+  verification:
+    algorithm: hmacSha256
+    keyEncoding: utf8
+    signature:
+      header: x-hub-signature-256
+      prefix: sha256=
+      encoding: hex
+    signedBytesCEL: rawBody
+  event:
+    requiredHeaders:
+      - x-github-hook-id
+      - x-github-delivery
+      - x-github-event
+    acceptCEL: >-
+      headers['x-github-hook-id'] == binding.match.hookID &&
+      (headers['x-github-event'] == 'ping' || !has(body.repository) ||
+      (has(body.repository.html_url) &&
+       urlHost(body.repository.html_url) == urlHost(binding.match.serverURL)))
+    eventsCEL: >-
+      headers['x-github-event'] == 'ping' ? [] : [{
+        'source': 'github',
+        'deliveryID': headers['x-github-delivery'],
+        'type': headers['x-github-event'],
+        'action': has(body.action) ? body.action : '',
+        'actor': has(body.sender) && has(body.sender.login) ? body.sender.login : 'GitHub',
+        'text': has(body.comment) && has(body.comment.body) ? body.comment.body :
+          has(body.review) && has(body.review.body) ? body.review.body :
+          has(body.issue) && has(body.issue.title) ? body.issue.title :
+          has(body.pull_request) && has(body.pull_request.title) ? body.pull_request.title :
+          headers['x-github-event'],
+        'url': has(body.comment) && has(body.comment.html_url) ? body.comment.html_url :
+          has(body.review) && has(body.review.html_url) ? body.review.html_url :
+          has(body.pull_request) && has(body.pull_request.html_url) ? body.pull_request.html_url :
+          has(body.issue) && has(body.issue.html_url) ? body.issue.html_url :
+          has(body.repository) && has(body.repository.html_url) ? body.repository.html_url : '',
+        'key': has(body.repository) && (has(body.issue) || has(body.pull_request)) ? [
+          'forge', 'github', binding.match.serverURL,
+          body.repository.owner.login, body.repository.name,
+          has(body.pull_request) ||
+            (headers['x-github-event'] == 'issue_comment' && has(body.issue.pull_request)) ?
+            'pull_request' : 'issue',
+          has(body.issue) ? string(body.issue.number) : string(body.pull_request.number)
+        ] : []
+      }]
+  response:
+    status: 202

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 	"time"
 
@@ -93,7 +94,9 @@ func (e *Events) Start(ctx context.Context) error {
 		UpdateFunc: func(old, current any) {
 			before, okBefore := old.(*agentsv1alpha1.Task)
 			after, okAfter := current.(*agentsv1alpha1.Task)
-			if okBefore && okAfter && taskDisplay(before) == taskDisplay(after) {
+			if okBefore && okAfter && reflect.DeepEqual(taskDisplay(before), taskDisplay(after)) &&
+				reflect.DeepEqual(before.Spec.ExternalReferences, after.Spec.ExternalReferences) &&
+				reflect.DeepEqual(before.Status.ExternalReferences, after.Status.ExternalReferences) {
 				return
 			}
 			if okBefore && okAfter && taskAgentTopic(before) != taskAgentTopic(after) {
@@ -110,10 +113,30 @@ func (e *Events) Start(ctx context.Context) error {
 	return nil
 }
 
+func displayIdleSeconds(task *agentsv1alpha1.Task) int32 {
+	if task.Spec.IdleSeconds != nil {
+		return *task.Spec.IdleSeconds
+	}
+	return agentsv1alpha1.DefaultIdleSeconds
+}
+
 func taskDisplay(task *agentsv1alpha1.Task) taskItem {
-	item := taskItem{Name: task.Name, Namespace: task.Namespace,
+	item := taskItem{Name: task.Name, Title: task.Spec.Title, Namespace: task.Namespace,
 		Phase: string(task.Status.Phase), Reason: task.Status.Reason,
-		Objective: task.Spec.Objective, WorkerPod: task.Status.WorkerPodName}
+		Objective: task.Spec.Objective, IdleSeconds: displayIdleSeconds(task), Activity: task.Status.Activity,
+		CreatedAt: task.CreationTimestamp.Time.Format(time.RFC3339), WorkerPod: task.Status.WorkerPodName,
+		WorkerPodUID: task.Status.WorkerPodUID, Suspended: task.Spec.Suspend,
+		Completed:    task.Annotations["codemowers.cloud/completed"] == "true",
+		DisabledMCPs: task.Spec.DisabledMCPs}
+	if task.Status.MCPProbe != nil {
+		item.MCPProbeAt = task.Status.MCPProbe.UpdatedAt.Time.Format(time.RFC3339Nano)
+	}
+	if task.Status.LastResultAt != nil {
+		item.LastResultAt = task.Status.LastResultAt.Time.Format(time.RFC3339Nano)
+	}
+	if task.Annotations["codemowers.cloud/initial-delivery-id"] != "" {
+		item.ObjectiveSource = "webhook"
+	}
 	for _, owner := range task.OwnerReferences {
 		if owner.APIVersion == agentsv1alpha1.GroupVersion.String() && owner.Kind == "Agent" {
 			item.AgentName = owner.Name + "/" + string(owner.UID)
@@ -126,7 +149,29 @@ func taskDisplay(task *agentsv1alpha1.Task) taskItem {
 			item.SummaryAt = task.Status.Progress.UpdatedAt.Time.Format(time.RFC3339)
 		}
 	}
+	if n := len(task.Status.Conversation); n > 0 {
+		item.LastMessageID = task.Status.Conversation[n-1].ID
+	}
+	if at := latestActualMessageAt(task); !at.IsZero() {
+		item.LastMessageAt = at.Format(time.RFC3339Nano)
+	}
 	return item
+}
+
+func latestActualMessageAt(task *agentsv1alpha1.Task) time.Time {
+	latest := task.CreationTimestamp.Time
+	if task.Status.LastMessageAt != nil && task.Status.LastMessageAt.Time.After(latest) {
+		latest = task.Status.LastMessageAt.Time
+	}
+	for _, message := range task.Status.Conversation {
+		if message.Role != "user" && message.Role != "external" && message.Role != "agent" {
+			continue
+		}
+		if message.CreatedAt.Time.After(latest) {
+			latest = message.CreatedAt.Time
+		}
+	}
+	return latest
 }
 
 func (e *Events) publishTask(obj any) {

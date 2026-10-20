@@ -1,0 +1,35 @@
+# Discord webhook events are one-way. Interaction commands need a different
+# synchronous response preset and are outside this example.
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterWebhookReceiver
+metadata:
+  name: discord-events
+spec:
+  verification:
+    algorithm: ed25519
+    keyEncoding: hex
+    signature:
+      header: x-signature-ed25519
+      encoding: hex
+    signedBytesCEL: "bytes(headers['x-signature-timestamp']) + rawBody"
+  event:
+    requiredHeaders:
+      - x-signature-ed25519
+      - x-signature-timestamp
+    acceptCEL: "string(body.application_id) == binding.match.applicationID"
+    eventsCEL: >-
+      body.type == 1 && has(body.event) ? [{
+        'source': 'discord',
+        'deliveryID': sha256Hex(rawBody),
+        'type': body.event.type,
+        'actor': has(body.event.data) && has(body.event.data.author) &&
+          has(body.event.data.author.username) ? body.event.data.author.username : 'Discord',
+        'text': has(body.event.data) && has(body.event.data.content) ?
+          body.event.data.content : body.event.type
+      }] : []
+  response:
+    rules:
+      - whenCEL: body.type == 0
+        status: 204
+        contentType: application/json
+    defaultStatus: 204

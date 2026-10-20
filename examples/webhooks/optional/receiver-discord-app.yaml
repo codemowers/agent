@@ -1,0 +1,20 @@
+# The key named discord-public-key is an Ed25519 public key in hex form.
+apiVersion: codemowers.cloud/v1alpha1
+kind: WebhookReceiver
+metadata:
+  name: discord-app
+  namespace: codemowers-agent-system
+spec:
+  sourceRef:
+    kind: ClusterWebhookReceiver
+    name: discord-events
+  agentRef: matmlazi
+  match:
+    applicationID: "123456789012345678"
+  verificationKeyRef:
+    name: agent-operator-webhook-keys
+    key: discord-public-key
+  routing:
+    existingTask: exactKey
+    otherwise:
+      taskRef: communications

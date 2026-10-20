@@ -1,9 +1,14 @@
 node_modules/
 .go-build/
+/operator/.local-go-cache/
+/operator/.local-go-tmp/
+/webhook/.local-go-cache/
+/webhook/.local-go-tmp/
 .tmp/
-public/
+/public/
 skaffold.env
 skaffold.*.env
+/local-cluster/
 /mcp.json
 /identity.env
 /mail.env
@@ -14,3 +19,4 @@ artifacts.json
 *.swp
 *.swo
 *~
+specs/

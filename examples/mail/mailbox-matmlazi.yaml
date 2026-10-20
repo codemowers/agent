@@ -1,0 +1,29 @@
+# Installed in codemowers-agent-system. This uses the previous controller mail
+# settings and references its credential Secrets without copying their values.
+apiVersion: codemowers.cloud/v1alpha1
+kind: Mailbox
+metadata:
+  name: matmlazi-mail
+  namespace: codemowers-agent-system
+spec:
+  address: matmlazi@codemowers.io
+  displayName: Mat Mlazi
+  imap:
+    host: mail.codemowers.io
+    port: 993
+    tls: auto
+    folder: INBOX
+    credentialsSecretRef:
+      name: agent-controller-imap-credentials
+      usernameKey: IMAP_USERNAME
+      passwordKey: IMAP_PASSWORD
+  smtp:
+    host: mail.codemowers.io
+    port: 465
+    tls: auto
+    sentCopy:
+      enabled: true
+    credentialsSecretRef:
+      name: agent-controller-smtp-credentials
+      usernameKey: SMTP_USERNAME
+      passwordKey: SMTP_PASSWORD

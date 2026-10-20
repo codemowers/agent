@@ -1,0 +1,25 @@
+# Adds to the Argo-managed monitoring/alertmanager policy; NetworkPolicies are
+# additive. Its ipBlock egress rules do not match in-cluster Pods under Cilium.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alertmanager-agent-webhook
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: alertmanager
+      app.kubernetes.io/name: alertmanager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: codemowers-agent-system
+          podSelector:
+            matchLabels:
+              app: agent-operator-webhook
+      ports:
+        - protocol: TCP
+          port: 8083

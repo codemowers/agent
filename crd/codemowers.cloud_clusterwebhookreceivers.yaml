@@ -1,0 +1,117 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusterwebhookreceivers.codemowers.cloud
+spec:
+  group: codemowers.cloud
+  scope: Cluster
+  names:
+    plural: clusterwebhookreceivers
+    singular: clusterwebhookreceiver
+    kind: ClusterWebhookReceiver
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - verification
+                - event
+              properties:
+                verification:
+                  type: object
+                  required:
+                    - algorithm
+                  properties:
+                    algorithm:
+                      type: string
+                      enum:
+                        - hmacSha256
+                        - ed25519
+                        - bearer
+                        - none
+                    keyEncoding:
+                      type: string
+                      enum:
+                        - utf8
+                        - hex
+                    signature:
+                      type: object
+                      properties:
+                        header:
+                          type: string
+                        prefix:
+                          type: string
+                        encoding:
+                          type: string
+                          enum:
+                            - hex
+                            - base64
+                    signedBytesCEL:
+                      type: string
+                      maxLength: 4096
+                    freshness:
+                      type: object
+                      required:
+                        - timestampHeader
+                        - maxSkew
+                      properties:
+                        timestampHeader:
+                          type: string
+                        maxSkew:
+                          type: string
+                event:
+                  type: object
+                  required:
+                    - eventsCEL
+                  properties:
+                    requiredHeaders:
+                      type: array
+                      maxItems: 32
+                      items:
+                        type: string
+                    acceptCEL:
+                      type: string
+                      maxLength: 8192
+                    eventsCEL:
+                      type: string
+                      maxLength: 16384
+                response:
+                  type: object
+                  properties:
+                    status:
+                      type: integer
+                      minimum: 200
+                      maximum: 299
+                    defaultStatus:
+                      type: integer
+                      minimum: 200
+                      maximum: 299
+                    rules:
+                      type: array
+                      maxItems: 8
+                      items:
+                        type: object
+                        required:
+                          - whenCEL
+                          - status
+                        properties:
+                          whenCEL:
+                            type: string
+                            maxLength: 4096
+                          status:
+                            type: integer
+                            minimum: 200
+                            maximum: 299
+                          contentType:
+                            type: string
+                          bodyCEL:
+                            type: string
+                            maxLength: 4096

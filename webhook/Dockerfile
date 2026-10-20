@@ -1,10 +1,10 @@
-FROM golang:1.23-bookworm AS build
+FROM golang:1.27.3-trixie AS build
 WORKDIR /app
 COPY go.mod go.sum* ./
 ENV GOFLAGS=-mod=mod GONOSUMDB=*
 RUN go mod download
 COPY *.go ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 \
     go build -trimpath -ldflags="-s -w" -o /webhook .
 
 FROM scratch AS runtime

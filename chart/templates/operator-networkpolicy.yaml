@@ -21,3 +21,35 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: codemowers.cloud/task
+                operator: Exists
+              - key: codemowers.cloud/agent
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 8083
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-mailbox
+spec:
+  # Only workers reach the Mailbox MCP; IMAP and SMTP APIs stay on loopback.
+  podSelector:
+    matchLabels:
+      app: agent-mailbox
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: codemowers.cloud/task
+                operator: Exists
+              - key: codemowers.cloud/agent
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 8080

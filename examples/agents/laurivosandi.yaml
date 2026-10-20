@@ -1,0 +1,75 @@
+apiVersion: codemowers.cloud/v1alpha1
+kind: Agent
+metadata:
+  name: laurivosandi
+  namespace: codemowers-agent-system
+  annotations:
+    kubernetes.io/description: "Agent for laurivosandi; no Kubernetes API access"
+spec:
+  idleSeconds: 3600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+  template:
+    spec:
+      serviceAccountName: agent-worker-laurivosandi
+      containers:
+      - name: worker
+        securityContext:
+          readOnlyRootFilesystem: false
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+        env:
+          - name: PATH
+            value: /opt/tools/kubectl/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: cache
+            mountPath: /home/user/.cache
+          - name: kubectl
+            mountPath: /opt/tools/kubectl
+            readOnly: true
+      volumes:
+        - name: kubectl
+          image:
+            reference: registry.k8s.io/kubectl:v1.36.3
+            pullPolicy: IfNotPresent
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: sqlite
+        resources:
+          requests:
+            storage: 20Gi
+    - metadata:
+        name: cache
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: sqlite
+        resources:
+          requests:
+            storage: 5Gi
+  model:
+    backend: claude
+    credentialKeyRef: anthropic
+  gitProviders:
+    - type: github
+      serverURL: https://github.com
+      credentialKeyRef: laurivosandi-github
+    - type: gitea
+      serverURL: https://git.codemowers.io
+      credentialKeyRef: laurivosandi-gitea
+  mcpEndpoints:
+    - name: codemowers
+      url: https://mcp.codemowers.io/mcp
+      siteURL: https://mcp.codemowers.io
+    - name: driftmower
+      url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
+      tokenFile: /var/run/agent-mcp/driftmower

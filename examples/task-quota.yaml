@@ -1,0 +1,36 @@
+# Hard limit: the API server rejects Task creation at 1000 Tasks, including
+# completed Tasks that have not been deleted.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tasks
+  namespace: codemowers-agent-system
+spec:
+  hard:
+    count/tasks.codemowers.cloud: "1000"
+---
+# Soft limit: alert well before Task creation starts failing.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: task-quota
+  namespace: codemowers-agent-system
+spec:
+  groups:
+    - name: task-quota
+      rules:
+        - alert: AgentTaskQuotaNearlyFull
+          expr: |
+            kube_resourcequota{resource="count/tasks.codemowers.cloud", type="used"}
+              / ignoring(type)
+            kube_resourcequota{resource="count/tasks.codemowers.cloud", type="hard"}
+              >= 0.5
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              {{ $labels.namespace }} uses {{ $value | humanizePercentage }} of its Task quota
+            description: >-
+              Task creation fails at the ResourceQuota limit. Complete and delete
+              finished Tasks or raise the quota.

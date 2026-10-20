@@ -56,31 +56,39 @@ spec:
               suspended:
                 description: Suspended makes newly created Tasks start suspended. Existing Tasks keep their own suspend state.
                 type: boolean
-              access:
-                description: |-
-                  Access is reserved for future use. Authorization currently ignores it and
-                  checks Kubernetes Agent get rights instead.
-                properties:
-                  groups:
-                    description: Groups is a list of OIDC group names (e.g. "github.com:codemowers:admins").
-                    items:
-                      type: string
-                    type: array
-                  subjects:
-                    description: Subjects is a list of individual OIDC subjects, typically
-                      email addresses.
-                    items:
-                      type: string
-                    type: array
+              idleSeconds:
+                description: Worker idle timeout copied into new Tasks; absent means 3600 seconds.
+                type: integer
+                format: int32
+                minimum: 0
+                maximum: 86400
+              resources:
+                description: Worker container requests and limits copied into new Tasks.
                 type: object
+                properties:
+                  requests:
+                    type: object
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      x-kubernetes-int-or-string: true
+                  limits:
+                    type: object
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      x-kubernetes-int-or-string: true
               gitProviders:
                 description: GitProviders lists git server credentials available to
                   workers.
                 items:
                   properties:
-                    credentialSecretRef:
-                      description: CredentialSecretRef names a secret (agent-cred-*
-                        prefix) with a `token` key.
+                    credentialKeyRef:
+                      pattern: '^[A-Za-z0-9._-]{1,253}$'
+                      description: CredentialKeyRef selects a token in the namespace's
+                        agent-operator-provider-tokens Secret.
                       type: string
                     serverURL:
                       type: string
@@ -90,34 +98,21 @@ spec:
                       - gitea
                       type: string
                   required:
-                  - credentialSecretRef
+                  - credentialKeyRef
                   - serverURL
                   - type
                   type: object
                 type: array
-              githubWebhooks:
-                description: GitHub hook subscriptions with same-namespace signing Secrets.
-                type: array
-                x-kubernetes-list-type: map
-                x-kubernetes-list-map-keys: [serverURL, hookID]
-                items:
-                  type: object
-                  properties:
-                    serverURL:
-                      type: string
-                      pattern: '^https://'
-                    hookID:
-                      type: string
-                      pattern: '^[0-9]+$'
-                    secretRef:
-                      type: string
-                  required: [serverURL, hookID, secretRef]
               mcpEndpoints:
-                description: MCPEndpoints lists MCP servers available to workers.
+                description: MCPEndpoints lists MCP servers available to workers, keyed by name.
+                maxItems: 30
                 items:
                   properties:
                     name:
+                      description: Name identifies the server in CLI tool names, probe results and Task.spec.disabledMCPs.
                       type: string
+                      maxLength: 64
+                      pattern: '^[A-Za-z0-9_-]+$'
                     siteURL:
                       type: string
                     tokenFile:
@@ -125,9 +120,16 @@ spec:
                     url:
                       type: string
                   required:
+                  - name
                   - url
                   type: object
+                  x-kubernetes-validations:
+                  - rule: "!(self.name in ['agent_operator', 'devices']) && !self.name.startsWith('mailbox-')"
+                    message: agent_operator, devices and mailbox-* are provided by the operator
                 type: array
+                x-kubernetes-list-type: map
+                x-kubernetes-list-map-keys:
+                - name
               model:
                 description: Model selects the AI backend and its credential secret.
                 properties:
@@ -137,39 +139,18 @@ spec:
                     - claude
                     - codex
                     type: string
-                  credentialSecretRef:
-                    description: CredentialSecretRef is the secret name (agent-cred-*
-                      prefix) holding the API key.
+                  credentialKeyRef:
+                    pattern: '^[A-Za-z0-9._-]{1,253}$'
+                    description: CredentialKeyRef selects an API key in the namespace's
+                      agent-operator-provider-tokens Secret.
                     type: string
                   name:
                     description: Name is the provider model identifier. Empty uses the CLI default.
                     type: string
                 required:
                 - backend
-                - credentialSecretRef
+                - credentialKeyRef
                 type: object
-              slackWorkspaces:
-                description: |-
-                  SlackWorkspaces lists Slack workspaces the controller can read/write.
-                  Credentials are controller-only (agent-ctrl-* prefix).
-                items:
-                  properties:
-                    botTokenSecretRef:
-                      description: BotTokenSecretRef names an agent-ctrl-* secret
-                        with the bot OAuth token.
-                      type: string
-                    signingSecretRef:
-                      description: SigningSecretRef names an agent-hook-* secret for
-                        request verification.
-                      type: string
-                    workspaceId:
-                      type: string
-                  required:
-                  - botTokenSecretRef
-                  - signingSecretRef
-                  - workspaceId
-                  type: object
-                type: array
               template:
                 description: |-
                   Template is the pod template for worker pods, identical in structure to
@@ -178,7 +159,7 @@ spec:
                     - deep-copies template and appends workspace PVC and credential volumes
                     - supplies task, model and broker environment to the container named worker
                     - enforces restartPolicy=Never and hostUsers=false
-                    - defaults serviceAccountName to "agent-worker" when empty
+                    - defaults serviceAccountName to "agent-worker-<Agent name>" when empty
                 properties:
                   metadata:
                     description: |-
@@ -8524,6 +8505,44 @@ spec:
             type: object
           status:
             properties:
+              forges:
+                type: array
+                items:
+                  type: object
+                  required: [type, serverURL, status]
+                  properties:
+                    type: {type: string}
+                    serverURL: {type: string}
+                    status: {type: string}
+                    detail: {type: string}
+                    login: {type: string}
+                    repositoryCount: {type: integer}
+                    clipped: {type: boolean}
+                    repositories:
+                      type: array
+                      items:
+                        type: object
+                        required: [name, url]
+                        properties:
+                          name: {type: string}
+                          url: {type: string}
+                          writable: {type: boolean}
+                          archived: {type: boolean}
+                          private: {type: boolean}
+                    destinations:
+                      type: array
+                      items:
+                        type: object
+                        required: [owner, kind, policy, tokenPermission, url]
+                        properties:
+                          owner: {type: string}
+                          kind: {type: string}
+                          policy: {type: string}
+                          tokenPermission: {type: string}
+                          role: {type: string}
+                          url: {type: string}
+              forgesCheckedAt: {type: string, format: date-time}
+              forgesObservedGeneration: {type: integer, format: int64}
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

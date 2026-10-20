@@ -1,0 +1,47 @@
+# Mailbox Pods run as agent-mailbox. Only their mcp container receives its
+# token, which may only review worker tokens and their access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-mailbox
+  namespace: codemowers-agent-system
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: codemowers-agent-system-agent-mailbox-auth
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: agent-mailbox
+    namespace: codemowers-agent-system
+---
+# send permits send_email; read permits listing and reading messages in every folder.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mailbox-matmlazi-mail
+  namespace: codemowers-agent-system
+rules:
+  - apiGroups: [codemowers.cloud]
+    resources: [mailboxes]
+    resourceNames: [matmlazi-mail]
+    verbs: [send, read]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mailbox-matmlazi-mail
+  namespace: codemowers-agent-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mailbox-matmlazi-mail
+subjects:
+  - kind: ServiceAccount
+    name: agent-worker-matmlazi
+    namespace: codemowers-agent-system

@@ -1,0 +1,12 @@
+# Mittwald adds only this key to the existing shared Secret. Keep its other
+# sender keys intact; do not replace the Secret's data.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-operator-webhook-keys
+  namespace: codemowers-agent-system
+  annotations:
+    secret-generator.v1.mittwald.de/autogenerate: gitea-laurivosandi
+    secret-generator.v1.mittwald.de/encoding: hex
+    secret-generator.v1.mittwald.de/length: "64"
+type: Opaque

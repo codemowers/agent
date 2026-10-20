@@ -1,0 +1,183 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mailboxes.codemowers.cloud
+spec:
+  group: codemowers.cloud
+  scope: Namespaced
+  names:
+    plural: mailboxes
+    singular: mailbox
+    kind: Mailbox
+    listKind: MailboxList
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Address
+          type: string
+          jsonPath: .spec.address
+        - name: IMAP
+          type: string
+          jsonPath: .status.imap.state
+        - name: SMTP
+          type: string
+          jsonPath: .status.smtp.state
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [address]
+              x-kubernetes-validations:
+                - rule: has(self.imap) || has(self.smtp)
+                  message: At least one of imap or smtp is required
+                - rule: '!has(self.smtp) || !has(self.smtp.sentCopy) || !self.smtp.sentCopy.enabled || has(self.imap)'
+                  message: SMTP Sent copies require IMAP on the same Mailbox
+              properties:
+                address:
+                  description: Public mailbox address, also the default SMTP From and Reply-To address.
+                  type: string
+                  maxLength: 254
+                displayName:
+                  description: Sender name shown by the mail MCP alongside the address.
+                  type: string
+                  maxLength: 120
+                imap:
+                  type: object
+                  required: [host, credentialsSecretRef]
+                  properties:
+                    host:
+                      type: string
+                      minLength: 1
+                    port:
+                      type: integer
+                      minimum: 1
+                      maximum: 65535
+                      default: 993
+                    tls:
+                      description: Auto uses implicit TLS on port 993 and required STARTTLS on other ports.
+                      type: string
+                      enum: [auto, implicit, starttls, disabled]
+                      default: auto
+                    folder:
+                      type: string
+                      default: INBOX
+                    sentFolder:
+                      description: Optional explicit Sent folder; absent means discover the unique Sent-role folder.
+                      type: string
+                    credentialsSecretRef:
+                      type: object
+                      required: [name, usernameKey, passwordKey]
+                      properties:
+                        name:
+                          type: string
+                        usernameKey:
+                          type: string
+                        passwordKey:
+                          type: string
+                smtp:
+                  type: object
+                  required: [host, credentialsSecretRef]
+                  properties:
+                    host:
+                      type: string
+                      minLength: 1
+                    port:
+                      type: integer
+                      minimum: 1
+                      maximum: 65535
+                      default: 465
+                    tls:
+                      description: Auto uses implicit TLS on port 465 and required STARTTLS on other ports.
+                      type: string
+                      enum: [auto, implicit, starttls, disabled]
+                      default: auto
+                    fromAddress:
+                      description: Overrides spec.address as the SMTP From address.
+                      type: string
+                      maxLength: 254
+                    replyTo:
+                      description: Overrides the default Reply-To address.
+                      type: string
+                      maxLength: 254
+                    sentCopy:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: false
+                    credentialsSecretRef:
+                      type: object
+                      required: [name, usernameKey, passwordKey]
+                      properties:
+                        name:
+                          type: string
+                        usernameKey:
+                          type: string
+                        passwordKey:
+                          type: string
+            status:
+              type: object
+              properties:
+                imap:
+                  type: object
+                  properties:
+                    state:
+                      type: string
+                      enum: [pending, connected, disconnected, error]
+                    cursor:
+                      description: Advance only after durable event publication; retries may replay messages.
+                      type: object
+                      required: [folder, uidValidity, lastUID]
+                      properties:
+                        folder:
+                          type: string
+                        uidValidity:
+                          type: integer
+                          format: int64
+                          minimum: 0
+                        lastUID:
+                          type: integer
+                          format: int64
+                          minimum: 0
+                    lastCheckedAt:
+                      type: string
+                      format: date-time
+                    lastReceivedAt:
+                      type: string
+                      format: date-time
+                smtp:
+                  type: object
+                  properties:
+                    state:
+                      type: string
+                      enum: [pending, ready, disconnected, error]
+                    lastSentAt:
+                      type: string
+                      format: date-time
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+                  items:
+                    type: object
+                    required: [type, status, reason, message, lastTransitionTime]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ['True', 'False', Unknown]
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+      subresources:
+        status: {}

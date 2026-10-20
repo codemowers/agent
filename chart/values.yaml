@@ -7,12 +7,27 @@ imageRegistry: "ghcr.io/codemowers"
 # workerImage: short name without registry; imageRegistry is prepended.
 workerImage: "agent"
 
+mailbox:
+  image: agent-mailbox
+
+deviceBridge:
+  image: agent-devices
+  resources:
+    requests:
+      memory: 32Mi
+      cpu: 10m
+    limits:
+      memory: 128Mi
+      cpu: 200m
+
 # bootstrapRbac: apply Roles, ClusterRoles and bindings (ServiceAccounts always exist).
 # Requires cluster-admin or namespace-admin. Set false when deploying from
 # a worker pod that lacks RBAC write permissions; apply RBAC separately first.
 bootstrapRbac: true
 
 webhook:
+  # Full public origin displayed in the UI's webhook setup instructions.
+  publicOrigin: ""
   image: agent-webhook
   # host: short hostname for the webhook ingress (admission expands it).
   host: webhook
@@ -27,7 +42,7 @@ webhook:
 operator:
   image: agent-operator
   # host: short hostname for the dashboard (admission expands it).
-  host: sloperator
+  host: dashboard
   apiResource: ""
   ingressNamespace: traefik
   resources:
@@ -39,7 +54,14 @@ operator:
       cpu: 200m
 
 rabbitmq:
-  enabled: true
-  # Existing cluster name when enabled=false; its durable queues are retained.
-  existingName: ""
+  # RabbitmqCluster name, <release>-events when empty. Its topology objects are
+  # named after it, so pointing this at an existing cluster adopts its queues.
+  name: ""
   storage: 10Gi
+  # Signing keys of the cluster's ServiceAccount issuer, which workers' broker
+  # tokens are verified against. RabbitMQ requires HTTPS. EKS publishes them
+  # at the public issuer's /keys URL, verified with system CAs (empty
+  # jwksCACertFile); k3s serves them from the API server once anonymous
+  # discovery is allowed.
+  jwksURI: https://kubernetes.default.svc.cluster.local/openid/v1/jwks
+  jwksCACertFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt

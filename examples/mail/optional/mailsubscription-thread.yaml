@@ -1,0 +1,21 @@
+# Draft generic mail thread subscription; no forge-specific parsing is needed.
+apiVersion: codemowers.cloud/v1alpha1
+kind: MailSubscription
+metadata:
+  name: support-threads
+  namespace: example
+spec:
+  mailboxRef: support
+  agentRef: support
+  match:
+    exceptFromAddresses: [support@example.test]
+    headers:
+      - name: Message-ID
+        pattern: '^<[^<>]+>$'
+  event:
+    type: mail_message
+    actor: '${mail.fromAddress}'
+    text: New mail in support thread
+    key: [mail, support, '${mail.threadRootMessageID}']
+  routing:
+    existingTask: exactKey

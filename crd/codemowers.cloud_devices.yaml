@@ -1,0 +1,67 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: devices.codemowers.cloud
+spec:
+  group: codemowers.cloud
+  scope: Namespaced
+  names:
+    plural: devices
+    singular: device
+    kind: Device
+    listKind: DeviceList
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Connected
+          type: boolean
+          jsonPath: .status.connected
+        - name: Hostname
+          type: string
+          jsonPath: .status.hostname
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [connectionSecretRef]
+              properties:
+                displayName:
+                  type: string
+                  maxLength: 100
+                connectionSecretRef:
+                  description: One key in the namespace's fixed agent-device-keys Secret. Its value is a 32-character lowercase hex bearer key used by device-agent in the WebSocket URL.
+                  type: object
+                  required: [name, key]
+                  properties:
+                    name:
+                      type: string
+                      enum: [agent-device-keys]
+                    key:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                      pattern: '^[A-Za-z0-9._-]+$'
+            status:
+              type: object
+              properties:
+                connected:
+                  type: boolean
+                hostname:
+                  type: string
+                  maxLength: 100
+                version:
+                  type: string
+                  maxLength: 40
+                connectedAt:
+                  type: string
+                  format: date-time
+                lastSeenAt:
+                  type: string
+                  format: date-time

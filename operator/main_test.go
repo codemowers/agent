@@ -20,3 +20,9 @@ func TestBuildAMQPURLEscapesCredentialsAndVhost(t *testing.T) {
 		t.Fatalf("invalid broker URL encoding: %s", u.Redacted())
 	}
 }
+
+func TestWorkerAMQPURLDropsCredentials(t *testing.T) {
+	if got := workerAMQPURL("amqp://admin:secret@broker.ns.svc:5672/%2F"); got != "amqp://broker.ns.svc:5672/%2F" {
+		t.Fatalf("worker URL carries credentials or lost vhost: %s", got)
+	}
+}

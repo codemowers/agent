@@ -5,9 +5,11 @@
 # caller's Agent get permission with a SubjectAccessReview; spec.access is ignored.
 #
 # Worker ServiceAccounts:
-#   agent-operator-worker          (matmlazi/developer): namespaced workloads + platform CRDs
-#   agent-operator-worker-readonly (patpalouk/support): no Kubernetes API token
-#   agent-operator-worker-admin    (krtek/admin): ClusterRoleBinding to cluster-admin
+# One ServiceAccount per Agent, named agent-worker-<Agent>:
+#   agent-worker-matmlazi     (developer): namespaced workloads + platform CRDs
+#   agent-worker-laurivosandi: no Kubernetes API token; see agents/laurivosandi-rbac.yaml
+#   agent-worker-patpalouk    (support): no Kubernetes API token
+#   agent-worker-krtek        (admin): ClusterRoleBinding to cluster-admin
 #
 # Apply: kubectl apply -f examples/rbac.yaml
 ---
@@ -30,19 +32,23 @@ rules:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: agent-operator-worker
+  name: agent-worker-matmlazi
   namespace: codemowers-agent-system
 ---
-# Developer gets full control over approved namespaced resources in their
-# own namespace. ClusterRole so it can be reused across namespaces later.
+# Developer gets full control over approved namespaced resources in its
+# namespace, but no Secrets: the namespace also holds harness and other Agents'
+# credentials. The cluster's agent-worker-prefix admission policy confines its
+# writes, exec, ServiceAccounts, Secret references and PVC mounts to
+# matmlazi-* resources, so it can share a namespace with the harness.
+# ClusterRole so it can be reused in other namespaces.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: agent-operator-worker-developer
+  name: agent-worker-developer
 rules:
   # Core workload types
   - apiGroups: [""]
-    resources: [pods, services, configmaps, secrets, persistentvolumeclaims,
+    resources: [pods, services, configmaps, persistentvolumeclaims,
                 serviceaccounts, events]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [apps]
@@ -58,11 +64,14 @@ rules:
     resources: [horizontalpodautoscalers]
     verbs: [get, list, watch, create, update, patch, delete]
   # Platform CRDs — OIDC, object storage, databases, caches, messaging
-  - apiGroups: [oidc.codemowers.cloud]
-    resources: ["*"]
+  - apiGroups: [codemowers.cloud]
+    resources: [oidcclients]
     verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [s3.codemowers.cloud]
-    resources: ["*"]
+  - apiGroups: [traefik.io]
+    resources: [serverstransports]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [s3.onyxia.sh]
+    resources: [buckets, paths, policies, s3users]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [postgresql.cnpg.io]
     resources: ["*"]
@@ -73,13 +82,13 @@ rules:
   - apiGroups: [rabbitmq.com]
     resources: ["*"]
     verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [redpanda.vectorized.io]
+  - apiGroups: [cluster.redpanda.com]
     resources: ["*"]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [opensearch.opster.io]
     resources: ["*"]
     verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [emqx.io]
+  - apiGroups: [apps.emqx.io]
     resources: ["*"]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [mongodbcommunity.mongodb.com]
@@ -107,25 +116,52 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: agent-operator-worker-developer
+  name: agent-worker-matmlazi-developer
   namespace: codemowers-agent-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: agent-operator-worker-developer
+  name: agent-worker-developer
 subjects:
   - kind: ServiceAccount
-    name: agent-operator-worker
+    name: agent-worker-matmlazi
+    namespace: codemowers-agent-system
+---
+# Skaffold checks that the Kaniko push Secret exists before mounting it in the
+# builder Pod; the kubelet mounts it without further RBAC.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-worker-kaniko-push
+  namespace: codemowers-agent-system
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [zot-registry-cluster-push-kaniko]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-worker-matmlazi-kaniko-push
+  namespace: codemowers-agent-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-worker-kaniko-push
+subjects:
+  - kind: ServiceAccount
+    name: agent-worker-matmlazi
     namespace: codemowers-agent-system
 ---
 # ── patpalouk: customer support SA ───────────────────────────────────────────
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: agent-operator-worker-readonly
+  name: agent-worker-patpalouk
   namespace: codemowers-agent-system
   annotations:
-    codemowers.cloud/description: "No Kubernetes API access; token mount disabled."
+    kubernetes.io/description: "No Kubernetes API access; token mount disabled."
 # Disable automatic SA token projection — pod gets no in-cluster credentials.
 automountServiceAccountToken: false
 # No RoleBinding or ClusterRoleBinding intentionally.
@@ -135,18 +171,18 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: agent-operator-worker-admin
+  name: agent-worker-krtek
   namespace: codemowers-agent-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: agent-operator-worker-admin-cluster-admin
+  name: agent-worker-krtek-cluster-admin
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: cluster-admin
 subjects:
   - kind: ServiceAccount
-    name: agent-operator-worker-admin
+    name: agent-worker-krtek
     namespace: codemowers-agent-system

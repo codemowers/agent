@@ -1,0 +1,9 @@
+{
+  "name": "agent-runner-clis",
+  "private": true,
+  "description": "Coding CLIs preinstalled in the worker image",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.304",
+    "@openai/codex": "0.163.0"
+  }
+}

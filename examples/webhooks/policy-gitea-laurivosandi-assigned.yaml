@@ -1,0 +1,16 @@
+# Apply after Gitea issues laurivosandi an API token and the Agent references
+# its key in agent-operator-provider-tokens. The webhook signing key is separate.
+apiVersion: codemowers.cloud/v1alpha1
+kind: TaskCreationPolicy
+metadata:
+  name: gitea-laurivosandi-assigned
+  namespace: codemowers-agent-system
+spec:
+  agentRef: laurivosandi
+  receiverRef: gitea-laurivosandi
+  keyPrefix:
+    - external
+    - forge
+    - gitea
+    - https://git.codemowers.io
+  check: currentForgeAssignment

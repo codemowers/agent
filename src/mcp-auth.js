@@ -4,18 +4,6 @@ import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import {agentFetch} from './http.js';
 
-export const driftmowerTokenProjection = {
-  audience: 'http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp',
-  expirationSeconds: 3600, path: 'driftmower',
-};
-
-export async function readMcpConfig(path = process.env.AGENT_MCP_CONFIG_FILE || '/mcp/mcp.json') {
-  let content;
-  try { content = await readFile(path, 'utf8'); }
-  catch (error) { if (error.code === 'ENOENT') return {mcpServers: {}}; throw error; }
-  return JSON.parse(content);
-}
-
 export async function mcpRequest(server, options = {}, request = agentFetch) {
   const headers = {...server.headers, ...options.headers};
   if (server.tokenFile) {

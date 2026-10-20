@@ -11,14 +11,20 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// PromptMessage is the wire format for messages published to task queues.
+// PromptMessage is the wire format for prompts and runtime configuration.
 type PromptMessage struct {
 	// Type is "objective" for the initial task objective or "event" for follow-up events.
-	Type       string `json:"type"`
-	Body       string `json:"body"`
-	RoutingKey string `json:"routingKey,omitempty"`
-	MessageID  string `json:"messageId,omitempty"`
-	ReceivedAt int64  `json:"receivedAt,omitempty"`
+	Type        string `json:"type"`
+	Body        string `json:"body"`
+	RoutingKey  string `json:"routingKey,omitempty"`
+	MessageID   string `json:"messageId,omitempty"`
+	PodUID      string `json:"podUid,omitempty"`
+	ReceivedAt  int64  `json:"receivedAt,omitempty"`
+	Generation  int64  `json:"generation,omitempty"`
+	IdleSeconds *int32 `json:"idleSeconds,omitempty"`
+	Model       string `json:"model"`
+	// DisabledMCPs is sent with every runtime configuration message.
+	DisabledMCPs []string `json:"disabledMcps,omitempty"`
 }
 
 // Manager holds a lazily-established, auto-reconnecting AMQP connection.
@@ -71,6 +77,23 @@ func (m *Manager) DeclareQueue(name string) error {
 	}
 	defer ch.Close()
 	_, err = ch.QueueDeclare(name, true, false, false, false, nil)
+	return err
+}
+
+// ProbeQueue names the short-lived control queue for one worker incarnation.
+func ProbeQueue(taskQueue, podUID string) string {
+	return taskQueue + ".mcp-probe." + podUID
+}
+
+// DeclareProbeQueue creates a non-durable queue that expires after the worker
+// disappears, including when a Pod exits without cleaning up its queue.
+func (m *Manager) DeclareProbeQueue(name string) error {
+	ch, err := m.channel()
+	if err != nil {
+		return err
+	}
+	defer ch.Close()
+	_, err = ch.QueueDeclare(name, false, false, false, false, amqp.Table{"x-expires": int32(86400000)})
 	return err
 }
 

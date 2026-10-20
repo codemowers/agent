@@ -1,0 +1,1363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>codemowers/agent</title>
+<style>
+:root { --background: #101916; --surface: #17251f; --raised: #1e3227; --hover: #2a4935; --line: #365e44; --muted: #91ad9a; --text: #d2e4d8; --bright: #e9f4ed; --accent: #79c995; color-scheme: dark; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; height: 100dvh; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); font: 14px/1.55 system-ui, sans-serif; color: var(--text); background: var(--background); }
+button, select, input, textarea { font: inherit; }
+button { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; background: var(--raised); color: var(--text); cursor: pointer; }
+button:hover { background: var(--hover); }
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible, .task-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+select, input, textarea { display: block; width: 100%; background: var(--background); border: 1px solid var(--line); border-radius: 8px; color: var(--bright); padding: 10px 12px; }
+textarea { resize: vertical; }
+
+/* Navigation */
+header { min-height: 68px; display: flex; align-items: center; gap: 14px; padding: 10px 24px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.brand { min-width: 0; color: var(--bright); font-size: 19px; font-weight: 750; letter-spacing: -.7px; line-height: 1.2; }
+.brand-name { white-space: nowrap; }
+.brand span { color: var(--accent); }
+.brand-details { max-width: min(62vw, 720px); line-height: 1.35; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.brand-details small { font-size: 11px; font-weight: 400; letter-spacing: 0; color: var(--muted); }
+.brand-details .tagline::before { content: '·' / ''; padding: 0 5px; }
+.active-agent { flex: 0 1 260px; min-width: 130px; margin-left: auto; }
+.active-agent select { width: 100%; padding: 7px 10px; font-size: 12px; }
+.identity { margin-left: auto; display: flex; align-items: center; gap: 9px; min-width: 0; padding: 4px 7px; border-color: transparent; background: transparent; color: var(--bright); font-size: 12px; }
+.active-agent + .identity { margin-left: 0; }
+.identity:hover { background: var(--hover); }
+.identity-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: var(--raised); border: 1px solid var(--line); }
+#authStatus { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.nav-toggle, .sidebar-close, .sidebar-backdrop { display: none; }
+main { min-height: 0; display: grid; grid-template-columns: var(--sidebar-width, clamp(30em, 30vw, 35em)) 6px minmax(0, 1fr); }
+aside { grid-column: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; background: var(--surface); }
+#sidebarResize { grid-column: 2; grid-row: 1; cursor: col-resize; touch-action: none; background: var(--line); }
+#sidebarResize:hover, #sidebarResize:focus-visible { background: var(--accent); outline: none; }
+.sidebar-resizing, .sidebar-resizing * { cursor: col-resize !important; user-select: none !important; }
+section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 22px 20px 8px; }
+.sidebar-head h2 { margin: 0; font-size: 16px; font-weight: 600; color: var(--bright); }
+.sidebar-actions { display: flex; gap: 8px; }
+.sidebar-agent-slot { display: none; }
+.btn-primary, .btn-send { background: var(--accent); color: #102018; border-color: var(--accent); font-weight: 650; }
+.btn-primary:hover, .btn-send:hover { background: #a0ddb4; }
+.btn-danger { background: transparent; border-color: #975d5d; color: #efa7a7; font-size: 12px; }
+.btn-danger:hover { background: #4a2929; }
+.btn-control { font-size: 12px; }
+
+/* Task list */
+.list-head { padding: 20px 20px 8px; color: var(--muted); font: 11px/1.4 ui-monospace, monospace; text-transform: uppercase; letter-spacing: .12em; }
+.task-list { padding: 0 10px 20px; }
+.task-item { border-radius: 8px; padding: 11px 12px; cursor: pointer; border: 1px solid transparent; margin: 3px 0; }
+.task-item:hover { background: var(--hover); }
+.task-item.active { background: var(--raised); border-color: var(--line); }
+.task-name { display: flex; align-items: center; min-width: 0; color: var(--bright); font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.task-meta { font-size: 11px; color: var(--muted); margin: 3px 0 0 18px; overflow-wrap: anywhere; }
+.dot { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; margin-right: 10px; background: var(--line); }
+.dot-running { background: var(--accent); }
+.dot-pending { background: #e5b454; }
+.dot-waiting { background: #83b9cd; }
+.dot-paused { background: #8b9890; }
+.dot-failed { background: #e97878; }
+.dot-completed { background: #64ab7b; }
+.dot.busy { animation: pulse 1.2s ease-in-out infinite; }
+.spinner { display: inline-block; width: 10px; height: 10px; margin-right: 7px; vertical-align: -1px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: .3; } }
+@keyframes typing { 0%, 60%, 100% { opacity: .25; transform: none; } 30% { opacity: 1; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .dot.busy, .spinner, .message.typing .message-body span { animation-duration: 3s; } }
+.empty { margin: 64px auto; max-width: 32rem; padding: 0 24px; text-align: center; color: var(--muted); }
+
+/* New Task */
+.welcome { height: 100%; overflow-y: auto; padding: clamp(24px, 4vw, 56px); }
+.welcome-inner { max-width: 880px; margin: 0 auto; }
+.eyebrow { margin: 0 0 8px; color: var(--accent); font: 11px/1.4 ui-monospace, monospace; letter-spacing: .15em; text-transform: uppercase; }
+.welcome h1 { margin: 0 0 10px; color: var(--bright); font-size: clamp(25px, 3vw, 38px); font-weight: 560; letter-spacing: -.04em; }
+.welcome-description { margin: 0 0 28px; color: var(--muted); }
+.draft-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 26px; }
+.draft-choice { min-height: 90px; padding: 15px; text-align: left; }
+.draft-choice strong { display: block; margin-bottom: 6px; color: var(--bright); }
+.draft-choice small { color: var(--muted); font-size: 11px; }
+.draft-choice.active { border-color: var(--accent); background: var(--hover); }
+.new-task { padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.new-task label { display: block; margin: 0 0 7px; color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.new-task input { margin-bottom: 16px; }
+.new-task textarea { min-height: 180px; margin-bottom: 12px; }
+.model-combobox { position: relative; margin-bottom: 16px; }
+.model-combobox input { margin: 0; padding-right: 46px; }
+.model-combobox > button { position: absolute; top: 1px; right: 1px; bottom: 1px; width: 40px; padding: 0; border: 0; border-left: 1px solid var(--line); border-radius: 0 7px 7px 0; }
+.model-options { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0; max-height: 260px; overflow-y: auto; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); box-shadow: 0 12px 24px #0008; }
+.model-options button { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 5px; background: transparent; text-align: left; }
+.model-options button:hover, .model-options button.active { background: var(--hover); }
+.model-options button small { display: block; color: var(--muted); font-size: 11px; }
+.model-note, .draft-note { margin: -8px 0 14px; color: var(--muted); font-size: 12px; }
+.draft-note { margin: 0 0 16px; }
+.agent-capabilities { margin: 0 0 22px; padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--background); }
+.agent-capabilities h2 { margin: 0 0 8px; color: var(--bright); font-size: 13px; }
+.agent-capabilities h3 { margin: 16px 0 5px; color: var(--bright); font-size: 12px; }
+.capability-summary, .capability-note { margin: 0; color: var(--muted); font-size: 12px; }
+.capability-links { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0; }
+.capability-links a { display: inline-block; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--accent); text-decoration: none; font-size: 12px; }
+.capability-links a:hover { background: var(--hover); }
+.capability-links button { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--background); color: var(--accent); cursor: pointer; font: inherit; font-size: 12px; }
+.capability-links button:hover { background: var(--hover); }
+.capability-links .forge-open { padding: 5px 4px; }
+.webhook-setup { margin: 0 0 22px; padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--background); }
+.webhook-setup h2 { margin: 0 0 8px; color: var(--bright); font-size: 13px; }
+.webhook-setup p { margin: 7px 0; color: var(--muted); font-size: 12px; }
+.webhook-setup strong { color: var(--bright); }
+.webhook-setup a { color: var(--accent); overflow-wrap: anywhere; }
+.webhook-setup .task-command { padding: 6px 0; }
+.webhook-setup .task-command:last-child { border: 0; }
+.webhook-details { margin-top: 8px; }
+.webhook-details summary { width: fit-content; color: var(--accent); cursor: pointer; font-size: 12px; }
+.webhook-details .webhook-setup { margin: 8px 0 0; max-width: 760px; background: var(--surface); }
+.new-task-actions { display: flex; justify-content: flex-end; }
+
+/* Conversation */
+.chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.chat-head { min-height: 76px; padding: 14px 24px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; background: var(--background); }
+.chat-heading { flex: 1 1 100%; min-width: 0; }
+.chat-head h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--bright); overflow-wrap: anywhere; }
+.chat-head-actions { width: 100%; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.mcp-probe { margin-right: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.mcp-probe button { padding: 5px 9px; font-size: 11px; line-height: 1.3; }
+.mcp-probe .available { border-color: #4a7858; background: #203d2b; color: #a9e9bd; }
+.mcp-probe .available:hover { background: #2a5739; }
+.mcp-probe .unavailable, .mcp-probe .failed { border-color: #975d5d; background: #412626; color: #f3b5b5; }
+.mcp-probe .unavailable:hover, .mcp-probe .failed:hover { background: #593131; }
+.mcp-probe .pending, .mcp-probe .idle { color: var(--muted); }
+.mcp-probe .stale { opacity: .55; }
+.mcp-probe .disabled-mcp { color: var(--muted); text-decoration: line-through; }
+.mcp-probe button::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #7d8a82; vertical-align: 0; }
+.mcp-probe .available::before { background: #4ade80; box-shadow: 0 0 4px #4ade80; }
+.mcp-probe .unavailable::before, .mcp-probe .failed::before { background: #f87171; box-shadow: 0 0 4px #f87171; }
+.mcp-probe .pending::before { background: #fbbf24; }
+.task-idle { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.task-references { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.task-references a, .task-references span { color: var(--accent); font-size: 12px; overflow-wrap: anywhere; }
+.task-references a { text-decoration: none; }
+.task-references a:hover { text-decoration: underline; }
+.task-diagnostics { margin-top: 8px; max-width: 760px; }
+.task-diagnostics summary { width: fit-content; color: var(--accent); cursor: pointer; font-size: 12px; }
+.task-diagnostics-content { max-height: min(42vh, 360px); overflow: auto; margin-top: 8px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.task-command { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.task-command:last-child { border-bottom: 0; }
+.task-command-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
+.task-command-head button { padding: 3px 8px; font-size: 11px; }
+.task-command pre { margin: 5px 0 0; overflow-x: auto; color: var(--bright); font: 11px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-history { flex: 1; min-height: 0; overflow-y: auto; padding: 28px 24px; display: flex; flex-direction: column; gap: 18px; }
+.message { width: 100%; min-width: 0; }
+.message.user, .message.external, .message.agent { width: calc(100% - 36px); }
+.message.user, .message.external { align-self: flex-start; }
+.message.agent { align-self: flex-end; }
+.message.system { align-self: center; max-width: 100%; text-align: center; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.message-meta { color: var(--muted); font-size: 11px; margin: 0 4px 5px; }
+.message-source-link { color: inherit; text-decoration: none; }
+.message-source-link:hover { text-decoration: underline; }
+.message-author { color: inherit; text-decoration: none; }
+.message-author:hover { color: var(--bright); text-decoration: underline; }
+.message-meta .avatar { width: 24px; height: 24px; vertical-align: middle; margin-right: 7px; }
+.message-body { white-space: pre-wrap; overflow-wrap: anywhere; padding: 13px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); line-height: 1.6; }
+.message.agent .message-body { background: #20372b; border-color: #4a7858; }
+/* The agent avatar sits beside the bubble, in the space the right-aligned bubble leaves. */
+.message.agent.typing { width: auto; }
+.message.typing .message-body { display: flex; gap: 5px; padding: 14px 16px; }
+.message.typing .message-body span { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: typing 1.2s ease-in-out infinite; }
+.message.typing .message-body span:nth-child(2) { animation-delay: .15s; }
+.message.typing .message-body span:nth-child(3) { animation-delay: .3s; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p, .markdown ul, .markdown ol, .markdown pre, .markdown blockquote { margin: 0 0 10px; }
+.markdown ul, .markdown ol { padding-left: 22px; }
+.markdown pre { overflow-x: auto; background: var(--background); padding: 10px; border-radius: 7px; }
+.markdown code { font: 12px/1.5 ui-monospace, monospace; background: var(--background); padding: 1px 3px; border-radius: 3px; }
+.markdown pre code { padding: 0; }
+.markdown a { color: #a4d5bb; }
+.markdown table { border-collapse: collapse; display: block; overflow-x: auto; }
+.markdown td, .markdown th { border: 1px solid var(--line); padding: 4px 8px; }
+.chat-compose { border-top: 1px solid var(--line); padding: 16px 24px; background: var(--surface); }
+.chat-compose textarea { min-height: 72px; max-height: 40vh; margin: 0; }
+.compose-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.compose-hint { color: var(--muted); font-size: 11px; }
+
+@media (max-width: 900px) {
+  .task-diagnostics { display: none; }
+  header { padding: 10px 16px; }
+  .sidebar-agent-slot { display: block; margin-top: auto; padding: 16px 20px 20px; border-top: 1px solid var(--line); }
+  .sidebar-agent-slot .active-agent { display: block; width: 100%; margin: 0; }
+  .sidebar-agent-slot .active-agent select { font-size: 14px; }
+  .nav-toggle { display: grid; place-items: center; flex: 0 0 38px; width: 38px; height: 38px; padding: 0; font-size: 22px; }
+  main { display: block; }
+  #sidebarResize { display: none; }
+  aside { position: fixed; z-index: 70; inset: 0 auto 0 0; width: min(88vw, 390px); border-right: 1px solid var(--line); transform: translateX(-101%); visibility: hidden; transition: transform .2s ease, visibility .2s ease; box-shadow: 12px 0 32px #0005; }
+  .sidebar-open aside { transform: translateX(0); visibility: visible; }
+  .sidebar-close { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; font-size: 22px; }
+  .sidebar-backdrop:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 60; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0; background: #0009; }
+  section { height: 100%; }
+  .welcome { padding: 24px; }
+  .chat-history { padding: 20px; }
+  .chat-compose { padding: 14px 20px; }
+}
+@media (max-width: 560px) {
+  header { flex-wrap: wrap; gap: 8px 10px; }
+  .identity { margin-left: auto; }
+  .brand { font-size: 17px; }
+  .brand-details small { font-size: 10px; }
+  .identity-name { max-width: 95px; }
+  #authStatus { display: none; }
+  .brand-details { max-width: 38vw; white-space: normal; }
+  .welcome { padding: 18px; }
+  .new-task { padding: 16px; }
+  .chat-head { padding: 12px 16px; flex-wrap: wrap; }
+  .mcp-probe { justify-content: flex-start; }
+  .chat-head h2 { font-size: 15px; }
+  .chat-history { padding: 16px; gap: 14px; }
+  .message.user, .message.external, .message.agent { width: calc(100% - 16px); }
+  .chat-compose { padding: 12px 16px; }
+  .compose-hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { aside { transition: none; } }
+</style>
+</head>
+<body>
+<header><button id="sidebarToggle" class="nav-toggle" type="button" aria-label="Open task menu" aria-controls="taskSidebar" aria-expanded="false">☰</button><div class="brand"><div class="brand-name">codemowers<span>/agent</span></div><div class="brand-details"><small id="brandDescriptor">GitOps agent harness</small><small class="tagline" id="rotatingTagline"></small></div></div><label class="active-agent"><span class="visually-hidden">Active Agent</span><select id="activeAgentSelect" aria-label="Active Agent"><option value="">Loading agents…</option></select></label><button id="identity" class="identity" type="button" title="Sign out" hidden><img id="identityAvatar" class="avatar" alt=""><span id="identityName" class="identity-name"></span></button><span id="authStatus" role="status"></span></header>
+<main>
+  <aside id="taskSidebar" aria-label="Task navigation">
+    <div class="sidebar-head"><h2>Tasks</h2><div class="sidebar-actions"><button id="newTaskButton" class="btn-primary" type="button">＋ New</button><button id="sidebarClose" class="sidebar-close" type="button" aria-label="Close task menu">×</button></div></div>
+    <div class="task-list" id="taskList"></div>
+    <div class="sidebar-agent-slot" id="sidebarAgentSlot"></div>
+  </aside>
+  <div id="sidebarResize" role="separator" aria-orientation="vertical" aria-label="Resize task list" aria-controls="taskSidebar" tabindex="0"></div>
+  <section id="welcome" class="welcome" tabindex="-1"><div class="welcome-inner">
+    <p class="eyebrow">Your developer in a sandbox</p><h1>What shall we build?</h1>
+    <p class="welcome-description">Choose a starting point, then review the task before starting its worker.</p>
+    <div id="draftGallery" class="draft-gallery"></div>
+    <div class="new-task">
+      <label for="modelSelect">Model version</label>
+      <div class="model-combobox">
+        <input id="modelSelect" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelOptions" autocomplete="off" placeholder="Select an Agent first" disabled>
+        <button id="modelToggle" type="button" aria-label="Show model choices" disabled>⌄</button>
+        <div id="modelOptions" class="model-options" role="listbox" hidden></div>
+      </div>
+      <p id="modelNote" class="model-note"></p>
+      <label for="objective">Objective</label>
+      <textarea id="objective" maxlength="128000" placeholder="Describe the work, or choose a draft above."></textarea>
+      <p id="draftNote" class="draft-note"></p>
+      <div id="agentCapabilities" class="agent-capabilities" aria-live="polite"></div>
+      <div id="agentWebhookSetup" aria-live="polite"></div>
+      <div class="new-task-actions"><button class="btn-primary" type="button" onclick="createTask()">Start task →</button></div>
+    </div>
+  </div></section>
+  <section id="detail" tabindex="-1" hidden></section>
+</main>
+<button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="Close task menu" tabindex="-1" hidden></button>
+<script src="/markdown.bundle.js"></script>
+<script src="/taglines.js"></script>
+<script src="/sidebar-resize.js"></script>
+<script>
+let agents = [], tasks = [], selectedTask = null, selectedDetail = null;
+let oidc, tokens, discovery;
+let authRedirecting = false, loadPromise = null, refreshPromise = null, streamController = null;
+let needsAgents = false, needsTasks = false;
+let lastAgents = '', lastTasks = '';
+let currentUser = null, drafts = [], chosenDraft = '';
+let discoveredModels = [], visibleModels = [], activeModelOption = -1;
+let idleCountdownTimer = null;
+const wakePrompt = 'Review the Task objective and recent context, then continue with the next useful step.';
+const status = message => { document.getElementById('authStatus').textContent = message; };
+function taskFromURL() {
+  const query = new URLSearchParams(location.search);
+  const namespace = query.get('namespace'), name = query.get('task');
+  return namespace && name ? {namespace, name} : null;
+}
+function taskURL(namespace, name) {
+  const query = new URLSearchParams({namespace, task: name});
+  return `/?${query}`;
+}
+function updateTaskURL(namespace, name, replace = false) {
+  const target = namespace && name ? taskURL(namespace, name) : '/';
+  if (location.pathname + location.search === target) return;
+  history[replace ? 'replaceState' : 'pushState'](null, '', target);
+}
+const mobileSidebar = matchMedia('(max-width: 900px)');
+const sidebar = document.getElementById('taskSidebar');
+const sidebarToggle = document.getElementById('sidebarToggle');
+const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+function placeAgentControl() {
+  const control = document.querySelector('.active-agent');
+  if (mobileSidebar.matches) document.getElementById('sidebarAgentSlot').append(control);
+  else document.querySelector('header').insertBefore(control, document.getElementById('identity'));
+}
+function setSidebar(open, restoreFocus = false) {
+  open = mobileSidebar.matches && open;
+  document.body.classList.toggle('sidebar-open', open);
+  sidebarToggle.setAttribute('aria-expanded', String(open));
+  sidebarToggle.setAttribute('aria-label', open ? 'Close task menu' : 'Open task menu');
+  sidebarBackdrop.hidden = !open;
+  sidebar.inert = mobileSidebar.matches && !open;
+  document.getElementById('detail').inert = open;
+  if (open) document.getElementById('sidebarClose').focus();
+  else if (restoreFocus && mobileSidebar.matches) sidebarToggle.focus();
+}
+sidebarToggle.onclick = () => setSidebar(!document.body.classList.contains('sidebar-open'), true);
+document.getElementById('sidebarClose').onclick = () => setSidebar(false, true);
+sidebarBackdrop.onclick = () => setSidebar(false, true);
+mobileSidebar.addEventListener('change', () => {
+  const sidebarFocused = sidebar.contains(document.activeElement);
+  placeAgentControl();
+  setSidebar(false);
+  if (mobileSidebar.matches && sidebarFocused) sidebarToggle.focus();
+});
+document.addEventListener('keydown', event => {
+  if (!document.body.classList.contains('sidebar-open')) return;
+  if (event.key === 'Escape') { event.preventDefault(); setSidebar(false, true); return; }
+  if (event.key !== 'Tab') return;
+  const focusable = [...sidebar.querySelectorAll('button:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
+    .filter(element => element.offsetParent !== null);
+  const first = focusable[0], last = focusable.at(-1);
+  if (!first) return;
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+placeAgentControl();
+setSidebar(false);
+window.installSidebarResize(document.getElementById('sidebarResize'), sidebar, mobileSidebar);
+window.rotateTaglines(document.getElementById('rotatingTagline'));
+document.getElementById('newTaskButton').onclick = () => openWelcome();
+document.getElementById('activeAgentSelect').onchange = changeActiveAgent;
+document.getElementById('identity').onclick = signOut;
+function signOut() {
+  const idToken = tokens?.id_token;
+  sessionStorage.removeItem('operator-oidc-tokens');
+  sessionStorage.removeItem('operator-oidc-state');
+  tokens = null;
+  authRedirecting = true;
+  if (discovery?.end_session_endpoint) {
+    const url = new URL(discovery.end_session_endpoint);
+    if (idToken) url.searchParams.set('id_token_hint', idToken);
+    location.assign(url);
+  } else {
+    streamController?.abort();
+    document.querySelector('main').hidden = true;
+    document.getElementById('identity').hidden = true;
+    document.querySelector('.active-agent').hidden = true;
+    status('Signed out');
+    const button = document.createElement('button');
+    button.type = 'button'; button.textContent = 'Sign in';
+    button.onclick = () => { authRedirecting = false; signIn(); };
+    document.querySelector('header').append(button);
+  }
+}
+const encode = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+async function signIn() {
+  if (authRedirecting) return;
+  authRedirecting = true;
+  const state = encode(crypto.getRandomValues(new Uint8Array(24)));
+  const verifier = encode(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = encode(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  const task = taskFromURL();
+  sessionStorage.setItem('operator-oidc-state', JSON.stringify({state, verifier,
+    returnTo: task ? taskURL(task.namespace, task.name) : '/'}));
+  const url = new URL(discovery.authorization_endpoint);
+  for (const [key, value] of Object.entries({client_id: oidc.clientId, redirect_uri: oidc.redirectURI,
+    response_type: 'code', scope: 'openid profile email groups offline_access', resource: oidc.audience,
+    state, code_challenge: challenge, code_challenge_method: 'S256'})) url.searchParams.set(key, value);
+  location.assign(url);
+}
+async function exchange(params) {
+  params.set('client_id', oidc.clientId);
+  params.set('resource', oidc.audience);
+  const response = await fetch(discovery.token_endpoint, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: params});
+  if (!response.ok) throw new Error('OIDC token exchange failed');
+  const next = await response.json();
+  tokens = {...tokens, ...next, expires_at: Date.now() + next.expires_in * 1000};
+  sessionStorage.setItem('operator-oidc-tokens', JSON.stringify(tokens));
+}
+async function initializeAuth() {
+  oidc = await fetch('/config').then(r => r.json());
+  if (!oidc.issuer || !oidc.clientId || !oidc.origin) throw new Error('OIDC configuration unavailable');
+  if (location.origin !== oidc.origin) {
+    location.replace(oidc.origin + location.pathname + location.search);
+    return false;
+  }
+  discovery = await fetch(new URL('.well-known/openid-configuration', oidc.issuer)).then(r => r.json());
+  if (discovery.issuer !== oidc.issuer) throw new Error('OIDC issuer mismatch');
+  const query = new URLSearchParams(location.search);
+  if (query.has('error')) throw new Error(query.get('error_description') || query.get('error'));
+  if (query.has('code')) {
+    const pending = JSON.parse(sessionStorage.getItem('operator-oidc-state') || 'null');
+    sessionStorage.removeItem('operator-oidc-state');
+    if (!pending || pending.state !== query.get('state')) {
+      // A reloaded, restored or other-tab callback has no matching state.
+      // Drop it and sign in again, once, rather than stopping on an error.
+      if (sessionStorage.getItem('operator-oidc-retry')) {
+        sessionStorage.removeItem('operator-oidc-retry');
+        throw new Error('OIDC state mismatch');
+      }
+      sessionStorage.setItem('operator-oidc-retry', '1');
+      history.replaceState(null, '', '/');
+      await signIn();
+      return false;
+    }
+    sessionStorage.removeItem('operator-oidc-retry');
+    await exchange(new URLSearchParams({grant_type: 'authorization_code', code: query.get('code'),
+      redirect_uri: oidc.redirectURI, code_verifier: pending.verifier}));
+    history.replaceState(null, '', pending.returnTo && pending.returnTo.startsWith('/?namespace=') ? pending.returnTo : '/');
+  } else tokens = JSON.parse(sessionStorage.getItem('operator-oidc-tokens') || 'null');
+  if (!tokens) { await signIn(); return false; }
+  status('');
+  return true;
+}
+
+async function loadIdentity() {
+  const response = await apiFetch('/api/me');
+  if (!response.ok) throw new Error('Could not load signed-in identity');
+  currentUser = await response.json();
+  const identity = document.getElementById('identity');
+  document.getElementById('identityName').textContent = 'Signed in as ' + (currentUser.githubUsername || currentUser.name);
+  if (currentUser.githubUsername) {
+    const avatar = document.getElementById('identityAvatar');
+    avatar.src = 'https://github.com/' + encodeURIComponent(currentUser.githubUsername) + '.png?size=56';
+    avatar.onerror = () => { avatar.hidden = true; };
+  } else document.getElementById('identityAvatar').hidden = true;
+  identity.hidden = false;
+}
+
+function openWelcome(updateURL = true) {
+  setSidebar(false);
+  clearInterval(idleCountdownTimer);
+  idleCountdownTimer = null;
+  selectedTask = null;
+  selectedDetail = null;
+  if (updateURL) updateTaskURL();
+  document.getElementById('detail').hidden = true;
+  document.getElementById('welcome').hidden = false;
+  renderTaskList();
+  if (document.getElementById('activeAgentSelect').value) loadModels();
+  document.getElementById('welcome').focus();
+}
+
+function renderDrafts() {
+  const gallery = document.getElementById('draftGallery');
+  gallery.replaceChildren();
+  const blank = document.createElement('button'); blank.type = 'button'; blank.className = 'draft-choice' + (chosenDraft ? '' : ' active');
+  const blankTitle = document.createElement('strong'); blankTitle.textContent = 'Start from scratch';
+  const blankNote = document.createElement('small'); blankNote.textContent = 'Write a new objective.';
+  blank.append(blankTitle, blankNote);
+  blank.onclick = () => { chosenDraft = ''; document.getElementById('objective').value = ''; document.getElementById('draftNote').textContent = ''; renderDrafts(); document.getElementById('objective').focus(); };
+  gallery.append(blank);
+  for (const draft of drafts) {
+    const button = document.createElement('button'); button.type = 'button';
+    button.className = 'draft-choice' + (chosenDraft === draft.id ? ' active' : '');
+    const title = document.createElement('strong'); title.textContent = draft.title;
+    const note = document.createElement('small'); note.textContent = draft.id;
+    button.append(title, note);
+    button.onclick = () => {
+      chosenDraft = draft.id;
+      document.getElementById('objective').value = 'Implement ' + draft.title + '.\n\n' + draft.content;
+      document.getElementById('draftNote').textContent = 'Draft text copied into this Task. You can edit it before starting.';
+      renderDrafts(); document.getElementById('objective').focus();
+    };
+    gallery.append(button);
+  }
+}
+
+async function loadDrafts() {
+  const response = await fetch('/drafts.json');
+  if (!response.ok) throw new Error('Could not load Task drafts');
+  drafts = await response.json();
+  renderDrafts();
+}
+
+function closeModelOptions() {
+  const input = document.getElementById('modelSelect');
+  document.getElementById('modelOptions').hidden = true;
+  input.setAttribute('aria-expanded', 'false');
+  input.removeAttribute('aria-activedescendant');
+  activeModelOption = -1;
+}
+
+function renderModelOptions(showAll = false) {
+  const input = document.getElementById('modelSelect');
+  const host = document.getElementById('modelOptions');
+  const query = showAll ? '' : input.value.trim().toLowerCase();
+  const defaultLabel = `Agent default (${input.dataset.default || 'CLI default'})`;
+  visibleModels = [{name: '', label: defaultLabel}, ...discoveredModels].filter(model =>
+    !query || model.name.toLowerCase().includes(query) || model.label.toLowerCase().includes(query));
+  host.replaceChildren(...visibleModels.map((model, index) => {
+    const option = document.createElement('button');
+    option.type = 'button'; option.id = `model-option-${index}`; option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(input.value === model.name));
+    option.textContent = model.label;
+    if (model.name && model.label !== model.name) {
+      const id = document.createElement('small'); id.textContent = model.name; option.append(id);
+    }
+    option.onclick = () => { input.value = model.name; closeModelOptions(); input.focus(); };
+    return option;
+  }));
+  if (!visibleModels.length) {
+    const hint = document.createElement('div'); hint.className = 'capability-note';
+    hint.textContent = 'Press Enter to use the typed model ID.'; host.append(hint);
+  }
+  activeModelOption = -1;
+  input.removeAttribute('aria-activedescendant');
+  host.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+}
+
+function moveModelOption(direction) {
+  const host = document.getElementById('modelOptions');
+  if (host.hidden) renderModelOptions(true);
+  if (!visibleModels.length) return;
+  activeModelOption = activeModelOption < 0 && direction < 0 ? visibleModels.length - 1
+    : (activeModelOption + direction + visibleModels.length) % visibleModels.length;
+  for (const [index, option] of [...host.querySelectorAll('[role="option"]')].entries()) {
+    option.classList.toggle('active', index === activeModelOption);
+    if (index === activeModelOption) option.scrollIntoView({block: 'nearest'});
+  }
+  document.getElementById('modelSelect').setAttribute('aria-activedescendant', `model-option-${activeModelOption}`);
+}
+
+const modelInput = document.getElementById('modelSelect');
+modelInput.addEventListener('input', () => renderModelOptions());
+modelInput.addEventListener('keydown', event => {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault(); moveModelOption(event.key === 'ArrowDown' ? 1 : -1);
+  } else if (event.key === 'Enter' && activeModelOption >= 0) {
+    event.preventDefault(); modelInput.value = visibleModels[activeModelOption].name; closeModelOptions();
+  } else if (event.key === 'Escape') closeModelOptions();
+});
+document.getElementById('modelToggle').onclick = () => {
+  if (document.getElementById('modelOptions').hidden) { renderModelOptions(true); modelInput.focus(); }
+  else closeModelOptions();
+};
+document.addEventListener('pointerdown', event => {
+  if (!event.target.closest('.model-combobox')) closeModelOptions();
+});
+
+async function loadModels() {
+  const selector = document.getElementById('activeAgentSelect');
+  const modelSelect = document.getElementById('modelSelect');
+  const note = document.getElementById('modelNote');
+  const selected = selector.value;
+  if (modelSelect.dataset.agent !== selected) modelSelect.value = '';
+  modelSelect.dataset.agent = selected;
+  closeModelOptions();
+  discoveredModels = [];
+  modelSelect.disabled = !selected;
+  document.getElementById('modelToggle').disabled = !selected;
+  if (!selected) { modelSelect.placeholder = 'Select an Agent first'; note.textContent = ''; return; }
+  const [name, namespace] = selected.split('|');
+  const agent = agents.find(item => item.name === name && item.namespace === namespace);
+  modelSelect.dataset.default = agent?.modelName || 'CLI default';
+  modelSelect.placeholder = `Agent default (${agent?.modelName || 'CLI default'})`;
+  note.textContent = 'Discovering available models…';
+  try {
+    const response = await apiFetch('/api/agents/' + encodeURIComponent(namespace) + '/' + encodeURIComponent(name) + '/models');
+    if (!response.ok) throw new Error(await apiError(response, 'Model discovery failed'));
+    const catalog = await response.json();
+    if (selector.value !== selected) return;
+    discoveredModels = catalog.models.filter(model => model.name);
+    note.textContent = (catalog.backend === 'codex' ? 'Codex' : 'Claude') +
+      (catalog.warning ? ' · ' + catalog.warning + ' · enter a model ID manually' : ' · choose a discovered model or enter its ID') +
+      ' · leave blank for the Agent default';
+  } catch (error) {
+    if (selector.value !== selected) return;
+    note.textContent = error.message + ' · enter a model ID manually or leave blank for the Agent default';
+  }
+}
+async function apiFetch(path, options = {}) {
+  if (tokens.expires_at < Date.now() + 30000) {
+    if (!tokens.refresh_token) { sessionStorage.removeItem('operator-oidc-tokens'); await signIn(); throw new Error('Sign-in expired'); }
+    if (!refreshPromise) {
+      refreshPromise = exchange(new URLSearchParams({grant_type: 'refresh_token', refresh_token: tokens.refresh_token}))
+        .finally(() => { refreshPromise = null; });
+    }
+    try { await refreshPromise; }
+    catch { sessionStorage.removeItem('operator-oidc-tokens'); await signIn(); throw new Error('Sign-in expired'); }
+  }
+  const response = await fetch(path, {...options, headers: {...options.headers, Authorization: 'Bearer ' + tokens.access_token}});
+  if (response.status === 401) { sessionStorage.removeItem('operator-oidc-tokens'); await signIn(); throw new Error('Sign-in expired'); }
+  return response;
+}
+
+// Proxies answer errors with plain text, such as a 504 "Gateway Timeout".
+async function apiError(response, fallback = 'Request failed') {
+  const body = await response.text().catch(() => '');
+  try { const error = JSON.parse(body).error; if (error) return error; } catch { /* not JSON */ }
+  const text = body.trim().replace(/\s+/g, ' ').slice(0, 120);
+  return `${fallback}: ${text && !text.startsWith('<') ? text : response.statusText || 'error'} (HTTP ${response.status})`;
+}
+
+async function load(kind = 'all') {
+  if (authRedirecting) return;
+  if (kind !== 'tasks') needsAgents = true;
+  needsTasks = true;
+  if (loadPromise) return loadPromise;
+  loadPromise = (async () => {
+    while (needsAgents || needsTasks) {
+      const readAgents = needsAgents, readTasks = needsTasks;
+      needsAgents = needsTasks = false;
+      try {
+        const paths = [...(readAgents ? ['/api/agents'] : []), ...(readTasks ? ['/api/tasks'] : [])];
+        const responses = await Promise.all(paths.map(path => apiFetch(path)));
+        for (const response of responses) if (!response.ok) throw new Error(await apiError(response, 'API request failed'));
+        const values = await Promise.all(responses.map(response => response.json()));
+        let index = 0;
+        if (readAgents) {
+          const nextAgents = values[index++];
+          if (!Array.isArray(nextAgents)) throw new Error('Invalid Agent response');
+          const signature = JSON.stringify(nextAgents);
+          if (signature !== lastAgents) {
+            agents = nextAgents;
+            lastAgents = signature;
+            renderActiveAgentSelect();
+            streamController?.abort(); // Reopen with the current authorized Agent topics.
+          }
+        }
+        if (readTasks) {
+          const nextTasks = values[index];
+          if (!Array.isArray(nextTasks)) throw new Error('Invalid Task response');
+          const signature = JSON.stringify(nextTasks);
+          if (signature !== lastTasks) {
+            tasks = nextTasks;
+            lastTasks = signature;
+            renderTaskList();
+            if (selectedTask) {
+              const task = tasks.find(t => t.namespace === selectedTask.namespace && t.name === selectedTask.name);
+              if (task) refreshDetail(task);
+            }
+          }
+        }
+        status('');
+      } catch (error) { status(error.message); }
+    }
+  })().finally(() => { loadPromise = null; });
+  return loadPromise;
+}
+
+async function runEvents() {
+  let retry = 1000;
+  while (!authRedirecting) {
+    streamController = new AbortController();
+    let changedTopics = false;
+    const controller = streamController;
+    try {
+      const response = await apiFetch('/api/events', {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, signal: controller.signal,
+        body: JSON.stringify({agents: agents.map(a => ({namespace: a.namespace, name: a.name}))})});
+      if (!response.ok) throw new Error('Event stream returned ' + response.status);
+      retry = 1000;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+      while (true) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        pending += decoder.decode(value, {stream: true});
+        if (pending.length > 65536) throw new Error('Event stream frame too large');
+        let boundary;
+        while ((boundary = pending.indexOf('\n\n')) !== -1) {
+          const frame = pending.slice(0, boundary);
+          pending = pending.slice(boundary + 2);
+          const event = frame.match(/^event: (agents|tasks)$/m)?.[1];
+          if (event) {
+            const previousAgents = lastAgents;
+            await load(event === 'agents' ? 'all' : 'tasks');
+            if (lastAgents !== previousAgents) { changedTopics = true; controller.abort(); break; }
+          }
+        }
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError' && !authRedirecting) status(error.message);
+    } finally {
+      if (streamController === controller) streamController = null;
+    }
+    if (authRedirecting) return;
+    if (!changedTopics) {
+      await new Promise(resolve => setTimeout(resolve, retry));
+      retry = Math.min(retry * 2, 30000);
+      await load(); // Reconcile changes missed while disconnected.
+    }
+  }
+}
+
+function changeActiveAgent() {
+  const value = document.getElementById('activeAgentSelect').value;
+  try { localStorage.setItem('agent-operator-active-agent', value); } catch {}
+  const [name, namespace] = value.split('|');
+  if (selectedTask) {
+    const task = tasks.find(item => item.name === selectedTask.name && item.namespace === selectedTask.namespace);
+    if (!task || task.agentName !== name || task.namespace !== namespace) openWelcome();
+  }
+  renderTaskList();
+  loadModels();
+  renderAgentCapabilities();
+  renderAgentWebhookSetup();
+}
+
+function copyableCommand(host, label, command) {
+  const row = document.createElement('div'); row.className = 'task-command';
+  const rowHead = document.createElement('div'); rowHead.className = 'task-command-head';
+  const caption = document.createElement('span'); caption.textContent = label;
+  const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy';
+  copy.setAttribute('aria-label', `Copy ${label} command`);
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(command); copy.textContent = 'Copied'; }
+    catch { copy.textContent = 'Copy failed'; }
+    setTimeout(() => { copy.textContent = 'Copy'; }, 1800);
+  };
+  const code = document.createElement('pre'); code.textContent = command;
+  rowHead.append(caption, copy); row.append(rowHead, code); host.append(row);
+}
+
+function giteaWebhookSetup(agent) {
+  const host = document.createElement('div'); host.className = 'webhook-setup';
+  const heading = document.createElement('h2'); heading.textContent = 'Gitea webhook setup'; host.append(heading);
+  const receiver = `gitea-${agent.name}`;
+  const secretName = 'agent-operator-webhook-keys';
+  const secretKey = receiver;
+  const path = `/hooks/${encodeURIComponent(agent.namespace)}/${encodeURIComponent(receiver)}`;
+  const origin = oidc?.webhookOrigin?.replace(/\/$/, '') || '';
+  const target = origin ? origin + path : path;
+  const note = document.createElement('p');
+  note.textContent = 'To add a Gitea webhook at https://git.codemowers.io, use the repository or organization settings: HTTP POST, application/json, active, with issue, issue comment and pull request events. Target URL: ';
+  const url = document.createElement('strong'); url.textContent = target; note.append(url); host.append(note);
+  const secret = document.createElement('p');
+  secret.textContent = `After Mittwald generates the ${secretKey} key in ${secretName}, use its value as Gitea’s Secret. This is a new binding template; an existing hook can have another name and key. A Gitea API token for this Agent is separate and must be issued by Gitea before assignment based Task creation can work.`;
+  host.append(secret);
+  const template = `{{ index .data ${JSON.stringify(secretKey)} }}`;
+  copyableCommand(host, 'Read Gitea webhook signing secret',
+    `kubectl -n ${shellQuote(agent.namespace)} get secret ${shellQuote(secretName)} -o go-template=${shellQuote(template)} | base64 -d`);
+  copyableCommand(host, 'Bind Gitea webhook to this Agent', `kubectl apply -f - <<'EOF'
+apiVersion: codemowers.cloud/v1alpha1
+kind: WebhookReceiver
+metadata:
+  name: ${JSON.stringify(receiver)}
+  namespace: ${JSON.stringify(agent.namespace)}
+spec:
+  sourceRef:
+    kind: ClusterWebhookReceiver
+    name: gitea
+  agentRef: ${JSON.stringify(agent.name)}
+  match:
+    serverURL: https://git.codemowers.io
+  verificationKeyRef:
+    name: ${JSON.stringify(secretName)}
+    key: ${JSON.stringify(secretKey)}
+  routing:
+    existingTask: exactKey
+EOF`);
+  const routing = document.createElement('p'); routing.textContent = 'Existing Tasks need an exact routing key. For automatic creation of newly assigned issue or pull request Tasks, add a TaskCreationPolicy after configuring this Agent’s Gitea API token.'; host.append(routing);
+  return host;
+}
+
+function renderAgentWebhookSetup() {
+  const host = document.getElementById('agentWebhookSetup'); host.replaceChildren();
+  const [name, namespace] = document.getElementById('activeAgentSelect').value.split('|');
+  const agent = agents.find(item => item.name === name && item.namespace === namespace);
+  if (agent) host.append(giteaWebhookSetup(agent), deviceAgentSetup(agent.namespace));
+}
+
+function deviceAgentSetup(namespace) {
+  const host = document.createElement('div'); host.className = 'webhook-setup';
+  const heading = document.createElement('h2'); heading.textContent = 'Device agent setup'; host.append(heading);
+  const note = document.createElement('p');
+  note.textContent = 'Prints the device-agent command for each Device in this namespace, using the key its connectionSecretRef selects. Run it where you have kubectl access and keep the output out of shared logs.';
+  host.append(note);
+  const kubectl = `kubectl -n ${shellQuote(namespace)}`;
+  const refs = `{range .items[*]}{.spec.connectionSecretRef.name} {.spec.connectionSecretRef.key}{"\\n"}{end}`;
+  copyableCommand(host, 'Print device-agent commands',
+    `${kubectl} get devices.codemowers.cloud -o jsonpath=${shellQuote(refs)} | while read s k; do echo device-agent --endpoint wss://${location.host}/devices/$(${kubectl} get secret $s -o jsonpath="{.data.$k}" | base64 -d); done`);
+  return host;
+}
+
+function renderAgentCapabilities() {
+  const host = document.getElementById('agentCapabilities');
+  host.replaceChildren();
+  const [name, namespace] = document.getElementById('activeAgentSelect').value.split('|');
+  const agent = agents.find(item => item.name === name && item.namespace === namespace);
+  if (!agent) { host.textContent = 'Select an Agent to view its worker settings and forge access.'; return; }
+  const heading = document.createElement('h2'); heading.textContent = 'Worker settings'; host.append(heading);
+  const resources = agent.resources || {};
+  const requests = resources.requests || {}, limits = resources.limits || {};
+  const idle = agent.idleSeconds === 0 ? 'shuts down after each response' : `${agent.idleSeconds} seconds`;
+  const summary = document.createElement('p'); summary.className = 'capability-summary';
+  summary.textContent = `Idle: ${idle} · CPU request ${requests.cpu || 'unset'}, limit ${limits.cpu || 'unset'} · Memory request ${requests.memory || 'unset'}, limit ${limits.memory || 'unset'}`;
+  host.append(summary);
+  if (!agent.forges?.length) { const note = document.createElement('p'); note.className = 'capability-note'; note.textContent = 'No Git forge is configured for this Agent.'; host.append(note); return; }
+  const checked = document.createElement('p'); checked.className = 'capability-note';
+  checked.textContent = agent.forgesCheckedAt ? `Forge access last checked ${formatTime(agent.forgesCheckedAt)} · may be stale` : 'Forge access has not been checked yet.';
+  host.append(checked);
+  for (const forge of agent.forges) {
+    const title = document.createElement('h3'); title.textContent = `${forge.type === 'gitea' ? 'Gitea' : 'GitHub'} · ${forge.login || forge.serverURL}`; host.append(title);
+    const note = document.createElement('p'); note.className = 'capability-note';
+    note.textContent = forge.status === 'available'
+      ? `Showing ${forge.repositories?.length || 0} of ${forge.clipped ? 'at least ' : ''}${forge.repositoryCount || 0} visible repositories`
+      : forge.status === 'pending' ? 'Forge access is being checked.'
+      : `Forge access unavailable${forge.detail ? ': ' + forge.detail : ''}`;
+    host.append(note);
+    if (forge.status !== 'available') continue;
+    const repositories = document.createElement('div'); repositories.className = 'capability-links';
+    for (const repo of forge.repositories || []) {
+      const link = forgeLink(repo.url, forge.serverURL, '↗'); if (!link) continue;
+      const button = document.createElement('button'); button.type = 'button';
+      button.textContent = `${repo.name} · ${repo.archived ? 'archived' : repo.writable ? 'write' : 'read'}`;
+      button.title = `Add ${repo.name} to the objective`;
+      button.onclick = () => addObjectiveContext(`Work in the ${repo.name} repository (${link.href}).`);
+      link.className = 'forge-open'; link.title = `Open ${repo.name} on the forge`;
+      repositories.append(button, link);
+    }
+    host.append(repositories);
+    const destinationHeading = document.createElement('p'); destinationHeading.className = 'capability-note'; destinationHeading.textContent = 'Repository creation destinations'; host.append(destinationHeading);
+    const destinations = document.createElement('div'); destinations.className = 'capability-links';
+    for (const destination of forge.destinations || []) {
+      const access = destination.policy === 'allowed' ? 'policy allows' : destination.policy === 'restricted' ? 'policy restricts' : 'policy unknown';
+      const link = forgeLink(destination.url, forge.serverURL, '↗'); if (!link) continue;
+      const button = document.createElement('button'); button.type = 'button';
+      button.textContent = `${destination.owner} · ${access}`;
+      button.title = `Add repository creation in ${destination.owner} to the objective`;
+      button.onclick = () => addObjectiveContext(`Create a Git repository in the ${destination.owner} ${destination.kind === 'organization' ? 'organization' : 'account'} on ${forge.type === 'gitea' ? 'Gitea' : 'GitHub'} (${link.href}).`);
+      link.className = 'forge-open'; link.title = `Open ${destination.owner} on the forge`;
+      destinations.append(button, link);
+    }
+    host.append(destinations);
+    if (forge.destinations?.length) {
+      const caveat = document.createElement('p'); caveat.className = 'capability-note';
+      caveat.textContent = 'Creation links open the forge. Organization policy and token permissions may still reject creation.';
+      host.append(caveat);
+    }
+  }
+}
+
+function forgeLink(rawURL, serverURL, label) {
+  try {
+    const url = new URL(rawURL), server = new URL(serverURL);
+    if (url.protocol !== 'https:' || url.origin !== server.origin) return null;
+    const link = document.createElement('a'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = label;
+    return link;
+  } catch { return null; }
+}
+
+function addObjectiveContext(sentence) {
+  const input = document.getElementById('objective');
+  const current = input.value.trim();
+  input.value = current ? `${current}\n\n${sentence}` : sentence;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function renderActiveAgentSelect() {
+  const sel = document.getElementById('activeAgentSelect');
+  const choices = agents.map(a => ({value: a.name+'|'+a.namespace,
+    label: a.namespace+'/'+a.name}))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const signature = JSON.stringify(choices);
+  if (sel.dataset.choices === signature) {
+    const [name, namespace] = sel.value.split('|');
+    const agent = agents.find(item => item.name === name && item.namespace === namespace);
+    const modelConfig = JSON.stringify([agent?.backend, agent?.modelName]);
+    if (sel.dataset.modelConfig !== modelConfig) { sel.dataset.modelConfig = modelConfig; loadModels(); }
+    renderAgentCapabilities(); renderAgentWebhookSetup(); return;
+  }
+  let selected = sel.value;
+  if (!selected) { try { selected = localStorage.getItem('agent-operator-active-agent') || ''; } catch {} }
+  sel.replaceChildren(...(choices.length ? choices.map(a => new Option(a.label, a.value)) : [new Option('No agents', '')]));
+  if (choices.some(a => a.value === selected)) sel.value = selected;
+  sel.dataset.choices = signature;
+  const [name, namespace] = sel.value.split('|');
+  const agent = agents.find(item => item.name === name && item.namespace === namespace);
+  sel.dataset.modelConfig = JSON.stringify([agent?.backend, agent?.modelName]);
+  changeActiveAgent();
+}
+
+function renderTaskList() {
+  const el = document.getElementById('taskList');
+  el.replaceChildren();
+  const [agentName, namespace] = document.getElementById('activeAgentSelect').value.split('|');
+  const visibleTasks = tasks.filter(task => task.agentName === agentName && task.namespace === namespace)
+    .sort((a, b) => (Date.parse(b.lastMessageAt || b.createdAt || '') || 0) - (Date.parse(a.lastMessageAt || a.createdAt || '') || 0)
+      || a.name.localeCompare(b.name));
+  if (!visibleTasks.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = 'No tasks for this Agent'; el.append(empty); return; }
+  for (const task of visibleTasks) {
+    const item = document.createElement('div');
+    item.className = 'task-item' + (selectedTask?.name === task.name && selectedTask?.namespace === task.namespace ? ' active' : '');
+    item.tabIndex = 0;
+    item.setAttribute('role', 'button');
+    item.onclick = () => select(task.namespace, task.name);
+    item.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(task.namespace, task.name); } };
+    const title = document.createElement('div'); title.className = 'task-name';
+    const dot = document.createElement('span'); dot.className = 'dot dot-' + (task.phase || '').toLowerCase() + (taskBusy(task) ? ' busy' : '');
+    title.append(dot, document.createTextNode(task.title || task.name));
+    const meta = document.createElement('div'); meta.className = 'task-meta';
+    const lastMessage = task.lastMessageAt || task.createdAt;
+    meta.textContent = task.name + ' · ' + (task.phase || '—')
+      + (lastMessage ? ' · Last message ' + formatTime(lastMessage) : '');
+    item.append(title, meta); el.append(item);
+  }
+}
+
+function select(ns, name, updateURL = true) {
+  clearInterval(idleCountdownTimer);
+  idleCountdownTimer = null;
+  const task = tasks.find(item => item.namespace === ns && item.name === name);
+  if (task) {
+    const selector = document.getElementById('activeAgentSelect');
+    const value = task.agentName + '|' + task.namespace;
+    if (selector.value !== value) {
+      selector.value = value;
+      try { localStorage.setItem('agent-operator-active-agent', value); } catch {}
+      loadModels();
+      renderAgentCapabilities();
+    }
+  }
+  const wasOpen = document.body.classList.contains('sidebar-open');
+  setSidebar(false);
+  if (wasOpen) document.getElementById('detail').focus();
+  document.getElementById('welcome').hidden = true;
+  document.getElementById('detail').hidden = false;
+  selectedTask = {namespace: ns, name: name};
+  selectedDetail = null;
+  if (updateURL) updateTaskURL(ns, name);
+  refreshDetail(task || {namespace: ns, name});
+  if (task?.workerPod && task.phase === 'Running') requestMCPProbe(ns, name);
+  renderTaskList();
+}
+
+async function requestMCPProbe(ns, name) {
+  try {
+    const response = await apiFetch('/api/tasks/' + encodeURIComponent(ns) + '/' + encodeURIComponent(name) + '/mcp-probe', {method: 'POST'});
+    if (response.ok && selectedTask?.namespace === ns && selectedTask?.name === name) await refreshDetail({namespace: ns, name});
+  } catch (error) { status(error.message); }
+}
+
+function restoreTaskFromURL() {
+  const task = taskFromURL();
+  if (task) select(task.namespace, task.name, false);
+  else openWelcome(false);
+}
+window.addEventListener('popstate', restoreTaskFromURL);
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll('\'', `'"'"'`)}'`;
+}
+
+function taskDiagnostics(task, wasOpen) {
+  const details = document.createElement('details'); details.className = 'task-diagnostics'; details.open = wasOpen;
+  const summary = document.createElement('summary'); summary.textContent = 'kubectl commands';
+  const content = document.createElement('div'); content.className = 'task-diagnostics-content';
+  const namespace = shellQuote(task.namespace);
+  const name = shellQuote(task.name);
+  const base = `kubectl -n ${namespace}`;
+  const commands = [
+    ['Task status', `${base} get tasks.codemowers.cloud ${name} -o json | jq '.status'`],
+    ['Full Task', `${base} get tasks.codemowers.cloud ${name} -o yaml`],
+    ['Worker Pods', `${base} get pods -l ${shellQuote(`codemowers.cloud/task=${task.name}`)} -o wide`],
+    ['Suspend Task', `${base} patch tasks.codemowers.cloud ${name} --type merge -p '{"spec":{"suspend":true}}'`],
+  ];
+  if (!task.completed) commands.push(['Resume Task', `${base} patch tasks.codemowers.cloud ${name} --type merge -p '{"spec":{"suspend":false}}'`]);
+  if (task.agentName) commands.push(['Agent status', `${base} get agents.codemowers.cloud ${shellQuote(task.agentName)} -o json | jq '.status'`]);
+  if (task.workerPod) commands.push(['Current worker Pod', `${base} describe pod ${shellQuote(task.workerPod)}`]);
+  if (task.agentName) commands.push(['Create a Task for this Agent', `kubectl apply -f - <<'EOF'
+apiVersion: codemowers.cloud/v1alpha1
+kind: Task
+metadata:
+  name: replace-with-task-name
+  namespace: ${JSON.stringify(task.namespace)}
+spec:
+  agentRef: ${JSON.stringify(task.agentName)}
+  objective: >-
+    Replace this with the Task objective.
+EOF`]);
+  for (const [label, command] of commands) {
+    copyableCommand(content, label, command);
+  }
+  details.append(summary, content);
+  return details;
+}
+
+// Transitional state worth animating, or '' when the Task is settled.
+function taskBusy(task) {
+  if (task.suspended) return task.workerPod && task.phase === 'Running' ? 'Stopping worker' : '';
+  if (task.completed) return '';
+  if (task.phase === 'Pending') return 'Starting worker';
+  if (task.phase !== 'Running' || !task.workerPod) return '';
+  if (task.activity === 'working') return 'Working';
+  return task.activity === 'idle' ? '' : 'Starting worker';
+}
+
+function spinner() {
+  const element = document.createElement('span'); element.className = 'spinner'; element.setAttribute('aria-hidden', 'true');
+  return element;
+}
+
+function idleCountdownText(task, now = Date.now()) {
+  // Idle shutdown and the retention policy matter only while the worker idles.
+  const retained = 'Task retained until deleted';
+  if (task.phase === 'Pending') return 'Worker pending';
+  if (task.phase !== 'Running' || !task.workerPod) return 'Worker stopped';
+  const timeout = Number(task.idleSeconds);
+  if (task.activity === 'working') return 'Worker working';
+  if (task.activity !== 'idle') return 'Worker starting';
+  if (timeout === 0) return 'Worker stopping';
+  const completedAt = Date.parse(task.lastResultAt || '');
+  if (!Number.isFinite(completedAt) || !Number.isFinite(timeout)) return `Worker idle · shutdown time unavailable · ${retained}`;
+  const remaining = Math.max(0, Math.ceil((completedAt + timeout * 1000 - now) / 1000));
+  if (remaining === 0) return `Idle deadline reached · waiting for worker to stop · ${retained}`;
+  const hours = Math.floor(remaining / 3600), minutes = Math.floor(remaining % 3600 / 60), seconds = remaining % 60;
+  const duration = hours ? `${hours}h ${minutes}m ${seconds}s` : minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
+  return `Worker idle shutdown in ${duration} · ${retained}`;
+}
+
+async function refreshDetail(task) {
+  const key = task.namespace + '/' + task.name;
+  const response = await apiFetch('/api/tasks/' + encodeURIComponent(task.namespace) + '/' + encodeURIComponent(task.name));
+  if (!response.ok) {
+    if (selectedTask?.namespace + '/' + selectedTask?.name !== key) return;
+    status(await apiError(response, 'Task unavailable or access denied'));
+    const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = 'Task unavailable or access denied.';
+    document.getElementById('detail').replaceChildren(empty);
+    return;
+  }
+  const detail = await response.json();
+  if (selectedTask?.namespace + '/' + selectedTask?.name !== key) return;
+  selectedDetail = detail;
+  renderDetail(detail);
+}
+
+function renderDetail(task) {
+  clearInterval(idleCountdownTimer);
+  idleCountdownTimer = null;
+  const host = document.getElementById('detail');
+  const existing = host.querySelector('.chat');
+  const currentKey = task.namespace + '/' + task.name;
+  const reused = existing?.dataset.task === currentKey;
+  const diagnosticsOpen = reused && !!existing.querySelector('.task-diagnostics')?.open;
+  const draft = reused ? host.querySelector('#promptInput')?.value || '' : '';
+  const focused = reused && document.activeElement === host.querySelector('#promptInput');
+  const oldHistory = reused ? host.querySelector('.chat-history') : null;
+  const stick = !oldHistory || oldHistory.scrollHeight - oldHistory.clientHeight - oldHistory.scrollTop < 80;
+  const scroll = oldHistory?.scrollTop || 0;
+  const chat = document.createElement('div'); chat.className = 'chat'; chat.dataset.task = currentKey;
+  const head = document.createElement('div'); head.className = 'chat-head';
+  const heading = document.createElement('div'); heading.className = 'chat-heading';
+  const title = document.createElement('h2'); title.textContent = task.title || task.name;
+  const idle = document.createElement('div'); idle.className = 'task-idle';
+  const busy = taskBusy(task);
+  const updateIdle = () => { idle.replaceChildren(...busy ? [spinner()] : [], idleCountdownText(task)); };
+  updateIdle();
+  if (task.phase === 'Running' && task.activity === 'idle' && task.workerPod && task.lastResultAt && task.idleSeconds > 0) {
+    const deadline = new Date(Date.parse(task.lastResultAt) + task.idleSeconds * 1000);
+    if (Number.isFinite(deadline.getTime())) {
+      idle.title = `Expected worker idle shutdown around ${formatTime(deadline)}; queued work may change this.`;
+      idleCountdownTimer = setInterval(updateIdle, 1000);
+    }
+  }
+  heading.append(title, idle);
+  const probe = document.createElement('div'); probe.className = 'mcp-probe';
+  const report = task.mcpProbe;
+  const disabledMcps = new Set(task.disabledMcps || []);
+  const probeButton = (label, state, detail = '', canProbe = true) => {
+    const button = document.createElement('button'); button.type = 'button'; button.className = state;
+    button.textContent = label;
+    button.title = detail ? `${label}: ${detail}` : label;
+    if (canProbe) {
+      button.title += ' · Click to check MCPs again';
+      button.onclick = () => requestMCPProbe(task.namespace, task.name);
+    } else button.disabled = true;
+    button.setAttribute('aria-label', button.title);
+    probe.append(button);
+  };
+  // Endpoint buttons show only the name; state and check time are in the
+  // tooltip. Clicking toggles the endpoint in Task.spec.disabledMCPs.
+  const endpointButton = (endpoint, checked, stale) => {
+    const disabled = disabledMcps.has(endpoint.name);
+    const button = document.createElement('button'); button.type = 'button';
+    button.className = [disabled ? 'disabled-mcp' : endpoint.state || 'idle', stale && 'stale'].filter(Boolean).join(' ');
+    button.textContent = mcpLabel(endpoint.name, endpoint.serverTitle);
+    // Tooltip lines: status, the server's instructions, its tools, the action.
+    const status = [disabled ? 'disabled for this Task' : endpoint.state || 'not checked', endpoint.detail,
+      checked && `checked ${checked}`, stale].filter(Boolean).join(' · ');
+    let action = disabled ? 'Click to enable' : 'Click to disable';
+    if (endpoint.name === 'agent_operator') {
+      action = 'Required by the worker';
+      button.disabled = true;
+    } else button.onclick = () => toggleMCP(task.namespace, task.name, endpoint.name, !disabled);
+    button.title = [`${mcpLabel(endpoint.name, endpoint.serverTitle)} (${endpoint.name}): ${status}`,
+      endpoint.instructions, endpoint.tools?.length && `Tools: ${endpoint.tools.join(', ')}`, action]
+      .filter(Boolean).join('\n\n');
+    button.setAttribute('aria-pressed', String(!disabled));
+    button.setAttribute('aria-label', button.title);
+    probe.append(button);
+  };
+  const lastChecked = report?.checkedAt || (report?.state === 'complete' ? report.updatedAt : '');
+  const checkedAt = lastChecked ? formatTime(lastChecked) : '';
+  const running = task.workerPod && task.phase === 'Running';
+  const reported = report?.endpoints || [];
+  // Only a completed check of the current worker is fresh. A pending check,
+  // a failed one, another Pod's result or a stopped worker shows the last
+  // result washed out.
+  const fresh = running && report?.state === 'complete' && report.podUid === task.workerPodUid;
+  const checking = running && (!report || report.podUid !== task.workerPodUid || report.state === 'pending');
+  const note = checking ? 'checking again' : running && report?.state === 'failed' ? 'last check failed' : !running ? 'worker stopped' : '';
+  if (!reported.length && !disabledMcps.size) {
+    if (!running) probeButton('MCPs · worker stopped', 'idle', '', false);
+    else if (checking) probeButton('MCPs · checking', 'pending');
+    else if (report?.state === 'failed') probeButton('MCPs · check failed', 'failed');
+    else probeButton('MCPs · none configured', 'idle');
+  } else {
+    for (const endpoint of reported) endpointButton(endpoint, checkedAt, !fresh && note);
+    for (const name of disabledMcps) {
+      if (!reported.some(endpoint => endpoint.name === name)) endpointButton({name}, '', !fresh && note);
+    }
+  }
+  if (task.externalReferences?.length) {
+    const references = document.createElement('div'); references.className = 'task-references';
+    for (const reference of task.externalReferences) {
+      const label = reference.repositoryOwner && reference.repositoryName
+        ? `${reference.source} · ${reference.repositoryOwner}/${reference.repositoryName} · ${reference.kind} #${reference.id}`
+        : `${reference.source} · ${reference.kind} ${reference.id}`;
+      let target = null;
+      if (['github', 'gitea'].includes(reference.source) && reference.serverURL && reference.repositoryOwner && reference.repositoryName && reference.id) {
+        try {
+          const server = new URL(reference.serverURL);
+          if (server.protocol === 'https:' && !server.username && !server.password) {
+            const part = reference.kind === 'issue' ? 'issues' : reference.kind === 'pull_request'
+              ? reference.source === 'github' ? 'pull' : 'pulls' : null;
+            if (part) target = new URL(`${encodeURIComponent(reference.repositoryOwner)}/${encodeURIComponent(reference.repositoryName)}/${part}/${encodeURIComponent(reference.id)}`, server.href.replace(/\/?$/, '/'));
+          }
+        } catch {}
+      }
+      const item = document.createElement(target ? 'a' : 'span'); item.textContent = label;
+      if (target) { item.href = target.href; item.target = '_blank'; item.rel = 'noopener noreferrer'; }
+      references.append(item);
+    }
+    heading.append(references);
+  }
+  heading.append(taskDiagnostics(task, diagnosticsOpen));
+  const agent = agents.find(item => item.name === task.agentName && item.namespace === task.namespace);
+  if (agent) {
+    const integrations = document.createElement('details'); integrations.className = 'webhook-details';
+    integrations.open = reused && !!existing.querySelector('.webhook-details')?.open;
+    const summary = document.createElement('summary'); summary.textContent = 'Gitea webhook setup';
+    integrations.append(summary, giteaWebhookSetup(agent)); heading.append(integrations);
+  }
+  const control = (label, title, action) => {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'btn-control';
+    button.textContent = label; button.title = title;
+    button.onclick = async () => {
+      button.disabled = true; button.prepend(spinner());
+      try { await taskAction(task.namespace, task.name, action.path, action.body); }
+      finally { button.disabled = false; button.querySelector('.spinner')?.remove(); }
+    };
+    return button;
+  };
+  const controls = [];
+  if (task.phase === 'Running' && task.activity === 'working' && !task.suspended) {
+    controls.push(control('Stop', 'Interrupt the current turn; the worker stays available for follow-ups', {path: 'stop'}));
+  }
+  if (!task.completed) {
+    controls.push(task.suspended
+      ? control('Resume', 'Allow the worker to start again with the same workspace and session', {path: 'suspend', body: {suspend: false}})
+      : control('Suspend', task.workerPod && task.phase === 'Running'
+        ? 'Stop the worker and keep it from restarting; workspace, session and queued messages are kept'
+        : 'Keep new messages and events from starting a worker; workspace, session and queued messages are kept',
+        {path: 'suspend', body: {suspend: true}}));
+  }
+  const remove = document.createElement('button'); remove.className = 'btn-danger'; remove.textContent = 'Delete';
+  remove.onclick = () => deleteTask(task.namespace, task.name);
+  const headActions = document.createElement('div'); headActions.className = 'chat-head-actions'; headActions.append(probe, ...controls, remove);
+  head.append(heading, headActions);
+  const history = document.createElement('div'); history.className = 'chat-history'; history.id = 'timeline';
+  const messages = [{id: 'objective', role: task.objectiveSource === 'webhook' ? 'external' : 'user',
+    source: task.objectiveSource || 'web', actor: 'Objective', content: task.objective, createdAt: task.createdAt}, ...(task.conversation || [])];
+  if (task.summary && !task.conversation?.some(message => message.role === 'agent' && message.content === task.summary)) {
+    messages.push({id: 'summary', role: 'agent', actor: task.agentName, content: task.summary, createdAt: task.summaryAt});
+  }
+  for (const message of messages) {
+    if (message.role === 'system') {
+      const activity = document.createElement('div'); activity.className = 'message system';
+      const time = message.createdAt ? formatTime(message.createdAt) : '';
+      activity.textContent = message.content + (time ? ' · ' + time : '');
+      history.append(activity); continue;
+    }
+    const bubble = document.createElement('article'); bubble.className = 'message ' + (['user', 'agent', 'external'].includes(message.role) ? message.role : 'external');
+    const meta = document.createElement('div'); meta.className = 'message-meta';
+    const time = message.createdAt ? formatTime(message.createdAt) : '';
+    const isSelf = message.role === 'user' && currentUser && message.actor === currentUser.subject;
+    const actor = message.role === 'agent' ? task.agentName : message.role === 'external' ? (message.actor || 'External')
+      : message.actor === 'Objective' ? 'Objective' : isSelf ? currentUser.name
+      : (message.actor || 'You').split('#').pop().slice(0, 80);
+    const login = message.role === 'agent' ? task.agentGitHubUsername
+      : isSelf ? currentUser.githubUsername
+      : message.role === 'external' && message.source === 'webhook/github' && message.actor !== 'Webhook' && /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(message.actor || '') ? message.actor : '';
+    if (login) {
+      const avatar = document.createElement('img'); avatar.className = 'avatar'; avatar.alt = ''; avatar.loading = 'lazy';
+      avatar.src = 'https://github.com/' + encodeURIComponent(login) + '.png?size=48';
+      avatar.onerror = () => { avatar.hidden = true; };
+      meta.append(avatar);
+    }
+    const author = document.createElement(login ? 'a' : 'span'); author.className = 'message-author'; author.textContent = actor;
+    if (login) { author.href = 'https://github.com/' + encodeURIComponent(login); author.target = '_blank'; author.rel = 'noopener noreferrer'; }
+    const webhookSource = message.source?.startsWith('webhook/') ? message.source.slice('webhook/'.length) : '';
+    const webhookName = {github: 'GitHub', gitea: 'Gitea', slack: 'Slack', alertmanager: 'Alertmanager'}[webhookSource];
+    // Agent replies always come from the worker; user messages name their channel.
+    let sourceLabel = !message.source || message.role === 'agent' ? ''
+      : message.role === 'user' ? ' via ' + (message.source === 'web' ? 'dashboard' : message.source) : ' · ' + message.source;
+    if (message.role === 'external' && message.id !== 'objective') {
+      if (webhookSource) sourceLabel = ` via ${webhookName || webhookSource} webhook notification`;
+      else if (message.source === 'imap' || message.source === 'mail' || message.source?.startsWith('mail/')) {
+        sourceLabel = ' via mail notification';
+      }
+    }
+    const modelLabel = message.role === 'agent' && message.backend
+      ? ' · ' + (message.backend === 'claude' ? 'Claude' : message.backend === 'codex' ? 'Codex' : message.backend)
+        + ' · ' + (message.model || 'CLI default') : '';
+    const metrics = message.role === 'agent' ? message.metrics : null;
+    const count = value => Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : null;
+    const usage = [];
+    if (Number.isSafeInteger(metrics?.durationMs) && metrics.durationMs >= 0) {
+      const seconds = Math.round(metrics.durationMs / 1000);
+      const minutes = Math.floor(seconds / 60);
+      usage.push(minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`);
+    }
+    for (const [key, label] of [['inputTokens', 'in'], ['outputTokens', 'out'],
+      ['cacheReadTokens', 'cache read'], ['cacheWriteTokens', 'cache write']]) {
+      const value = count(metrics?.[key]);
+      if (value !== null) usage.push(`${value} ${label}`);
+    }
+    meta.append(author);
+    let sourceNode = document.createTextNode(sourceLabel);
+    if (message.role === 'external' && message.url && sourceLabel) {
+      try {
+        const target = new URL(message.url);
+        if (['https:', 'http:'].includes(target.protocol) && !target.username && !target.password) {
+          const sourceLink = document.createElement('a'); sourceLink.className = 'message-source-link'; sourceLink.href = target.href;
+          sourceLink.target = '_blank'; sourceLink.rel = 'noopener noreferrer'; sourceLink.textContent = sourceLabel;
+          sourceNode = sourceLink;
+        }
+      } catch {}
+    }
+    meta.append(sourceNode, document.createTextNode(modelLabel
+      + (usage.length ? ' · ' + usage.join(' · ') : '') + (time ? ' · ' + time : '')));
+    const body = document.createElement('div'); body.className = 'message-body';
+    body.append(window.renderAgentMarkdown(message.content));
+    bubble.append(meta, body); history.append(bubble);
+  }
+  if (busy === 'Working') {
+    const typing = document.createElement('div'); typing.className = 'message agent typing';
+    typing.setAttribute('role', 'status'); typing.setAttribute('aria-label', 'Agent is working');
+    const dots = document.createElement('div'); dots.className = 'message-body';
+    dots.append(document.createElement('span'), document.createElement('span'), document.createElement('span'));
+    typing.append(dots); history.append(typing);
+  } else if (busy) {
+    // The operator's own lifecycle line (such as "Starting worker <Pod>") gets
+    // the spinner; a separate line appears only when none ends the timeline.
+    let line = history.lastElementChild;
+    if (!line?.classList.contains('system')) {
+      line = document.createElement('div'); line.className = 'message system';
+      line.append(`${busy}…`); history.append(line);
+    }
+    line.setAttribute('role', 'status'); line.prepend(spinner());
+  }
+  const compose = document.createElement('div'); compose.className = 'chat-compose';
+  const input = document.createElement('textarea'); input.id = 'promptInput'; input.placeholder = wakePrompt;
+  input.value = draft; input.disabled = task.phase === 'Paused' || task.suspended;
+  input.onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendPrompt(task.namespace, task.name); } };
+  const actions = document.createElement('div'); actions.className = 'compose-actions';
+  const hint = document.createElement('span'); hint.className = 'compose-hint'; hint.textContent = 'Enter to send · Shift+Enter for a new line';
+  const send = document.createElement('button'); send.className = 'btn-send'; send.textContent = 'Send'; send.disabled = input.disabled;
+  send.onclick = () => sendPrompt(task.namespace, task.name);
+  actions.append(hint, send); compose.append(input, actions);
+  chat.append(head, history, compose); host.replaceChildren(chat);
+  history.scrollTop = stick ? history.scrollHeight : scroll;
+  if (focused) input.focus();
+}
+
+async function createTask() {
+  const sel = document.getElementById('activeAgentSelect').value;
+  const obj = document.getElementById('objective').value.trim();
+  if (!sel || !obj) return alert('Select an agent and enter an objective.');
+  const [agentName, agentNamespace] = sel.split('|');
+  const modelName = document.getElementById('modelSelect').value.trim();
+  const res = await apiFetch('/api/tasks', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({agentName, agentNamespace, objective: obj, modelName})});
+  if (!res.ok) return alert(await apiError(res));
+  document.getElementById('objective').value = '';
+  chosenDraft = ''; document.getElementById('draftNote').textContent = ''; renderDrafts();
+  await load();
+  const t = await res.json();
+  select(t.namespace, t.name);
+}
+
+async function sendPrompt(ns, name) {
+  const input = document.getElementById('promptInput');
+  const body = input.value.trim() || wakePrompt;
+  const send = document.querySelector('.btn-send');
+  input.disabled = true;
+  if (send) { send.disabled = true; send.prepend(spinner()); }
+  let res;
+  try {
+    res = await apiFetch('/api/tasks/'+ns+'/'+name+'/prompts', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({body})});
+  } catch (error) { return alert(error.message); }
+  finally {
+    input.disabled = false;
+    if (send) { send.disabled = false; send.querySelector('.spinner')?.remove(); }
+  }
+  if (!res.ok) return alert(await apiError(res));
+  if (input.value.trim() === body) input.value = '';
+  await load('tasks');
+}
+
+// Local time as YYYY-MM-DD HH:MM:SS.
+function formatTime(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const pad = number => String(number).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+// Endpoint names are identifiers in CLI tool names. Show the server's own
+// serverInfo.title, or the capitalized name before the first probe.
+function mcpLabel(name, serverTitle) {
+  return serverTitle || name.split(/[_-]+/).filter(Boolean).map(word => word[0].toUpperCase() + word.slice(1)).join(' ');
+}
+
+async function toggleMCP(ns, name, mcp, disabled) {
+  await taskAction(ns, name, 'mcps', {name: mcp, disabled});
+}
+
+async function taskAction(ns, name, path, body) {
+  const response = await apiFetch(`/api/tasks/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/${path}`, {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+  if (!response.ok) return alert(await apiError(response));
+  await load('tasks');
+}
+
+async function deleteTask(ns, name) {
+  if (!confirm('Delete task '+name+'?')) return;
+  const response = await apiFetch('/api/tasks/'+ns+'/'+name, {method:'DELETE'});
+  if (!response.ok) return alert(await apiError(response));
+  openWelcome();
+  await load();
+}
+
+initializeAuth().then(async ready => {
+  if (!ready) return;
+  await Promise.all([loadIdentity(), loadDrafts()]);
+  await load();
+  restoreTaskFromURL();
+  runEvents();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') load(); });
+}).catch(error => status(error.message));
+</script>
+</body>
+</html>

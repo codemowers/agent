@@ -2,15 +2,13 @@ package controller
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
+	"encoding/json"
 	"testing"
+	"time"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
+	"github.com/codemowers/agent/operator/internal/rabbitmq"
 	amqp "github.com/rabbitmq/amqp091-go"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,146 +16,197 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestEventScopeAndServerMatching(t *testing.T) {
-	task := &agentsv1alpha1.Task{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "team-a",
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: "developer", UID: types.UID("current-agent"),
-			}},
-		},
-		Spec: agentsv1alpha1.TaskSpec{ExternalReferences: []agentsv1alpha1.ExternalReference{{
-			Source: "gitea", ServerURL: "https://forge.example.test", RepositoryOwner: "team", RepositoryName: "project", Kind: "issue", ID: "8",
-		}}},
-	}
-	if !ownedByAgent(task, "developer", types.UID("current-agent")) ||
-		ownedByAgent(task, "developer", types.UID("previous-agent")) ||
-		ownedByAgent(task, "support", types.UID("current-agent")) {
-		t.Fatal("Task Agent ownership was not enforced")
-	}
-	event, ok := parseRoutingKey("gitea.forge.example.test:team/project#issue:8")
-	if !ok || !refMatches(task, event) {
-		t.Fatal("matching Gitea server did not route")
-	}
-	other, ok := parseRoutingKey("gitea.other.example.test:team/project#issue:8")
-	if !ok || refMatches(task, other) {
-		t.Fatal("event from another Gitea server crossed the Task boundary")
-	}
-	publicGithub, ok := parseRoutingKey("github:team/project#issue:8")
-	if !ok {
-		t.Fatal("public GitHub routing key rejected")
-	}
-	task.Spec.ExternalReferences[0].Source = "github"
-	task.Spec.ExternalReferences[0].ServerURL = "https://github.com"
-	if !refMatches(task, publicGithub) {
-		t.Fatal("public GitHub URL did not match its routing key")
-	}
+type coalesceBroker struct {
+	messages []rabbitmq.PromptMessage
+	queues   []string
 }
 
-func TestAgentWebhookEventRoutesOnlySubscribedAgent(t *testing.T) {
+func (*coalesceBroker) DeclareQueue(string) error      { return nil }
+func (*coalesceBroker) QueueDepth(string) (int, error) { return 0, nil }
+func (*coalesceBroker) DeleteQueue(string) error       { return nil }
+func (b *coalesceBroker) Publish(_ context.Context, queue string, msg rabbitmq.PromptMessage) error {
+	b.messages = append(b.messages, msg)
+	b.queues = append(b.queues, queue)
+	return nil
+}
+
+func TestCoalesceFirstWakeAndTrailingWake(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	if err := corev1.AddToScheme(scheme); err != nil {
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "ops", Namespace: "team"}}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "alerts", Namespace: "team", UID: "task-uid"}, Spec: agentsv1alpha1.TaskSpec{AgentRef: agent.Name}}
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(agent, task).Build()
+	broker := &coalesceBroker{}
+	consumer := &EventConsumer{Client: k8s, AMQP: broker}
+	ctx := context.Background()
+	if err := consumer.wakeTaskWithContent(ctx, task, "alerts", "first", "alertmanager", "Alertmanager", "CPU high", "https://alerts.example.test/1", 2*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	var objects []client.Object
-	for _, item := range []struct{ namespace, name, host, hookID string }{
-		{"team-a", "developer", "https://github.com", "42"},
-		{"team-b", "support", "https://github.com", "42"},
-		{"team-c", "other", "https://ghe.example.test", "42"},
-	} {
-		uid := types.UID(item.name + "-uid")
-		agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: item.name, Namespace: item.namespace, UID: uid},
-			Spec: agentsv1alpha1.AgentSpec{GitHubWebhooks: []agentsv1alpha1.GitHubWebhook{{ServerURL: item.host, HookID: item.hookID, SecretRef: "org-hook"}}, GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: item.host}}}}
-		task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "issue-8", Namespace: item.namespace,
-			Labels:          map[string]string{"codemowers.cloud/agent": item.name},
-			OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: item.name, UID: uid}}},
-			Spec: agentsv1alpha1.TaskSpec{ExternalReferences: []agentsv1alpha1.ExternalReference{{Source: "github", ServerURL: item.host,
-				RepositoryOwner: "codemowers", RepositoryName: "agent", Kind: "issue", ID: "8"}}}}
-		objects = append(objects, agent, task, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "org-hook", Namespace: item.namespace},
-			Data: map[string][]byte{"token": []byte("shared-hmac-key")}})
+	if len(broker.messages) != 1 || broker.messages[0].Body != "CPU high" || broker.queues[0] != "system:serviceaccount:team:agent-worker-ops:alerts" {
+		t.Fatalf("first event did not wake immediately: %+v", broker.messages)
 	}
-	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
-	consumer := &EventConsumer{Client: k8s, APIReader: k8s}
-	delivery := amqp.Delivery{RoutingKey: "github:codemowers/agent#issue:8", MessageId: "delivery-1",
-		Body:    []byte(`{"repository":{"full_name":"codemowers/agent"},"issue":{"number":8}}`),
-		Headers: amqp.Table{"x-namespace": "team-a", "x-agent": "developer", "x-hook-id": "42", "x-source": "github", "x-event": "issues"}}
-	mac := hmac.New(sha256.New, []byte("shared-hmac-key"))
-	for _, field := range []string{"team-a", "developer", "42", "github", "issues", delivery.RoutingKey, delivery.MessageId} {
-		mac.Write([]byte(field))
-		mac.Write([]byte{0})
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), task); err != nil {
+		t.Fatal(err)
 	}
-	mac.Write(delivery.Body)
-	delivery.Headers["x-source-signature"] = hex.EncodeToString(mac.Sum(nil))
+	if err := consumer.wakeTaskWithContent(ctx, task, "alerts", "second", "alertmanager", "Alertmanager", "Memory high", "https://alerts.example.test/2", 2*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if len(broker.messages) != 1 {
+		t.Fatalf("second event woke inside window: %+v", broker.messages)
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Annotations["codemowers.cloud/coalesce-trailing"] != "true" || len(task.Status.Conversation) != 2 || task.Status.Conversation[1].URL != "https://alerts.example.test/2" {
+		t.Fatalf("trailing event was not retained: %+v", task)
+	}
+	patch := client.MergeFrom(task.DeepCopy())
+	task.Annotations["codemowers.cloud/coalesce-until"] = "1"
+	if err := k8s.Patch(ctx, task, patch); err != nil {
+		t.Fatal(err)
+	}
+	reconciler := &TaskReconciler{Client: k8s, AMQP: broker}
+	if delay, err := reconciler.flushCoalescedWake(ctx, task); err != nil || delay != 0 {
+		t.Fatalf("flush delay=%s err=%v", delay, err)
+	}
+	if len(broker.messages) != 2 || broker.messages[1].Type != "event" {
+		t.Fatalf("missing trailing wake: %+v", broker.messages)
+	}
+}
+
+func TestNormalizedEventRoutesOnlyOwnedTask(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	objects := []client.Object{}
+	for _, item := range []struct{ namespace, agent string }{{"team-a", "developer"}, {"team-b", "support"}} {
+		uid := types.UID(item.agent + "-uid")
+		objects = append(objects, &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: item.agent, Namespace: item.namespace, UID: uid, Generation: 1},
+			Status: agentsv1alpha1.AgentStatus{ForgesObservedGeneration: 1, Forges: []agentsv1alpha1.ForgeCapability{{Type: "github", ServerURL: "https://github.com", Status: "available", Login: item.agent}}}})
+		objects = append(objects, &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "issue-8", Namespace: item.namespace, Labels: map[string]string{"codemowers.cloud/agent": item.agent}, OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: item.agent, UID: uid}}}, Spec: agentsv1alpha1.TaskSpec{RoutingKeys: [][]string{{"external", "forge", "github", "https://github.com", "codemowers", "agent", "issue", "8"}}}})
+	}
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(objects...).Build()
+	consumer := &EventConsumer{Client: k8s, APIReader: k8s, WebhookPublisher: testWebhookPublisher}
+	event := normalizedEvent{Version: 1, Namespace: "team-a", Agent: "developer", Receiver: "github-public", ReceiverUID: "receiver-uid", Protocol: "github", Source: "github", DeliveryID: "delivery-1", Type: "issues", Actor: "lauri", Text: "New comment", URL: "https://github.com/codemowers/agent/issues/8#issuecomment-1", Key: []string{"external", "forge", "github", "https://github.com", "codemowers", "agent", "issue", "8"}}
+	self := event
+	self.DeliveryID = "delivery-self"
+	self.Actor = "developer"
+	if err := consumer.handle(context.Background(), webhookDelivery(t, self)); err != nil {
+		t.Fatal(err)
+	}
+	var untouched agentsv1alpha1.Task
+	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "issue-8"}, &untouched); err != nil {
+		t.Fatal(err)
+	}
+	if len(untouched.Status.Conversation) != 0 || untouched.Annotations["codemowers.cloud/wake-pending"] == "true" {
+		t.Fatal("self-authored forge event reached its Task")
+	}
+	forged := webhookDelivery(t, event)
+	forged.UserId = "system:serviceaccount:team-a:agent-mailbox"
+	if err := consumer.handle(context.Background(), forged); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "issue-8"}, &untouched); err != nil {
+		t.Fatal(err)
+	}
+	if untouched.Annotations["codemowers.cloud/wake-pending"] == "true" {
+		t.Fatal("event from another broker user reached its Task")
+	}
+	delivery := webhookDelivery(t, event)
 	if err := consumer.handle(context.Background(), delivery); err != nil {
-		t.Fatal(err)
-	}
-	// A second namespace with its own copy of the signing key receives the
-	// same GitHub delivery independently.
-	second := delivery
-	second.Headers = amqp.Table{"x-namespace": "team-b", "x-agent": "support", "x-hook-id": "42", "x-source": "github", "x-event": "issues"}
-	secondMAC := hmac.New(sha256.New, []byte("shared-hmac-key"))
-	for _, field := range []string{"team-b", "support", "42", "github", "issues", second.RoutingKey, second.MessageId} {
-		secondMAC.Write([]byte(field))
-		secondMAC.Write([]byte{0})
-	}
-	secondMAC.Write(second.Body)
-	second.Headers["x-source-signature"] = hex.EncodeToString(secondMAC.Sum(nil))
-	if err := consumer.handle(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range []struct {
 		namespace string
 		want      bool
-	}{{"team-a", true}, {"team-b", true}, {"team-c", false}} {
+	}{{"team-a", true}, {"team-b", false}} {
 		var task agentsv1alpha1.Task
 		if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: item.namespace, Name: "issue-8"}, &task); err != nil {
 			t.Fatal(err)
 		}
-		if got := task.Annotations["codemowers.cloud/wake-pending"] == "true"; got != item.want {
-			t.Fatalf("%s wake=%v, want %v", item.namespace, got, item.want)
+		if (task.Annotations["codemowers.cloud/wake-pending"] == "true") != item.want {
+			t.Fatalf("%s wake mismatch", item.namespace)
+		}
+		if item.want && (len(task.Status.Conversation) != 1 || task.Status.Conversation[0].URL != event.URL) {
+			t.Fatalf("%s source URL missing from conversation: %+v", item.namespace, task.Status.Conversation)
 		}
 	}
-	delivery.RoutingKey = "github:codemowers/other#issue:8"
-	parsed, _ := parseRoutingKey(delivery.RoutingKey)
-	if _, err := consumer.verifyAgentEvent(context.Background(), delivery, parsed); err == nil {
-		t.Fatal("forged routing key was accepted with the original source signature")
-	}
-	delivery.RoutingKey = "github:codemowers/agent#issue:8"
-	var wrongSecret corev1.Secret
-	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: "team-b", Name: "org-hook"}, &wrongSecret); err != nil {
+	// Changing an envelope header cannot redirect the delivery.
+	delivery.Headers["x-namespace"] = "team-b"
+	if err := consumer.handle(context.Background(), delivery); err != nil {
 		t.Fatal(err)
 	}
-	wrongSecret.Data["token"] = []byte("wrong-hmac-key")
-	if err := k8s.Update(context.Background(), &wrongSecret); err != nil {
+	var other agentsv1alpha1.Task
+	_ = k8s.Get(context.Background(), client.ObjectKey{Namespace: "team-b", Name: "issue-8"}, &other)
+	if other.Annotations["codemowers.cloud/wake-pending"] == "true" {
+		t.Fatal("tampered envelope crossed namespace")
+	}
+}
+
+const testWebhookPublisher = "system:serviceaccount:agent-system:agent-operator-webhook"
+
+func webhookDelivery(t *testing.T, event normalizedEvent) amqp.Delivery {
+	t.Helper()
+	body, err := json.Marshal(event)
+	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, _ = parseRoutingKey(delivery.RoutingKey)
-	if _, err := consumer.verifyAgentEvent(context.Background(), second, parsed); err == nil {
-		t.Fatal("event crossed into a namespace without the matching signing key")
+	route := "receiver." + event.Namespace + "." + event.Receiver
+	return amqp.Delivery{RoutingKey: route, MessageId: normalizedMessageID(event), UserId: testWebhookPublisher, Body: body,
+		Headers: amqp.Table{"x-namespace": event.Namespace, "x-agent": event.Agent, "x-hook-id": event.ReceiverUID, "x-source": event.Source, "x-event": event.Type}}
+}
+
+func TestSelfForgeEventRequiresMatchingCurrentProviderIdentity(t *testing.T) {
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Generation: 3},
+		Status: agentsv1alpha1.AgentStatus{ForgesObservedGeneration: 3, Forges: []agentsv1alpha1.ForgeCapability{{
+			Type: "gitea", ServerURL: "https://git.example.test", Status: "available", Login: "bot",
+		}}}}
+	event := normalizedEvent{Source: "gitea", Actor: "Bot", Key: []string{
+		"external", "forge", "gitea", "https://git.example.test", "team", "repo", "issue", "1",
+	}}
+	if !selfForgeEvent(agent, event) {
+		t.Fatal("current Gitea bot event not suppressed")
 	}
-	if err := k8s.Delete(context.Background(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "org-hook", Namespace: "team-a"}}); err != nil {
-		t.Fatal(err)
+	for _, changed := range []normalizedEvent{
+		{Source: "gitea", Actor: "human", Key: event.Key},
+		{Source: "gitea", Actor: "bot", Key: []string{"external", "forge", "gitea", "https://other.example.test"}},
+		{Source: "slack", Actor: "bot", Key: []string{"external", "slack", "workspace", "channel", "thread"}},
+	} {
+		if selfForgeEvent(agent, changed) {
+			t.Fatalf("unrelated event suppressed: %+v", changed)
+		}
 	}
-	if err := consumer.handle(context.Background(), delivery); !errors.Is(err, errSourceCredentialUnavailable) {
-		t.Fatalf("missing signing credential should retry delivery, got %v", err)
+	agent.Status.ForgesObservedGeneration = 2
+	if selfForgeEvent(agent, event) {
+		t.Fatal("stale forge identity suppressed event")
+	}
+}
+
+func TestForgeTaskCreationPolicyKey(t *testing.T) {
+	key := []string{"external", "forge", "gitea", "https://git.example.test", "team", "repo", "issue", "42"}
+	event, ok := forgeEventFromKey(key)
+	if !ok || !routingKeyMatches(&agentsv1alpha1.Task{Spec: agentsv1alpha1.TaskSpec{RoutingKeys: [][]string{key}}}, eventTaskKey(event)) {
+		t.Fatal("forge key lost its canonical identity")
+	}
+	if !hasKeyPrefix(key, []string{"external", "forge", "gitea", "https://git.example.test"}) || hasKeyPrefix(key, []string{"external", "forge", "github"}) {
+		t.Fatal("policy key prefix mismatch")
+	}
+	if _, ok := forgeEventFromKey([]string{"external", "forge", "gitea", "http://evil", "team", "repo", "issue", "42"}); ok {
+		t.Fatal("insecure forge URL accepted")
 	}
 }
 
 func TestTaskDeliveryReceiptSurvivesInterleavedEvents(t *testing.T) {
-	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-		"codemowers.cloud/initial-delivery-id": "delivery-0",
-		"codemowers.cloud/event-message-id":    "delivery-3",
-		"codemowers.cloud/delivery-receipts":   `["delivery-1","delivery-2","delivery-3"]`,
-	}}}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"codemowers.cloud/initial-delivery-id": "delivery-0", "codemowers.cloud/event-message-id": "delivery-3", "codemowers.cloud/delivery-receipts": `["delivery-1","delivery-2","delivery-3"]`}}}
 	for _, id := range []string{"delivery-0", "delivery-1", "delivery-2", "delivery-3"} {
 		if !taskHasDelivery(task, id) {
 			t.Fatalf("redelivery %s was not recognized", id)
 		}
 	}
 	if taskHasDelivery(task, "delivery-4") {
-		t.Fatal("new delivery was mistaken for a duplicate")
+		t.Fatal("new delivery mistaken for duplicate")
 	}
 }

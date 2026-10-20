@@ -1,0 +1,32 @@
+# Example GitHub thread routing from stored mail headers.
+# This key wakes an existing Task; unmatched mail goes to the fallback Task.
+apiVersion: codemowers.cloud/v1alpha1
+kind: MailSubscription
+metadata:
+  name: matmlazi-github-notifications
+  namespace: codemowers-agent-system
+spec:
+  mailboxRef: matmlazi-mail
+  agentRef: matmlazi
+  match:
+    fromDomain: github.com
+    headers:
+      - name: Authentication-Results
+        startsWith: 'mail.codemowers.io;'
+        pattern: '(?:^|;) *dmarc=pass(?:[ (;]|$)'
+      - name: Message-ID
+        pattern: '^<(?P<owner>[^/<>]+)/(?P<repository>[^/<>]+)/issues?/(?P<number>[0-9]+)(?:/(?:[0-9]+|issue_event/[0-9]+))?@github[.]com>$'
+      - name: X-GitHub-Sender
+        pattern: '^(?P<actor>[A-Za-z0-9-]+)$'
+        notEquals: matmlazi
+  event:
+    type: github_notification
+    actor: '${actor}'
+    text: GitHub notification; read the current issue or pull request
+    url: 'https://github.com/${owner}/${repository}/issues/${number}'
+    key: [forge, github, 'https://github.com', '${owner}', '${repository}', thread, '${number}']
+  routing:
+    existingTask: exactKey
+    otherwise:
+      taskRef: mail-intake
+    coalesceFor: 3m

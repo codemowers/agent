@@ -1,4 +1,3 @@
-{{- if and .Values.rabbitmq.enabled (not .Values.rabbitmq.existingName) }}
 ---
 # RabbitMQ cluster for event persistence and deduplication.
 # skaffold.dev/keep=true is added automatically by the cluster admission policy
@@ -6,22 +5,43 @@
 apiVersion: rabbitmq.com/v1beta1
 kind: RabbitmqCluster
 metadata:
-  name: {{ .Release.Name }}-events
+  name: {{ include "agent.rabbitmq" . }}
 spec:
   # replicas: injected by rabbitmq-replicas admission policy
   # persistence.storageClassName: injected by rabbitmq-storage-class admission policy
   persistence:
     storage: {{ .Values.rabbitmq.storage }}
   rabbitmq:
+    # Workers log in with projected ServiceAccount tokens for audience
+    # agent-rabbitmq. The alias grants each token read and configure on
+    # queues named "<token sub>:*" only; workers never publish. Event
+    # publishers use audience agent-rabbitmq-publisher, which may only write
+    # to the intake exchange; the operator trusts their verified user_id. Fetching the
+    # JWKS comes from rabbitmq.jwksURI.
+    additionalPlugins:
+      - rabbitmq_auth_backend_oauth2
     additionalConfig: |
       consumer_timeout = 7200000
+      auth_backends.1 = internal
+      auth_backends.2 = oauth2
+      auth_oauth2.resource_server_id = agent-rabbitmq
+      auth_oauth2.scope_prefix = rabbitmq.
+      auth_oauth2.additional_scopes_key = aud
+      auth_oauth2.scope_aliases.agent-rabbitmq = rabbitmq.read:*/{sub}:* rabbitmq.configure:*/{sub}:*
+      auth_oauth2.resource_servers.publisher.id = agent-rabbitmq-publisher
+      auth_oauth2.resource_servers.publisher.scope_aliases.agent-rabbitmq-publisher = rabbitmq.write:*/agent.webhook.events/*
+      auth_oauth2.jwks_uri = {{ .Values.rabbitmq.jwksURI }}
+      auth_oauth2.https.hostname_verification = wildcard
+      {{- with .Values.rabbitmq.jwksCACertFile }}
+      auth_oauth2.https.cacertfile = {{ . }}
+      {{- end }}
 ---
-# Topic exchange; webhook publishes events here with routing keys like
-# github:org/repo#issue:N or alertmanager:fingerprint.
+# Topic exchange; the generic webhook publishes normalized events with
+# receiver.<namespace>.<receiver> routing keys.
 apiVersion: rabbitmq.com/v1beta1
 kind: Exchange
 metadata:
-  name: {{ .Release.Name }}-webhook-exchange
+  name: {{ include "agent.rabbitmqPrefix" . }}-webhook-exchange
   labels:
     skaffold.dev/keep: 'true'
 spec:
@@ -30,29 +50,31 @@ spec:
   durable: true
   vhost: /
   rabbitmqClusterReference:
-    name: {{ .Release.Name }}-events
+    name: {{ include "agent.rabbitmq" . }}
     namespace: {{ .Release.Namespace }}
 ---
 # Quorum queue consumed by the operator to match events to Tasks.
 apiVersion: rabbitmq.com/v1beta1
 kind: Queue
 metadata:
-  name: {{ .Release.Name }}-webhook-queue
+  name: {{ include "agent.rabbitmqPrefix" . }}-webhook-queue
   labels:
     skaffold.dev/keep: 'true'
 spec:
   name: agent.webhook.events
   durable: true
   type: quorum
+  # Keep queued events if this object is deleted or replaced.
+  deletionPolicy: retain
   vhost: /
   rabbitmqClusterReference:
-    name: {{ .Release.Name }}-events
+    name: {{ include "agent.rabbitmq" . }}
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rabbitmq.com/v1beta1
 kind: Binding
 metadata:
-  name: {{ .Release.Name }}-webhook-binding
+  name: {{ include "agent.rabbitmqPrefix" . }}-webhook-binding
   labels:
     skaffold.dev/keep: 'true'
 spec:
@@ -62,6 +84,5 @@ spec:
   routingKey: '#'
   vhost: /
   rabbitmqClusterReference:
-    name: {{ .Release.Name }}-events
+    name: {{ include "agent.rabbitmq" . }}
     namespace: {{ .Release.Namespace }}
-{{- end }}
