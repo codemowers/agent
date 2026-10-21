@@ -171,6 +171,10 @@ func (c *EventConsumer) verifyForgeAssignment(ctx context.Context, agent *agents
 	if login == "" {
 		var account forgeAccount
 		if err := forgeGet(ctx, httpClient, apiURL+"/user", token, &account); err != nil {
+			if errors.Is(err, errForgeDenied) {
+				log.FromContext(ctx).Info("forge credential rejected, not creating a Task", "agent", agent.Name, "forge", provider.ServerURL)
+				return forgeItem{}, false, nil
+			}
 			return forgeItem{}, false, fmt.Errorf("verify forge account: %w", err)
 		}
 		login = account.Login
@@ -192,6 +196,10 @@ func (c *EventConsumer) verifyForgeAssignment(ctx context.Context, agent *agents
 	itemURL := fmt.Sprintf("%s/repos/%s/%s/issues/%s", apiURL, url.PathEscape(owner), url.PathEscape(repo), number)
 	if err := forgeGet(ctx, httpClient, itemURL, token, &item); err != nil {
 		if errors.Is(err, errForgeNotFound) {
+			return forgeItem{}, false, nil
+		}
+		if errors.Is(err, errForgeDenied) {
+			log.FromContext(ctx).Info("forge credential rejected, not creating a Task", "agent", agent.Name, "forge", provider.ServerURL)
 			return forgeItem{}, false, nil
 		}
 		return forgeItem{}, false, fmt.Errorf("verify forge item: %w", err)
@@ -261,9 +269,17 @@ func forgeGet(ctx context.Context, httpClient *http.Client, endpoint, token stri
 		if resp.StatusCode == http.StatusNotFound {
 			return errForgeNotFound
 		}
+		// A rejected credential is configuration, not an outage: retrying
+		// would stall the intake queue.
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return errForgeDenied
+		}
 		return fmt.Errorf("forge API returned %d", resp.StatusCode)
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
 }
 
-var errForgeNotFound = errors.New("forge item not found")
+var (
+	errForgeNotFound = errors.New("forge item not found")
+	errForgeDenied   = errors.New("forge credential rejected")
+)
