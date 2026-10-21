@@ -14,7 +14,7 @@ const namespace = required('AGENT_NAMESPACE');
 const mailbox = required('MAILBOX_NAME');
 const mailboxUID = required('MAILBOX_UID');
 const folder = env.IMAP_FOLDER || 'INBOX';
-const exchange = env.AMQP_EXCHANGE || 'agent.webhook.events';
+const exchange = env.AMQP_EXCHANGE || 'agent.intake';
 // RabbitMQ checks user_id against the login, so the operator can trust it to
 // identify this namespace's Mailbox ServiceAccount.
 const userId = required('AMQP_USER_ID');
@@ -66,7 +66,7 @@ export function envelopeFor(uidValidity, uid, headers, checkpoint = false, threa
     uidValidity: Number(uidValidity), uid: Number(uid), headers, checkpoint,
     threadId: typeof threadId === 'string' && threadId.length <= 256 ? threadId : ''};
   const messageId = createHash('sha256').update(`${mailboxUID}\0${folder}\0${uidValidity}\0${uid}`).digest('hex');
-  const routingKey = `mailbox.${namespace}.${mailbox}`;
+  const routingKey = `mail.${namespace}.${mailbox}`;
   const body = Buffer.from(JSON.stringify(event));
   return {messageId, routingKey, body, headers: {
     'x-namespace': namespace, 'x-mailbox': mailbox, 'x-mailbox-uid': mailboxUID, 'x-source': 'imap'}};

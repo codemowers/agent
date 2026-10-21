@@ -1,4 +1,4 @@
-// agent-webhook authenticates requests with receiver CRs, evaluates CEL, and
+// agent-webhook authenticates requests with protocol and binding CRs, evaluates CEL, and
 // publishes bounded normalized events to the operator's RabbitMQ intake.
 package main
 
@@ -45,7 +45,7 @@ func main() {
 		os.Exit(1)
 	}
 	pub := &publisher{url: amqpURL(), tokenFile: envOrDefault("AGENT_RABBITMQ_TOKEN_FILE", "/var/run/agent-rabbitmq/token"),
-		userID: os.Getenv("AMQP_USER_ID"), exchange: envOrDefault("AMQP_EXCHANGE", "agent.webhook.events"), resolver: resolver}
+		userID: os.Getenv("AMQP_USER_ID"), exchange: envOrDefault("AMQP_EXCHANGE", "agent.intake"), resolver: newCachedResolver(resolver)}
 	if pub.userID == "" {
 		slog.Error("AMQP_USER_ID is required")
 		os.Exit(1)
@@ -60,23 +60,39 @@ func main() {
 	go pub.refreshToken(5 * time.Minute)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.HandleFunc("POST /hooks/{source}", pub.receiverHandler)
-	mux.HandleFunc("POST /hooks/{namespace}/{receiver}", pub.receiverHandler)
-	internalMux := http.NewServeMux()
-	internalMux.HandleFunc("POST /hooks/{namespace}/{receiver}", pub.internalReceiverHandler)
-	internalAddr := envOrDefault("INTERNAL_LISTEN_ADDR", ":8083")
-	go func() {
-		slog.Info("internal webhook handler listening", "addr", internalAddr)
-		if err := http.ListenAndServe(internalAddr, internalMux); err != nil {
-			slog.Error("internal server error", "err", err)
-			os.Exit(1)
-		}
-	}()
+	mux.HandleFunc("POST /hooks/{source}", logHook(pub.receiverHandler))
+	mux.HandleFunc("POST /hooks/{namespace}/{binding}", logHook(pub.receiverHandler))
 	addr := envOrDefault("LISTEN_ADDR", ":8080")
 	slog.Info("webhook handler listening", "addr", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
+	}
+}
+
+// hookRecorder captures the outcome of a /hooks request for its log line.
+type hookRecorder struct {
+	http.ResponseWriter
+	status    int
+	published int
+}
+
+func (r *hookRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// logHook logs every hit before parsing and its outcome afterwards. Only
+// route names, status and counts are logged: never bodies, headers, query
+// strings or keys.
+func logHook(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		attrs := []any{"protocol", r.PathValue("source"), "namespace", r.PathValue("namespace"), "binding", r.PathValue("binding")}
+		slog.Info("webhook request", attrs...)
+		recorder := &hookRecorder{ResponseWriter: w, status: http.StatusOK}
+		started := time.Now()
+		next(recorder, r)
+		slog.Info("webhook response", append(attrs, "status", recorder.status, "published", recorder.published, "duration", time.Since(started))...)
 	}
 }
 
@@ -146,10 +162,11 @@ func (p *publisher) refreshToken(interval time.Duration) {
 }
 
 // publishEnvelope publishes as the receiver's broker user. The operator
-// accepts these events only with that verified user_id.
+// accepts these events only with that verified user_id. The routing key names
+// the binding and x-key carries the resource, so both stay readable in the broker.
 func (p *publisher) publishEnvelope(event normalizedEvent, messageID string, payload []byte) error {
-	routingKey := "receiver." + event.Namespace + "." + event.Receiver
-	headers := amqp.Table{"x-namespace": event.Namespace, "x-agent": event.Agent, "x-hook-id": event.ReceiverUID, "x-source": event.Source, "x-event": event.Type}
+	routingKey := "webhook." + event.Namespace + "." + event.Binding
+	headers := amqp.Table{"x-namespace": event.Namespace, "x-agent": event.Agent, "x-binding-uid": event.BindingUID, "x-source": event.Protocol, "x-event": event.Type, "x-key": event.Key}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ch, err := p.channel()

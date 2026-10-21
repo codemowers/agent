@@ -70,18 +70,18 @@ type MailSMTPStatus struct {
 	LastSentAt *metav1.Time `json:"lastSentAt,omitempty"`
 }
 
-type MailSubscription struct {
+type MailBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              MailSubscriptionSpec   `json:"spec"`
-	Status            MailSubscriptionStatus `json:"status,omitempty"`
+	Spec              MailBindingSpec   `json:"spec"`
+	Status            MailBindingStatus `json:"status,omitempty"`
 }
-type MailSubscriptionList struct {
+type MailBindingList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []MailSubscription `json:"items"`
+	Items           []MailBinding `json:"items"`
 }
-type MailSubscriptionSpec struct {
+type MailBindingSpec struct {
 	MailboxRef string      `json:"mailboxRef"`
 	AgentRef   string      `json:"agentRef"`
 	Match      MailMatch   `json:"match"`
@@ -100,18 +100,17 @@ type MailHeaderRule struct {
 	NotEquals  string `json:"notEquals,omitempty"`
 }
 type MailEvent struct {
-	Type  string   `json:"type"`
-	Actor string   `json:"actor"`
-	Text  string   `json:"text"`
-	URL   string   `json:"url,omitempty"`
-	Key   []string `json:"key"`
+	Type  string `json:"type"`
+	Actor string `json:"actor"`
+	Text  string `json:"text"`
+	URL   string `json:"url,omitempty"`
+	Key   string `json:"key"`
 }
 type MailRouting struct {
-	ExistingTask string          `json:"existingTask"`
-	Otherwise    WebhookFallback `json:"otherwise,omitempty"`
-	CoalesceFor  string          `json:"coalesceFor,omitempty"`
+	Otherwise   WebhookFallback `json:"otherwise,omitempty"`
+	CoalesceFor string          `json:"coalesceFor,omitempty"`
 }
-type MailSubscriptionStatus struct {
+type MailBindingStatus struct {
 	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
 	LastReceivedAt     *metav1.Time `json:"lastReceivedAt,omitempty"`
 	LastRoutedAt       *metav1.Time `json:"lastRoutedAt,omitempty"`
@@ -166,12 +165,11 @@ func (in *MailboxList) DeepCopyObject() runtime.Object {
 	}
 	return &out
 }
-func (in *MailSubscription) DeepCopyObject() runtime.Object {
+func (in *MailBinding) DeepCopyObject() runtime.Object {
 	out := *in
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	out.Spec.Match.ExceptFromAddresses = append([]string(nil), in.Spec.Match.ExceptFromAddresses...)
 	out.Spec.Match.Headers = append([]MailHeaderRule(nil), in.Spec.Match.Headers...)
-	out.Spec.Event.Key = append([]string(nil), in.Spec.Event.Key...)
 	if in.Status.LastReceivedAt != nil {
 		out.Status.LastReceivedAt = in.Status.LastReceivedAt.DeepCopy()
 	}
@@ -180,12 +178,12 @@ func (in *MailSubscription) DeepCopyObject() runtime.Object {
 	}
 	return &out
 }
-func (in *MailSubscriptionList) DeepCopyObject() runtime.Object {
+func (in *MailBindingList) DeepCopyObject() runtime.Object {
 	out := *in
 	in.ListMeta.DeepCopyInto(&out.ListMeta)
-	out.Items = make([]MailSubscription, len(in.Items))
+	out.Items = make([]MailBinding, len(in.Items))
 	for i := range in.Items {
-		out.Items[i] = *(in.Items[i].DeepCopyObject().(*MailSubscription))
+		out.Items[i] = *(in.Items[i].DeepCopyObject().(*MailBinding))
 	}
 	return &out
 }

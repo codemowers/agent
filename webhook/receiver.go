@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"cel.dev/cel-go/cel"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
+	"cel.dev/cel-go/ext"
 )
 
 type receiverProtocol struct {
@@ -39,15 +41,18 @@ type receiverProtocol struct {
 				Encoding string `json:"encoding"`
 			} `json:"signature"`
 			SignedBytesCEL string `json:"signedBytesCEL"`
-			Freshness      *struct {
+			// Audience is the token audience for serviceAccountToken.
+			Audience  string `json:"audience"`
+			Freshness *struct {
 				TimestampHeader string `json:"timestampHeader"`
 				MaxSkew         string `json:"maxSkew"`
 			} `json:"freshness"`
 		} `json:"verification"`
 		Event struct {
-			RequiredHeaders []string `json:"requiredHeaders"`
-			AcceptCEL       string   `json:"acceptCEL"`
-			EventsCEL       string   `json:"eventsCEL"`
+			RequiredHeaders    []string `json:"requiredHeaders"`
+			AcceptCEL          string   `json:"acceptCEL"`
+			EventsCEL          string   `json:"eventsCEL"`
+			AllowedKeyPrefixes []string `json:"allowedKeyPrefixes"`
 		} `json:"event"`
 		Response struct {
 			Status        int `json:"status"`
@@ -68,20 +73,19 @@ type receiverBinding struct {
 		UID       string `json:"uid"`
 	} `json:"metadata"`
 	Spec struct {
-		SourceRef struct {
-			Kind string `json:"kind"`
-			Name string `json:"name"`
-		} `json:"sourceRef"`
+		ProtocolRef        string            `json:"protocolRef"`
 		AgentRef           string            `json:"agentRef"`
 		Match              map[string]string `json:"match"`
 		VerificationKeyRef *struct {
 			Name string `json:"name"`
 			Key  string `json:"key"`
 		} `json:"verificationKeyRef"`
-		Routing struct {
-			KeyCEL       string `json:"keyCEL"`
-			ExistingTask string `json:"existingTask"`
-			Otherwise    struct {
+		// ServiceAccounts lists the <namespace>/<name> senders a
+		// serviceAccountToken protocol accepts for this binding.
+		ServiceAccounts []string `json:"serviceAccounts"`
+		Routing         struct {
+			KeyCEL    string `json:"keyCEL"`
+			Otherwise struct {
 				TaskRef string `json:"taskRef"`
 			} `json:"otherwise"`
 			CoalesceFor string `json:"coalesceFor"`
@@ -95,22 +99,20 @@ type receiverBindingList struct {
 	Items []receiverBinding `json:"items"`
 }
 type normalizedEvent struct {
-	Version      int      `json:"version"`
-	Namespace    string   `json:"namespace"`
-	Agent        string   `json:"agent"`
-	Receiver     string   `json:"receiver"`
-	ReceiverUID  string   `json:"receiverUID"`
-	Protocol     string   `json:"protocol"`
-	Source       string   `json:"source"`
-	DeliveryID   string   `json:"deliveryID"`
-	Type         string   `json:"type"`
-	Action       string   `json:"action,omitempty"`
-	Actor        string   `json:"actor"`
-	Text         string   `json:"text"`
-	URL          string   `json:"url,omitempty"`
-	Key          []string `json:"key"`
-	FallbackTask string   `json:"fallbackTask,omitempty"`
-	CoalesceFor  string   `json:"coalesceFor,omitempty"`
+	Version      int    `json:"version"`
+	Namespace    string `json:"namespace"`
+	Agent        string `json:"agent"`
+	Binding      string `json:"binding"`
+	BindingUID   string `json:"bindingUID"`
+	Protocol     string `json:"protocol"`
+	DeliveryID   string `json:"deliveryID"`
+	Type         string `json:"type"`
+	Actor        string `json:"actor"`
+	Text         string `json:"text"`
+	URL          string `json:"url,omitempty"`
+	Key          string `json:"key,omitempty"`
+	FallbackTask string `json:"fallbackTask,omitempty"`
+	CoalesceFor  string `json:"coalesceFor,omitempty"`
 }
 
 func (k *kubeHookResolver) Protocol(ctx context.Context, name string) (receiverProtocol, error) {
@@ -118,37 +120,37 @@ func (k *kubeHookResolver) Protocol(ctx context.Context, name string) (receiverP
 	if !validKubernetesName(name) {
 		return v, fmt.Errorf("invalid protocol name")
 	}
-	err := k.get(ctx, "/apis/codemowers.cloud/v1alpha1/clusterwebhookreceivers/"+url.PathEscape(name), &v)
+	err := k.get(ctx, "/apis/codemowers.cloud/v1alpha1/webhookprotocols/"+url.PathEscape(name), &v)
 	return v, err
 }
 func (k *kubeHookResolver) Binding(ctx context.Context, namespace, name string) (receiverBinding, error) {
 	var v receiverBinding
 	if !validKubernetesName(namespace) || !validKubernetesName(name) {
-		return v, fmt.Errorf("invalid receiver path")
+		return v, fmt.Errorf("invalid binding path")
 	}
-	err := k.get(ctx, "/apis/codemowers.cloud/v1alpha1/namespaces/"+url.PathEscape(namespace)+"/webhookreceivers/"+url.PathEscape(name), &v)
+	err := k.get(ctx, "/apis/codemowers.cloud/v1alpha1/namespaces/"+url.PathEscape(namespace)+"/webhookbindings/"+url.PathEscape(name), &v)
 	return v, err
 }
 func (k *kubeHookResolver) Bindings(ctx context.Context, protocol string) ([]receiverBinding, error) {
 	var out []receiverBinding
-	path := "/apis/codemowers.cloud/v1alpha1/webhookreceivers?limit=100"
+	path := "/apis/codemowers.cloud/v1alpha1/webhookbindings?limit=100"
 	for {
 		var page receiverBindingList
 		if err := k.get(ctx, path, &page); err != nil {
 			return nil, err
 		}
 		for _, b := range page.Items {
-			if b.Spec.SourceRef.Kind == "ClusterWebhookReceiver" && b.Spec.SourceRef.Name == protocol {
+			if b.Spec.ProtocolRef == protocol {
 				out = append(out, b)
 			}
 		}
 		if len(out) > 100 {
-			return nil, fmt.Errorf("too many receiver bindings")
+			return nil, fmt.Errorf("too many webhook bindings")
 		}
 		if page.Metadata.Continue == "" {
 			break
 		}
-		path = "/apis/codemowers.cloud/v1alpha1/webhookreceivers?limit=100&continue=" + url.QueryEscape(page.Metadata.Continue)
+		path = "/apis/codemowers.cloud/v1alpha1/webhookbindings?limit=100&continue=" + url.QueryEscape(page.Metadata.Continue)
 	}
 	return out, nil
 }
@@ -165,13 +167,13 @@ func (k *kubeHookResolver) BindingKey(ctx context.Context, b receiverBinding) ([
 	}
 	key := secret.Data[b.Spec.VerificationKeyRef.Key]
 	if len(key) == 0 {
-		return nil, fmt.Errorf("verification key is missing")
+		return nil, fmt.Errorf("verification key is missing: %w", errNotFound)
 	}
 	return key, nil
 }
 
 func receiverEnv() (*cel.Env, error) {
-	return cel.NewEnv(
+	return cel.NewEnv(ext.Strings(),
 		cel.Variable("rawBody", cel.BytesType), cel.Variable("body", cel.DynType), cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)), cel.Variable("binding", cel.DynType), cel.Variable("event", cel.DynType),
 		cel.Function("urlHost", cel.Overload("url_host_string", []*cel.Type{cel.StringType}, cel.StringType, cel.UnaryBinding(func(v ref.Val) ref.Val {
 			u, e := url.Parse(v.Value().(string))
@@ -278,8 +280,6 @@ func checkReceiverSignature(r *http.Request, p receiverProtocol, key, raw []byte
 		signed = bytes
 	}
 	switch v.Algorithm {
-	case "none":
-		return true, nil
 	case "bearer":
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		return len(got) > 0 && subtle.ConstantTimeCompare(key, []byte(got)) == 1, nil
@@ -331,45 +331,49 @@ func parseReceiverTime(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339, s)
 }
 
+// bindingAllowsSender reports whether a reviewed ServiceAccount username is
+// one of the binding's senders.
+func bindingAllowsSender(b receiverBinding, username string) bool {
+	for _, sa := range b.Spec.ServiceAccounts {
+		namespace, name, ok := strings.Cut(sa, "/")
+		if ok && username == "system:serviceaccount:"+namespace+":"+name {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *publisher) receiverHandler(w http.ResponseWriter, r *http.Request) {
-	p.handleReceiver(w, r, false)
-}
-
-func (p *publisher) internalReceiverHandler(w http.ResponseWriter, r *http.Request) {
-	p.handleReceiver(w, r, true)
-}
-
-func (p *publisher) handleReceiver(w http.ResponseWriter, r *http.Request, internal bool) {
 	resolver := p.resolver
 	source := r.PathValue("source")
 	namespace := r.PathValue("namespace")
-	name := r.PathValue("receiver")
+	name := r.PathValue("binding")
 	var named *receiverBinding
 	if name != "" {
 		b, err := resolver.Binding(r.Context(), namespace, name)
 		if err != nil {
-			http.Error(w, "receiver unavailable", 503)
+			http.Error(w, "binding unavailable", 503)
 			return
 		}
-		if b.Spec.SourceRef.Kind != "ClusterWebhookReceiver" || !validKubernetesName(b.Spec.SourceRef.Name) {
-			http.Error(w, "invalid receiver source", 422)
+		if !validKubernetesName(b.Spec.ProtocolRef) {
+			http.Error(w, "invalid binding protocol", 422)
 			return
 		}
 		named = &b
-		source = b.Spec.SourceRef.Name
+		source = b.Spec.ProtocolRef
 	}
 	protocol, err := resolver.Protocol(r.Context(), source)
 	if err != nil {
 		http.Error(w, "protocol unavailable", 503)
 		return
 	}
-	if protocol.Spec.Verification.Algorithm == "none" {
-		if !internal || name == "" || protocol.Spec.Verification.Freshness != nil || protocol.Spec.Verification.SignedBytesCEL != "" {
-			http.Error(w, "unsigned receiver requires an internal named route", 403)
-			return
-		}
-	} else if protocol.Spec.Verification.Algorithm == "" {
+	tokenAuth := protocol.Spec.Verification.Algorithm == "serviceAccountToken"
+	if protocol.Spec.Verification.Algorithm == "" {
 		http.Error(w, "verification algorithm missing", 422)
+		return
+	}
+	if tokenAuth && (protocol.Spec.Verification.Audience == "" || protocol.Spec.Verification.Freshness != nil || protocol.Spec.Verification.SignedBytesCEL != "") {
+		http.Error(w, "invalid verification configuration", 503)
 		return
 	}
 	var bindings []receiverBinding
@@ -378,7 +382,7 @@ func (p *publisher) handleReceiver(w http.ResponseWriter, r *http.Request, inter
 	} else {
 		bindings, err = resolver.Bindings(r.Context(), source)
 		if err != nil {
-			http.Error(w, "receiver bindings unavailable", 503)
+			http.Error(w, "webhook bindings unavailable", 503)
 			return
 		}
 	}
@@ -404,37 +408,57 @@ func (p *publisher) handleReceiver(w http.ResponseWriter, r *http.Request, inter
 		http.Error(w, "CEL unavailable", 503)
 		return
 	}
+	// A ServiceAccount token is reviewed once; each binding then decides
+	// whether its sender is allowed.
+	var sender string
+	if tokenAuth {
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || token == "" {
+			http.Error(w, "bearer token required", http.StatusUnauthorized)
+			return
+		}
+		sender, err = resolver.ReviewToken(r.Context(), token, protocol.Spec.Verification.Audience)
+		if err != nil {
+			http.Error(w, "token review unavailable", 503)
+			return
+		}
+		if sender == "" {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+	}
 	// Authenticate each candidate before evaluating any payload-dependent CEL.
 	var matchedVars map[string]any
 	var pending []normalizedEvent
 	for _, b := range bindings {
 		if !validKubernetesName(b.Metadata.Namespace) || !validKubernetesName(b.Metadata.Name) ||
 			!validKubernetesName(b.Spec.AgentRef) || b.Metadata.UID == "" ||
-			b.Spec.SourceRef.Kind != "ClusterWebhookReceiver" || b.Spec.SourceRef.Name != source {
+			b.Spec.ProtocolRef != source {
 			continue
 		}
-		var key []byte
-		if protocol.Spec.Verification.Algorithm == "none" {
+		vars := map[string]any{"rawBody": raw, "headers": headers, "body": map[string]any{}, "binding": map[string]any{"match": b.Spec.Match}, "event": map[string]any{}}
+		var valid bool
+		if tokenAuth {
 			if b.Spec.VerificationKeyRef != nil {
-				http.Error(w, "unsigned receiver must not reference a key", 422)
+				http.Error(w, "token binding must not reference a key", 422)
 				return
 			}
+			valid = bindingAllowsSender(b, sender)
 		} else {
 			if b.Spec.VerificationKeyRef == nil {
 				http.Error(w, "verification key missing", 422)
 				return
 			}
-			key, err = resolver.BindingKey(r.Context(), b)
+			key, err := resolver.BindingKey(r.Context(), b)
 			if err != nil {
 				http.Error(w, "verification key unavailable", 503)
 				return
 			}
-		}
-		vars := map[string]any{"rawBody": raw, "headers": headers, "body": map[string]any{}, "binding": map[string]any{"match": b.Spec.Match}, "event": map[string]any{}}
-		valid, err := checkReceiverSignature(r, protocol, key, raw, vars, env)
-		if err != nil {
-			http.Error(w, "invalid verification configuration", 503)
-			return
+			valid, err = checkReceiverSignature(r, protocol, key, raw, vars, env)
+			if err != nil {
+				http.Error(w, "invalid verification configuration", 503)
+				return
+			}
 		}
 		if !valid {
 			continue
@@ -456,7 +480,7 @@ func (p *publisher) handleReceiver(w http.ResponseWriter, r *http.Request, inter
 			}
 		}
 		if matchedVars != nil {
-			http.Error(w, "ambiguous receiver bindings", http.StatusConflict)
+			http.Error(w, "ambiguous webhook bindings", http.StatusConflict)
 			return
 		}
 		matchedVars = vars
@@ -486,11 +510,6 @@ func (p *publisher) handleReceiver(w http.ResponseWriter, r *http.Request, inter
 				event["key"] = key
 			}
 			normalized, err := normalizeReceiverEvent(b, protocol, event)
-			if err != nil {
-				http.Error(w, err.Error(), 422)
-				return
-			}
-			normalized.Key, err = endpointKey(normalized.Key, internal)
 			if err != nil {
 				http.Error(w, err.Error(), 422)
 				return
@@ -555,6 +574,9 @@ func (p *publisher) handleReceiver(w http.ResponseWriter, r *http.Request, inter
 			return
 		}
 	}
+	if recorder, ok := w.(*hookRecorder); ok {
+		recorder.published = len(pending)
+	}
 	if responseContentType != "" {
 		w.Header().Set("Content-Type", responseContentType)
 	}
@@ -564,29 +586,13 @@ func (p *publisher) handleReceiver(w http.ResponseWriter, r *http.Request, inter
 	}
 }
 
-// endpointKey assigns the transport origin after CEL has produced the source key.
-// Request bodies and receiver expressions cannot choose the first segment.
-func endpointKey(key []string, internal bool) ([]string, error) {
-	if len(key) == 0 {
-		return nil, nil
-	}
-	if len(key) >= 16 {
-		return nil, fmt.Errorf("event key is too long")
-	}
-	origin := "external"
-	if internal {
-		origin = "internal"
-	}
-	return append([]string{origin}, key...), nil
-}
-
 func receiverMessageID(event normalizedEvent) string {
-	key, _ := json.Marshal([]any{event.ReceiverUID, event.DeliveryID, event.Source, event.Type, event.Key})
+	key, _ := json.Marshal([]any{event.BindingUID, event.DeliveryID, event.Type, event.Key})
 	sum := sha256.Sum256(key)
 	return hex.EncodeToString(sum[:])
 }
 func normalizeReceiverEvent(b receiverBinding, p receiverProtocol, e map[string]any) (normalizedEvent, error) {
-	n := normalizedEvent{Version: 1, Namespace: b.Metadata.Namespace, Agent: b.Spec.AgentRef, Receiver: b.Metadata.Name, ReceiverUID: b.Metadata.UID, Protocol: p.Metadata.Name, FallbackTask: b.Spec.Routing.Otherwise.TaskRef, CoalesceFor: b.Spec.Routing.CoalesceFor}
+	n := normalizedEvent{Version: 2, Namespace: b.Metadata.Namespace, Agent: b.Spec.AgentRef, Binding: b.Metadata.Name, BindingUID: b.Metadata.UID, Protocol: p.Metadata.Name, FallbackTask: b.Spec.Routing.Otherwise.TaskRef, CoalesceFor: b.Spec.Routing.CoalesceFor}
 	if n.CoalesceFor != "" {
 		d, err := time.ParseDuration(n.CoalesceFor)
 		if err != nil || d < time.Second || d > time.Hour {
@@ -596,16 +602,16 @@ func normalizeReceiverEvent(b receiverBinding, p receiverProtocol, e map[string]
 	for _, field := range []struct {
 		key string
 		dst *string
-	}{{"source", &n.Source}, {"deliveryID", &n.DeliveryID}, {"type", &n.Type}, {"action", &n.Action}, {"actor", &n.Actor}, {"text", &n.Text}, {"url", &n.URL}} {
+	}{{"deliveryID", &n.DeliveryID}, {"type", &n.Type}, {"actor", &n.Actor}, {"text", &n.Text}, {"url", &n.URL}} {
 		if v, ok := e[field.key].(string); ok {
 			*field.dst = v
 		}
 	}
-	if n.Source == "" || n.DeliveryID == "" || len(n.DeliveryID) > 160 || n.Type == "" {
+	if n.DeliveryID == "" || len(n.DeliveryID) > 160 || n.Type == "" || len(n.Type) > 128 {
 		return n, fmt.Errorf("event identity is incomplete")
 	}
 	if n.Actor == "" {
-		n.Actor = n.Source
+		n.Actor = n.Protocol
 	}
 	if len(n.Text) > 4096 {
 		n.Text = n.Text[:4096]
@@ -616,21 +622,21 @@ func normalizeReceiverEvent(b receiverBinding, p receiverProtocol, e map[string]
 			n.URL = ""
 		}
 	}
-	if value, exists := e["key"]; exists {
-		raw, ok := value.([]any)
+	// Keys are canonical resource URIs within the protocol's prefixes. An
+	// empty key routes to the binding's fallback Task.
+	if value, exists := e["key"]; exists && value != "" {
+		raw, ok := value.(string)
 		if !ok {
-			return n, fmt.Errorf("event key must be a list")
+			return n, fmt.Errorf("event key must be a URI string")
 		}
-		if len(raw) > 16 {
-			return n, fmt.Errorf("event key is too long")
+		key, err := canonicalKey(raw)
+		if err != nil {
+			return n, fmt.Errorf("event key: %w", err)
 		}
-		for _, part := range raw {
-			s, ok := part.(string)
-			if !ok || s == "" || len(s) > 256 {
-				return n, fmt.Errorf("invalid key segment")
-			}
-			n.Key = append(n.Key, s)
+		if !slices.ContainsFunc(p.Spec.Event.AllowedKeyPrefixes, func(prefix string) bool { return keyHasPrefix(key, prefix) }) {
+			return n, fmt.Errorf("event key is outside the protocol's allowed prefixes")
 		}
+		n.Key = key
 	}
 	return n, nil
 }

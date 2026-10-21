@@ -1,10 +1,13 @@
-# Example GitHub thread routing from stored mail headers.
-# This key wakes an existing Task; unmatched mail goes to the fallback Task.
+# GitHub notification routing from stored mail headers. The key is the same
+# issue URL that GitHub webhooks produce, so either transport wakes the Task.
+# GitHub's DKIM signature covers References but not Message-ID or the
+# X-GitHub-* headers, so only References selects the issue. X-GitHub-Sender is
+# display-only; the operator drops mail whose actor is the Agent's own login.
 apiVersion: codemowers.cloud/v1alpha1
-kind: MailSubscription
+kind: MailBinding
 metadata:
   name: matmlazi-github-notifications
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
   mailboxRef: matmlazi-mail
   agentRef: matmlazi
@@ -14,19 +17,17 @@ spec:
       - name: Authentication-Results
         startsWith: 'mail.codemowers.io;'
         pattern: '(?:^|;) *dmarc=pass(?:[ (;]|$)'
-      - name: Message-ID
-        pattern: '^<(?P<owner>[^/<>]+)/(?P<repository>[^/<>]+)/issues?/(?P<number>[0-9]+)(?:/(?:[0-9]+|issue_event/[0-9]+))?@github[.]com>$'
+      - name: References
+        pattern: '^<(?P<owner>[^/<>]+)/(?P<repository>[^/<>]+)/(?:issues|pull)/(?P<number>[0-9]+)@github[.]com>'
       - name: X-GitHub-Sender
         pattern: '^(?P<actor>[A-Za-z0-9-]+)$'
-        notEquals: matmlazi
   event:
     type: github_notification
     actor: '${actor}'
     text: GitHub notification; read the current issue or pull request
     url: 'https://github.com/${owner}/${repository}/issues/${number}'
-    key: [forge, github, 'https://github.com', '${owner}', '${repository}', thread, '${number}']
+    key: 'https://github.com/${owner|lower}/${repository|lower}/issues/${number}'
   routing:
-    existingTask: exactKey
     otherwise:
       taskRef: mail-intake
     coalesceFor: 3m

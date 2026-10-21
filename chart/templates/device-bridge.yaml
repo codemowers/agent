@@ -4,10 +4,12 @@ metadata:
   name: agent-devices
 ---
 {{- if .Values.bootstrapRbac }}
+# Devices live in Agent namespaces; each namespace holds its own
+# agent-device-keys Secret.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
-  name: agent-devices
+  name: {{ .Release.Namespace }}-agent-devices-auth
 rules:
   - apiGroups: [codemowers.cloud]
     resources: [devices]
@@ -19,25 +21,6 @@ rules:
     resources: [secrets]
     resourceNames: [agent-device-keys]
     verbs: [get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: agent-devices
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: agent-devices
-subjects:
-  - kind: ServiceAccount
-    name: agent-devices
-    namespace: {{ .Release.Namespace }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ .Release.Namespace }}-agent-devices-auth
-rules:
   - apiGroups: [authentication.k8s.io]
     resources: [tokenreviews]
     verbs: [create]
@@ -91,11 +74,6 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-          env:
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
           resources: {{ toYaml .Values.deviceBridge.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -145,8 +123,10 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    # Workers of every Agent namespace.
     - from:
-        - podSelector:
+        - namespaceSelector: {}
+          podSelector:
             matchExpressions:
               - key: codemowers.cloud/task
                 operator: Exists

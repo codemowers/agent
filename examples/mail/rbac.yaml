@@ -4,13 +4,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: agent-mailbox
-  namespace: codemowers-agent-system
+  namespace: agents
 automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: codemowers-agent-system-agent-mailbox-auth
+  name: agents-agent-mailbox-auth
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -18,14 +18,14 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: agent-mailbox
-    namespace: codemowers-agent-system
+    namespace: agents
 ---
 # send permits send_email; read permits listing and reading messages in every folder.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: mailbox-matmlazi-mail
-  namespace: codemowers-agent-system
+  namespace: agents
 rules:
   - apiGroups: [codemowers.cloud]
     resources: [mailboxes]
@@ -36,7 +36,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: mailbox-matmlazi-mail
-  namespace: codemowers-agent-system
+  namespace: agents
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -44,4 +44,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: agent-worker-matmlazi
-    namespace: codemowers-agent-system
+    namespace: agents

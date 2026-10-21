@@ -41,6 +41,13 @@ type AgentSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
 	IdleSeconds *int32 `json:"idleSeconds,omitempty"`
+	// ResourcePrefix confines the worker ServiceAccount, through the
+	// agent-resource-prefix admission policy, to resources named with it and
+	// starts the names of worker Pods and Task PVCs. Empty leaves the worker to
+	// plain RBAC and names Pods and PVCs "<Agent name>-".
+	// +kubebuilder:validation:MaxLength=30
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$`
+	ResourcePrefix string `json:"resourcePrefix,omitempty"`
 	// Resources is copied to each new Task and controls the worker container's
 	// requests and limits. If absent, the worker template resources are used.
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -127,7 +134,9 @@ type MCPEndpoint struct {
 // a reserved name are ignored.
 //
 // mailboxes names the Mailboxes the worker ServiceAccount may send or read.
-func WorkerMCPEndpoints(agent *Agent, namespace string, mailboxes []string) []MCPEndpoint {
+// The operator and Device bridge run in the harness namespace; Mailboxes run
+// in the Task's namespace.
+func WorkerMCPEndpoints(agent *Agent, harnessNamespace, namespace string, mailboxes []string) []MCPEndpoint {
 	endpoints := make([]MCPEndpoint, 0, len(agent.Spec.MCPEndpoints)+2)
 	for _, endpoint := range agent.Spec.MCPEndpoints {
 		if endpoint.Name != "agent_operator" && endpoint.Name != "devices" {
@@ -135,11 +144,11 @@ func WorkerMCPEndpoints(agent *Agent, namespace string, mailboxes []string) []MC
 		}
 	}
 	endpoints = append(endpoints, MCPEndpoint{Name: "agent_operator",
-		URL:       "http://agent-operator." + namespace + ".svc.cluster.local:8083/mcp",
+		URL:       OperatorMCPURL(harnessNamespace),
 		TokenFile: "/var/run/agent-operator-mcp/token"})
 	// Kubernetes RBAC on each Device decides access; the bridge checks it per call.
 	endpoints = append(endpoints, MCPEndpoint{Name: "devices",
-		URL:       "http://agent-devices." + namespace + ".svc.cluster.local:8080/mcp",
+		URL:       "http://agent-devices." + harnessNamespace + ".svc.cluster.local:8080/mcp",
 		TokenFile: "/var/run/agent-devices/token"})
 	// Each Mailbox Pod serves its own MCP and still checks RBAC per call.
 	for _, mailbox := range mailboxes {
@@ -148,6 +157,11 @@ func WorkerMCPEndpoints(agent *Agent, namespace string, mailboxes []string) []MC
 			TokenFile: "/var/run/agent-mailbox/token"})
 	}
 	return endpoints
+}
+
+// OperatorMCPURL is the execution-bound Agent MCP endpoint of the operator.
+func OperatorMCPURL(harnessNamespace string) string {
+	return "http://agent-operator." + harnessNamespace + ".svc.cluster.local:8083/mcp"
 }
 
 type AgentStatus struct {
@@ -241,10 +255,9 @@ type TaskSpec struct {
 	// +kubebuilder:default=false
 	Suspend bool `json:"suspend,omitempty"`
 
-	// RoutingKeys are exact, ordered event aliases scoped to this Task's Agent
-	// and namespace. Each key is a list of non-empty segments; the Task name
-	// remains its primary identity. The operator creates these for event Tasks.
-	RoutingKeys [][]string `json:"routingKeys,omitempty"`
+	// RoutingKeys are exact canonical resource URIs scoped to this Task's
+	// Agent and namespace. The Task name remains its primary identity.
+	RoutingKeys []string `json:"routingKeys,omitempty"`
 
 	// ExternalReferences are starting source links. A matching forge reference
 	// selects checkout; later observations belong in status.

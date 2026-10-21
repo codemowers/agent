@@ -15,11 +15,11 @@ var (
 func init() {
 	SchemeBuilder.Register(&Agent{}, &AgentList{})
 	SchemeBuilder.Register(&Task{}, &TaskList{})
-	SchemeBuilder.Register(&ClusterWebhookReceiver{}, &ClusterWebhookReceiverList{})
-	SchemeBuilder.Register(&WebhookReceiver{}, &WebhookReceiverList{})
-	SchemeBuilder.Register(&TaskCreationPolicy{}, &TaskCreationPolicyList{})
+	SchemeBuilder.Register(&WebhookProtocol{}, &WebhookProtocolList{})
+	SchemeBuilder.Register(&WebhookBinding{}, &WebhookBindingList{})
+	SchemeBuilder.Register(&TaskPolicy{}, &TaskPolicyList{})
 	SchemeBuilder.Register(&Mailbox{}, &MailboxList{})
-	SchemeBuilder.Register(&MailSubscription{}, &MailSubscriptionList{})
+	SchemeBuilder.Register(&MailBinding{}, &MailBindingList{})
 	SchemeBuilder.Register(&Device{}, &DeviceList{})
 }
 
@@ -168,10 +168,7 @@ func (in *TaskSpec) DeepCopyInto(out *TaskSpec) {
 		out.DisabledMCPs = append([]string(nil), in.DisabledMCPs...)
 	}
 	if in.RoutingKeys != nil {
-		out.RoutingKeys = make([][]string, len(in.RoutingKeys))
-		for i := range in.RoutingKeys {
-			out.RoutingKeys[i] = append([]string(nil), in.RoutingKeys[i]...)
-		}
+		out.RoutingKeys = append([]string(nil), in.RoutingKeys...)
 	}
 	if in.ExternalReferences != nil {
 		out.ExternalReferences = append([]ExternalReference(nil), in.ExternalReferences...)

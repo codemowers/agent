@@ -29,23 +29,23 @@ spec:
       auth_oauth2.additional_scopes_key = aud
       auth_oauth2.scope_aliases.agent-rabbitmq = rabbitmq.read:*/{sub}:* rabbitmq.configure:*/{sub}:*
       auth_oauth2.resource_servers.publisher.id = agent-rabbitmq-publisher
-      auth_oauth2.resource_servers.publisher.scope_aliases.agent-rabbitmq-publisher = rabbitmq.write:*/agent.webhook.events/*
+      auth_oauth2.resource_servers.publisher.scope_aliases.agent-rabbitmq-publisher = rabbitmq.write:*/agent.intake/*
       auth_oauth2.jwks_uri = {{ .Values.rabbitmq.jwksURI }}
       auth_oauth2.https.hostname_verification = wildcard
       {{- with .Values.rabbitmq.jwksCACertFile }}
       auth_oauth2.https.cacertfile = {{ . }}
       {{- end }}
 ---
-# Topic exchange; the generic webhook publishes normalized events with
-# receiver.<namespace>.<receiver> routing keys.
+# Topic exchange for authenticated arrivals. Routing keys name the source:
+# webhook.<namespace>.<binding> and mail.<namespace>.<mailbox>.
 apiVersion: rabbitmq.com/v1beta1
 kind: Exchange
 metadata:
-  name: {{ include "agent.rabbitmqPrefix" . }}-webhook-exchange
+  name: {{ include "agent.rabbitmqPrefix" . }}-intake-exchange
   labels:
     skaffold.dev/keep: 'true'
 spec:
-  name: agent.webhook.events
+  name: agent.intake
   type: topic
   durable: true
   vhost: /
@@ -57,11 +57,11 @@ spec:
 apiVersion: rabbitmq.com/v1beta1
 kind: Queue
 metadata:
-  name: {{ include "agent.rabbitmqPrefix" . }}-webhook-queue
+  name: {{ include "agent.rabbitmqPrefix" . }}-intake-queue
   labels:
     skaffold.dev/keep: 'true'
 spec:
-  name: agent.webhook.events
+  name: agent.intake
   durable: true
   type: quorum
   # Keep queued events if this object is deleted or replaced.
@@ -74,12 +74,12 @@ spec:
 apiVersion: rabbitmq.com/v1beta1
 kind: Binding
 metadata:
-  name: {{ include "agent.rabbitmqPrefix" . }}-webhook-binding
+  name: {{ include "agent.rabbitmqPrefix" . }}-intake-binding
   labels:
     skaffold.dev/keep: 'true'
 spec:
-  source: agent.webhook.events
-  destination: agent.webhook.events
+  source: agent.intake
+  destination: agent.intake
   destinationType: queue
   routingKey: '#'
   vhost: /

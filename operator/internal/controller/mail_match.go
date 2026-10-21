@@ -11,11 +11,11 @@ import (
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 )
 
-var mailVariable = regexp.MustCompile(`\$\{([A-Za-z][A-Za-z0-9_.]*)\}`)
+var mailVariable = regexp.MustCompile(`\$\{([A-Za-z][A-Za-z0-9_.]*)(\|lower)?\}`)
 var mailMessageID = regexp.MustCompile(`<[^<>\s]{1,990}>`)
 
 // mailMetadata contains only bounded RFC 5322 headers. Bodies and attachments
-// are never supplied to subscription matchers.
+// are never supplied to binding matchers.
 type mailMetadata struct {
 	Headers map[string][]string `json:"headers"`
 }
@@ -25,10 +25,10 @@ type matchedMailEvent struct {
 	Actor string
 	Text  string
 	URL   string
-	Key   []string
+	Key   string
 }
 
-func validateMailSubscription(spec agentsv1alpha1.MailSubscriptionSpec) error {
+func validateMailBinding(spec agentsv1alpha1.MailBindingSpec) error {
 	known := map[string]bool{"mail.fromAddress": true, "mail.messageID": true, "mail.threadRootMessageID": true}
 	for _, rule := range spec.Match.Headers {
 		if rule.Pattern == "" {
@@ -51,7 +51,7 @@ func validateMailSubscription(spec agentsv1alpha1.MailSubscriptionSpec) error {
 			known[name] = true
 		}
 	}
-	for _, template := range append([]string{spec.Event.Actor, spec.Event.Text, spec.Event.URL}, spec.Event.Key...) {
+	for _, template := range []string{spec.Event.Actor, spec.Event.Text, spec.Event.URL, spec.Event.Key} {
 		for _, match := range mailVariable.FindAllStringSubmatch(template, -1) {
 			if !known[match[1]] {
 				return fmt.Errorf("unknown mail template variable %q", match[1])
@@ -93,10 +93,13 @@ func threadRootMessageID(headers map[string][]string) string {
 func expandMailTemplate(template string, values map[string]string) (string, error) {
 	var missing string
 	result := mailVariable.ReplaceAllStringFunc(template, func(token string) string {
-		name := token[2 : len(token)-1]
-		value := values[name]
+		match := mailVariable.FindStringSubmatch(token)
+		value := values[match[1]]
 		if value == "" {
-			missing = name
+			missing = match[1]
+		}
+		if match[2] != "" {
+			value = strings.ToLower(value)
 		}
 		return value
 	})
@@ -109,11 +112,11 @@ func expandMailTemplate(template string, values map[string]string) (string, erro
 	return result, nil
 }
 
-// matchMailSubscription returns false for ordinary nonmatches, and an error for
+// matchMailBinding returns false for ordinary nonmatches, and an error for
 // invalid rule configuration. Duplicate matched headers are deliberately a
 // nonmatch: picking one could let a sender choose the apparent auth verdict.
-func matchMailSubscription(spec agentsv1alpha1.MailSubscriptionSpec, message mailMetadata) (matchedMailEvent, bool, error) {
-	if err := validateMailSubscription(spec); err != nil {
+func matchMailBinding(spec agentsv1alpha1.MailBindingSpec, message mailMetadata) (matchedMailEvent, bool, error) {
+	if err := validateMailBinding(spec); err != nil {
 		return matchedMailEvent{}, false, err
 	}
 	from, ok := singleMailHeader(message.Headers, "From")
@@ -137,9 +140,10 @@ func matchMailSubscription(spec agentsv1alpha1.MailSubscriptionSpec, message mai
 			return matchedMailEvent{}, false, nil
 		}
 	}
-	values := map[string]string{"mail.fromAddress": fromAddress, "mail.threadRootMessageID": threadRootMessageID(message.Headers)}
+	// Message IDs are bare, as in mid: URIs (RFC 2392).
+	values := map[string]string{"mail.fromAddress": fromAddress, "mail.threadRootMessageID": strings.Trim(threadRootMessageID(message.Headers), "<>")}
 	if id, ok := singleMailHeader(message.Headers, "Message-ID"); ok && mailMessageID.MatchString(id) {
-		values["mail.messageID"] = mailMessageID.FindString(id)
+		values["mail.messageID"] = strings.Trim(mailMessageID.FindString(id), "<>")
 	}
 	for _, rule := range spec.Match.Headers {
 		value, present := singleMailHeader(message.Headers, rule.Name)
@@ -189,18 +193,17 @@ func matchMailSubscription(spec agentsv1alpha1.MailSubscriptionSpec, message mai
 			return matchedMailEvent{}, false, errors.New("invalid mail event URL")
 		}
 	}
-	result.Key = []string{"external"}
-	for _, template := range spec.Event.Key {
-		segment, err := expandMailTemplate(template, values)
+	if spec.Event.Key != "" {
+		key, err := expandMailTemplate(spec.Event.Key, values)
 		if err != nil {
 			return matchedMailEvent{}, false, err
 		}
-		if segment == "" || len(segment) > 256 {
-			return matchedMailEvent{}, false, errors.New("mail key segment invalid")
+		// Captured header text can make the URI invalid; that is a nonmatch.
+		if result.Key, err = agentsv1alpha1.CanonicalKey(key); err != nil {
+			return matchedMailEvent{}, false, nil
 		}
-		result.Key = append(result.Key, segment)
 	}
-	if len(result.Key) > 16 || len(result.Text) > 4096 {
+	if len(result.Text) > 4096 {
 		return matchedMailEvent{}, false, errors.New("mail event exceeds bounds")
 	}
 	return result, true, nil

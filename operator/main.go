@@ -143,6 +143,8 @@ func main() {
 		AMQP:        amqpMgr,
 		AMQPURL:     workerAMQPURL(amqpURL),
 		WorkerImage: os.Getenv("AGENT_WORKER_IMAGE"),
+		// Only the Pod's metadata.namespace fieldRef supplies this.
+		HarnessNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Task controller")
 		os.Exit(1)
@@ -185,8 +187,8 @@ func main() {
 			Client:    mgr.GetClient(),
 			APIReader: mgr.GetAPIReader(),
 			AMQPURL:   amqpURL,
-			Queue:     envOrDefault("AMQP_QUEUE", "agent.webhook.events"),
-			Exchange:  envOrDefault("AMQP_EXCHANGE", "agent.webhook.events"),
+			Queue:     envOrDefault("AMQP_QUEUE", "agent.intake"),
+			Exchange:  envOrDefault("AMQP_EXCHANGE", "agent.intake"),
 			AMQP:      amqpMgr,
 			// The webhook receiver publishes as its ServiceAccount; RabbitMQ
 			// verifies the user_id it stamps on each event.

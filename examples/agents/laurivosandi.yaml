@@ -2,7 +2,7 @@ apiVersion: codemowers.cloud/v1alpha1
 kind: Agent
 metadata:
   name: laurivosandi
-  namespace: codemowers-agent-system
+  namespace: agents
   annotations:
     kubernetes.io/description: "Agent for laurivosandi; no Kubernetes API access"
 spec:

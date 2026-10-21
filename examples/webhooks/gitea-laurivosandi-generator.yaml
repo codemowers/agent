@@ -4,7 +4,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: agent-operator-webhook-keys
-  namespace: codemowers-agent-system
+  namespace: agents
   annotations:
     secret-generator.v1.mittwald.de/autogenerate: gitea-laurivosandi
     secret-generator.v1.mittwald.de/encoding: hex

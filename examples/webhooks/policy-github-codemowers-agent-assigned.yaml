@@ -1,17 +1,12 @@
 # Task creation is a separate authorization decision. A valid webhook alone
-# cannot create a Task; currentForgeAssignment checks the configured Agent's
+# cannot create a Task; forgeAssignment checks the configured Agent's
 # forge account and the current issue or PR assignment before creation.
 apiVersion: codemowers.cloud/v1alpha1
-kind: TaskCreationPolicy
+kind: TaskPolicy
 metadata:
   name: github-codemowers-agent-assigned
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
   agentRef: matmlazi
-  receiverRef: github-codemowers-agent
-  keyPrefix:
-    - external
-    - forge
-    - github
-    - https://github.com
-  check: currentForgeAssignment
+  keyPrefix: https://github.com
+  verify: forgeAssignment

@@ -4,7 +4,7 @@ metadata:
   name: {{ .Release.Name }}-webhook
   annotations:
     kubernetes.io/description: >-
-      Evaluates ClusterWebhookReceiver and WebhookReceiver resources,
+      Evaluates WebhookProtocol and WebhookBinding resources,
       verifies requests, and publishes normalized events to RabbitMQ.
 spec:
   selector:
@@ -29,8 +29,6 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-            - name: internal
-              containerPort: 8083
           readinessProbe:
             httpGet:
               path: /healthz
@@ -76,13 +74,13 @@ metadata:
 rules:
   - apiGroups: [codemowers.cloud]
     resources:
-      - webhookreceivers
+      - webhookbindings
     verbs:
       - list
       - get
   - apiGroups: [codemowers.cloud]
     resources:
-      - clusterwebhookreceivers
+      - webhookprotocols
     verbs:
       - get
   - apiGroups: [""]
@@ -92,6 +90,12 @@ rules:
       - agent-operator-webhook-keys
     verbs:
       - get
+  # Authenticates senders of serviceAccountToken protocols.
+  - apiGroups: [authentication.k8s.io]
+    resources:
+      - tokenreviews
+    verbs:
+      - create
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -118,18 +122,6 @@ spec:
     - name: http
       port: 8080
       targetPort: http
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ .Release.Name }}-webhook-internal
-spec:
-  selector:
-    app: {{ .Release.Name }}-webhook
-  ports:
-    - name: http
-      port: 8083
-      targetPort: internal
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress

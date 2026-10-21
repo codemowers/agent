@@ -86,11 +86,11 @@ func TestNormalizedEventRoutesOnlyOwnedTask(t *testing.T) {
 		uid := types.UID(item.agent + "-uid")
 		objects = append(objects, &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: item.agent, Namespace: item.namespace, UID: uid, Generation: 1},
 			Status: agentsv1alpha1.AgentStatus{ForgesObservedGeneration: 1, Forges: []agentsv1alpha1.ForgeCapability{{Type: "github", ServerURL: "https://github.com", Status: "available", Login: item.agent}}}})
-		objects = append(objects, &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "issue-8", Namespace: item.namespace, Labels: map[string]string{"codemowers.cloud/agent": item.agent}, OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: item.agent, UID: uid}}}, Spec: agentsv1alpha1.TaskSpec{RoutingKeys: [][]string{{"external", "forge", "github", "https://github.com", "codemowers", "agent", "issue", "8"}}}})
+		objects = append(objects, &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "issue-8", Namespace: item.namespace, Labels: map[string]string{"codemowers.cloud/agent": item.agent}, OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: item.agent, UID: uid}}}, Spec: agentsv1alpha1.TaskSpec{RoutingKeys: []string{"https://github.com/codemowers/agent/issues/8"}}})
 	}
 	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(objects...).Build()
 	consumer := &EventConsumer{Client: k8s, APIReader: k8s, WebhookPublisher: testWebhookPublisher}
-	event := normalizedEvent{Version: 1, Namespace: "team-a", Agent: "developer", Receiver: "github-public", ReceiverUID: "receiver-uid", Protocol: "github", Source: "github", DeliveryID: "delivery-1", Type: "issues", Actor: "lauri", Text: "New comment", URL: "https://github.com/codemowers/agent/issues/8#issuecomment-1", Key: []string{"external", "forge", "github", "https://github.com", "codemowers", "agent", "issue", "8"}}
+	event := normalizedEvent{Version: 2, Namespace: "team-a", Agent: "developer", Binding: "github-public", BindingUID: "binding-uid", Protocol: "github", DeliveryID: "delivery-1", Type: "issue_comment.created", Actor: "lauri", Text: "New comment", URL: "https://github.com/codemowers/agent/issues/8#issuecomment-1", Key: "https://github.com/codemowers/agent/issues/8"}
 	self := event
 	self.DeliveryID = "delivery-self"
 	self.Actor = "developer"
@@ -154,48 +154,52 @@ func webhookDelivery(t *testing.T, event normalizedEvent) amqp.Delivery {
 	if err != nil {
 		t.Fatal(err)
 	}
-	route := "receiver." + event.Namespace + "." + event.Receiver
+	route := "webhook." + event.Namespace + "." + event.Binding
 	return amqp.Delivery{RoutingKey: route, MessageId: normalizedMessageID(event), UserId: testWebhookPublisher, Body: body,
-		Headers: amqp.Table{"x-namespace": event.Namespace, "x-agent": event.Agent, "x-hook-id": event.ReceiverUID, "x-source": event.Source, "x-event": event.Type}}
+		Headers: amqp.Table{"x-namespace": event.Namespace, "x-agent": event.Agent, "x-binding-uid": event.BindingUID, "x-source": event.Protocol, "x-event": event.Type, "x-key": event.Key}}
 }
 
-func TestSelfForgeEventRequiresMatchingCurrentProviderIdentity(t *testing.T) {
+func TestSelfEventRequiresMatchingCurrentForgeIdentity(t *testing.T) {
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Generation: 3},
 		Status: agentsv1alpha1.AgentStatus{ForgesObservedGeneration: 3, Forges: []agentsv1alpha1.ForgeCapability{{
 			Type: "gitea", ServerURL: "https://git.example.test", Status: "available", Login: "bot",
 		}}}}
-	event := normalizedEvent{Source: "gitea", Actor: "Bot", Key: []string{
-		"external", "forge", "gitea", "https://git.example.test", "team", "repo", "issue", "1",
-	}}
-	if !selfForgeEvent(agent, event) {
+	event := intakeEvent{Source: "gitea", Actor: "Bot", Key: "https://git.example.test/team/repo/issues/1"}
+	if !selfEvent(agent, event) {
 		t.Fatal("current Gitea bot event not suppressed")
 	}
-	for _, changed := range []normalizedEvent{
+	for _, changed := range []intakeEvent{
 		{Source: "gitea", Actor: "human", Key: event.Key},
-		{Source: "gitea", Actor: "bot", Key: []string{"external", "forge", "gitea", "https://other.example.test"}},
-		{Source: "slack", Actor: "bot", Key: []string{"external", "slack", "workspace", "channel", "thread"}},
+		{Source: "gitea", Actor: "bot", Key: "https://other.example.test/team/repo/issues/1"},
+		{Source: "slack-events", Actor: "bot", Key: "https://slack.com/archives/C1/p1"},
+		{Source: "gitea", Actor: "bot"},
 	} {
-		if selfForgeEvent(agent, changed) {
+		if selfEvent(agent, changed) {
 			t.Fatalf("unrelated event suppressed: %+v", changed)
 		}
 	}
 	agent.Status.ForgesObservedGeneration = 2
-	if selfForgeEvent(agent, event) {
+	if selfEvent(agent, event) {
 		t.Fatal("stale forge identity suppressed event")
 	}
 }
 
-func TestForgeTaskCreationPolicyKey(t *testing.T) {
-	key := []string{"external", "forge", "gitea", "https://git.example.test", "team", "repo", "issue", "42"}
-	event, ok := forgeEventFromKey(key)
-	if !ok || !routingKeyMatches(&agentsv1alpha1.Task{Spec: agentsv1alpha1.TaskSpec{RoutingKeys: [][]string{key}}}, eventTaskKey(event)) {
-		t.Fatal("forge key lost its canonical identity")
+func TestEnvelopeKeyHeaderMustMatchBody(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
 	}
-	if !hasKeyPrefix(key, []string{"external", "forge", "gitea", "https://git.example.test"}) || hasKeyPrefix(key, []string{"external", "forge", "github"}) {
-		t.Fatal("policy key prefix mismatch")
+	consumer := &EventConsumer{Client: fake.NewClientBuilder().WithScheme(scheme).Build(), WebhookPublisher: testWebhookPublisher}
+	event := normalizedEvent{Version: 2, Namespace: "team", Agent: "developer", Binding: "b", BindingUID: "uid", Protocol: "github", DeliveryID: "d", Type: "issues.opened", Key: "https://github.com/team/repo/issues/1"}
+	delivery := webhookDelivery(t, event)
+	delivery.Headers["x-key"] = "https://github.com/team/repo/issues/2"
+	// A nil APIReader would panic if the delivery passed envelope checks.
+	if err := consumer.handle(context.Background(), delivery); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := forgeEventFromKey([]string{"external", "forge", "gitea", "http://evil", "team", "repo", "issue", "42"}); ok {
-		t.Fatal("insecure forge URL accepted")
+	event.Key = "HTTPS://GitHub.com/team/repo/issues/1"
+	if err := consumer.handle(context.Background(), webhookDelivery(t, event)); err != nil {
+		t.Fatal(err)
 	}
 }
 

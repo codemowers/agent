@@ -1,14 +1,9 @@
 apiVersion: codemowers.cloud/v1alpha1
-kind: TaskCreationPolicy
+kind: TaskPolicy
 metadata:
   name: gitea-public-assigned
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
   agentRef: matmlazi
-  receiverRef: gitea-public
-  keyPrefix:
-    - external
-    - forge
-    - gitea
-    - https://gitea.com
-  check: currentForgeAssignment
+  keyPrefix: https://gitea.com
+  verify: forgeAssignment

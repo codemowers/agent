@@ -1,5 +1,5 @@
 apiVersion: codemowers.cloud/v1alpha1
-kind: ClusterWebhookReceiver
+kind: WebhookProtocol
 metadata:
   name: slack-events
 spec:
@@ -15,6 +15,9 @@ spec:
       timestampHeader: x-slack-request-timestamp
       maxSkew: 5m
   event:
+    # Thread permalinks without the workspace host; channel IDs are unique.
+    allowedKeyPrefixes:
+      - https://slack.com/archives
     requiredHeaders:
       - x-slack-signature
       - x-slack-request-timestamp
@@ -23,15 +26,13 @@ spec:
       body.type == 'event_callback' && has(body.event) &&
       !has(body.event.bot_id) &&
       (!has(body.event.subtype) || body.event.subtype != 'bot_message') ? [{
-        'source': 'slack',
         'deliveryID': body.event_id,
         'type': body.event.type,
         'actor': has(body.event.user) ? body.event.user : 'Slack',
         'text': has(body.event.text) ? body.event.text : body.event.type,
-        'key': has(body.event.channel) && has(body.event.ts) ? [
-          'slack', body.team_id, body.event.channel,
-          has(body.event.thread_ts) ? body.event.thread_ts : body.event.ts
-        ] : []
+        'key': has(body.event.channel) && has(body.event.ts) ?
+          'https://slack.com/archives/' + body.event.channel + '/p' +
+          (has(body.event.thread_ts) ? body.event.thread_ts : body.event.ts).replace('.', '') : ''
       }] : []
   response:
     rules:

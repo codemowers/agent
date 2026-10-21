@@ -2,14 +2,13 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,54 +18,146 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// createTaskForAssignedIssue verifies current forge state before accepting a
-// signed webhook as the first event of a Task. A delivery alone cannot choose
-// a repository, Agent credential, or assignee.
-func (c *EventConsumer) createTaskForAssignedIssue(ctx context.Context, namespace, agentName string, ev parsedEvent, messageID, coalesceFor string) (bool, error) {
-	if (ev.source != "github" && ev.source != "gitea") || (ev.kind != "issue" && ev.kind != "pull_request") {
+// createTaskByPolicy creates a Task for an unclaimed key when the most
+// specific TaskPolicy of the Agent allows it. An event alone cannot choose a
+// repository, Agent credential, or assignee.
+func (c *EventConsumer) createTaskByPolicy(ctx context.Context, agent *agentsv1alpha1.Agent, ev intakeEvent) (bool, error) {
+	var policies agentsv1alpha1.TaskPolicyList
+	if err := c.APIReader.List(ctx, &policies, client.InNamespace(ev.Namespace)); err != nil {
+		return false, err
+	}
+	var policy *agentsv1alpha1.TaskPolicy
+	tie := false
+	for i := range policies.Items {
+		candidate := &policies.Items[i]
+		if candidate.Spec.AgentRef != agent.Name || !agentsv1alpha1.KeyHasPrefix(ev.Key, candidate.Spec.KeyPrefix) ||
+			len(candidate.Spec.EventTypes) > 0 && !slices.Contains(candidate.Spec.EventTypes, ev.Type) {
+			continue
+		}
+		switch {
+		case policy == nil || len(candidate.Spec.KeyPrefix) > len(policy.Spec.KeyPrefix):
+			policy, tie = candidate, false
+		case len(candidate.Spec.KeyPrefix) == len(policy.Spec.KeyPrefix):
+			tie = true
+		}
+	}
+	if policy == nil {
 		return false, nil
 	}
-	if _, err := strconv.ParseUint(ev.id, 10, 64); err != nil {
+	logger := log.FromContext(ctx).WithValues("namespace", ev.Namespace, "taskPolicy", policy.Name)
+	if tie {
+		logger.Info("ambiguous TaskPolicy, not creating a Task")
 		return false, nil
 	}
-	var agent agentsv1alpha1.Agent
-	if err := c.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agentName}, &agent); err != nil {
-		if apierrors.IsNotFound(err) {
+	source := ev.URL
+	if source == "" {
+		source = ev.Key
+	}
+	task := &agentsv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: agentsv1alpha1.TaskNameForKey(agent.UID, ev.Key), Namespace: ev.Namespace,
+			Labels:      map[string]string{"codemowers.cloud/agent": agent.Name},
+			Annotations: map[string]string{"codemowers.cloud/initial-delivery-id": ev.Receipt},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name,
+				UID: agent.UID, Controller: boolPtr(true), BlockOwnerDeletion: boolPtr(true),
+			}},
+		},
+		Spec: agentsv1alpha1.TaskSpec{
+			AgentRef:    agent.Name,
+			Objective:   fmt.Sprintf("%s: %s. Read the latest updates and decide what to do next.", ev.Text, source),
+			Suspend:     agent.Spec.Suspended,
+			IdleSeconds: int32Ptr(agentsv1alpha1.AgentIdleSeconds(agent)),
+			Resources:   agentsv1alpha1.AgentWorkerResources(agent),
+			RoutingKeys: []string{ev.Key},
+		},
+	}
+	switch policy.Spec.Verify {
+	case "none":
+		// Mail headers never create a Task by themselves.
+		if ev.Source == "imap" {
 			return false, nil
 		}
-		return false, fmt.Errorf("get event Agent: %w", err)
+	case "forgeAssignment":
+		item, ok, err := c.verifyForgeAssignment(ctx, agent, ev.Key)
+		if err != nil || !ok {
+			return false, err
+		}
+		task.Spec.Objective = fmt.Sprintf("%s: %s. Read the latest updates and decide what to do next.", item.title, item.url)
+		task.Spec.ExternalReferences = []agentsv1alpha1.ExternalReference{item.reference}
+	default:
+		logger.Info("unsupported TaskPolicy verify, not creating a Task", "verify", policy.Spec.Verify)
+		return false, nil
 	}
-	eventHost := ev.serverURL
-	if ev.source == "github" && eventHost == "" {
-		eventHost = "github.com"
+	if ev.Coalesce > 0 {
+		task.Annotations["codemowers.cloud/coalesce-until"] = strconv.FormatInt(time.Now().Add(ev.Coalesce).UnixMilli(), 10)
+		task.Annotations["codemowers.cloud/coalesce-trailing"] = "false"
 	}
+	if err := c.Client.Create(ctx, task); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("create policy Task: %w", err)
+	}
+	return true, nil
+}
+
+type forgeAccount struct {
+	Login    string `json:"login"`
+	Username string `json:"username"`
+}
+
+type forgeItem struct {
+	title     string
+	url       string
+	reference agentsv1alpha1.ExternalReference
+}
+
+// verifyForgeAssignment reads a key of the form
+// https://<forge>/<owner>/<repo>/issues/<number> and checks with the Agent's
+// own credential that the issue or pull request is open and assigned to it.
+func (c *EventConsumer) verifyForgeAssignment(ctx context.Context, agent *agentsv1alpha1.Agent, key string) (forgeItem, bool, error) {
+	parsed, err := url.Parse(key)
+	if err != nil || parsed.Scheme != "https" {
+		return forgeItem{}, false, nil
+	}
+	segments := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+	if len(segments) != 4 || segments[0] == "" || segments[1] == "" || segments[2] != "issues" {
+		return forgeItem{}, false, nil
+	}
+	if _, err := strconv.ParseUint(segments[3], 10, 64); err != nil {
+		return forgeItem{}, false, nil
+	}
+	owner, repo, number := segments[0], segments[1], segments[3]
 	var provider *agentsv1alpha1.GitProvider
 	for i := range agent.Spec.GitProviders {
 		candidate := &agent.Spec.GitProviders[i]
-		if candidate.Type == ev.source && serverHost(candidate.ServerURL) == eventHost {
+		server, err := url.Parse(candidate.ServerURL)
+		if err == nil && strings.EqualFold(server.Host, parsed.Host) {
 			provider = candidate
 			break
 		}
 	}
 	if provider == nil || provider.CredentialKeyRef == "" {
-		return false, nil
+		return forgeItem{}, false, nil
 	}
 	if c.APIReader == nil {
-		return false, fmt.Errorf("secret API reader is unavailable")
+		return forgeItem{}, false, fmt.Errorf("secret API reader is unavailable")
 	}
 	var secret corev1.Secret
-	if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agentsv1alpha1.ProviderTokensSecretName}, &secret); err != nil {
-		return false, fmt.Errorf("get configured forge credential: %w", err)
+	if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.ProviderTokensSecretName}, &secret); err != nil {
+		return forgeItem{}, false, fmt.Errorf("get configured forge credential: %w", err)
 	}
 	token := string(secret.Data[provider.CredentialKeyRef])
 	if token == "" {
-		return false, fmt.Errorf("configured forge credential has no token")
+		return forgeItem{}, false, fmt.Errorf("configured forge credential has no token")
 	}
 	apiURL, err := forgeAPIURL(*provider)
 	if err != nil {
-		return false, err
+		return forgeItem{}, false, err
 	}
 	httpClient := &http.Client{}
 	if c.HTTPClient != nil {
@@ -76,115 +167,66 @@ func (c *EventConsumer) createTaskForAssignedIssue(ctx context.Context, namespac
 	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	var account struct {
-		Login    string `json:"login"`
-		Username string `json:"username"`
-	}
-	if err := forgeGet(ctx, httpClient, apiURL+"/user", token, &account); err != nil {
-		return false, fmt.Errorf("verify forge account: %w", err)
-	}
-	login := account.Login
+	login := probedForgeLogin(agent, *provider)
 	if login == "" {
-		login = account.Username
+		var account forgeAccount
+		if err := forgeGet(ctx, httpClient, apiURL+"/user", token, &account); err != nil {
+			return forgeItem{}, false, fmt.Errorf("verify forge account: %w", err)
+		}
+		login = account.Login
+		if login == "" {
+			login = account.Username
+		}
+		if login == "" {
+			return forgeItem{}, false, fmt.Errorf("configured forge account has no login")
+		}
 	}
-	if login == "" {
-		return false, fmt.Errorf("configured forge account has no login")
-	}
-	resource := "issues"
-	if ev.kind == "pull_request" {
-		resource = "pulls"
-	}
-	itemURL := fmt.Sprintf("%s/repos/%s/%s/%s/%s", apiURL, url.PathEscape(ev.owner),
-		url.PathEscape(ev.repo), resource, ev.id)
+	// GitHub and Gitea serve pull requests through the issues endpoint too.
 	var item struct {
-		State     string `json:"state"`
-		Title     string `json:"title"`
-		HTMLURL   string `json:"html_url"`
-		Assignees []struct {
-			Login    string `json:"login"`
-			Username string `json:"username"`
-		} `json:"assignees"`
+		State       string          `json:"state"`
+		Title       string          `json:"title"`
+		HTMLURL     string          `json:"html_url"`
+		PullRequest json.RawMessage `json:"pull_request"`
+		Assignees   []forgeAccount  `json:"assignees"`
 	}
+	itemURL := fmt.Sprintf("%s/repos/%s/%s/issues/%s", apiURL, url.PathEscape(owner), url.PathEscape(repo), number)
 	if err := forgeGet(ctx, httpClient, itemURL, token, &item); err != nil {
 		if errors.Is(err, errForgeNotFound) {
-			return false, nil
+			return forgeItem{}, false, nil
 		}
-		return false, fmt.Errorf("verify forge item: %w", err)
+		return forgeItem{}, false, fmt.Errorf("verify forge item: %w", err)
 	}
-	if item.State != "open" {
-		return false, nil
+	if item.State != "open" || !slices.ContainsFunc(item.Assignees, func(a forgeAccount) bool {
+		return strings.EqualFold(a.Login, login) || strings.EqualFold(a.Username, login)
+	}) {
+		return forgeItem{}, false, nil
 	}
-	assigned := false
-	for _, assignee := range item.Assignees {
-		if strings.EqualFold(assignee.Login, login) || strings.EqualFold(assignee.Username, login) {
-			assigned = true
-			break
-		}
+	kind := "issue"
+	if len(item.PullRequest) > 0 && string(item.PullRequest) != "null" {
+		kind = "pull_request"
 	}
-	if !assigned {
-		return false, nil
+	itemHTML := item.HTMLURL
+	if html, err := url.Parse(itemHTML); err != nil || html.Scheme != "https" || !strings.EqualFold(html.Host, parsed.Host) {
+		itemHTML = key
 	}
-	threadURL := item.HTMLURL
-	thread, err := url.Parse(threadURL)
-	if err != nil || thread.Scheme != "https" || serverHost(threadURL) != serverHost(provider.ServerURL) {
-		threadURL = strings.TrimRight(provider.ServerURL, "/") + "/" + url.PathEscape(ev.owner) + "/" + url.PathEscape(ev.repo) + "/" + resource + "/" + ev.id
-	}
-	routeKey := eventTaskKey(ev)
-	key, _ := json.Marshal(struct {
-		AgentUID string   `json:"agentUID"`
-		Segments []string `json:"segments"`
-	}{string(agent.UID), routeKey})
-	sum := sha256.Sum256(key)
-	name := "task-" + hex.EncodeToString(sum[:12])
-	forgeReference := agentsv1alpha1.ExternalReference{
-		Source: ev.source, ServerURL: provider.ServerURL, RepositoryOwner: ev.owner,
-		RepositoryName: ev.repo, Kind: ev.kind, ID: ev.id,
-	}
-	task := &agentsv1alpha1.Task{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name, Namespace: namespace,
-			Labels:      map[string]string{"codemowers.cloud/agent": agent.Name},
-			Annotations: map[string]string{"codemowers.cloud/initial-delivery-id": messageID},
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name,
-				UID: agent.UID, Controller: boolPtr(true), BlockOwnerDeletion: boolPtr(true),
-			}},
-		},
-		Spec: agentsv1alpha1.TaskSpec{
-			AgentRef:           agent.Name,
-			Objective:          fmt.Sprintf("%s: %s. Read the latest updates and decide what to do next.", item.Title, threadURL),
-			Suspend:            agent.Spec.Suspended,
-			IdleSeconds:        int32Ptr(agentsv1alpha1.AgentIdleSeconds(&agent)),
-			Resources:          agentsv1alpha1.AgentWorkerResources(&agent),
-			RoutingKeys:        forgeRoutingKeys(ev, routeKey),
-			ExternalReferences: []agentsv1alpha1.ExternalReference{forgeReference},
-		},
-	}
-	if coalesceFor != "" {
-		window, err := time.ParseDuration(coalesceFor)
-		if err != nil || window < time.Second || window > time.Hour {
-			return false, fmt.Errorf("invalid coalesceFor duration")
-		}
-		task.Annotations["codemowers.cloud/coalesce-until"] = strconv.FormatInt(time.Now().Add(window).UnixMilli(), 10)
-		task.Annotations["codemowers.cloud/coalesce-trailing"] = "false"
-	}
-	if err := c.Client.Create(ctx, task); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("create assigned Task: %w", err)
-	}
-	return true, nil
+	return forgeItem{title: item.Title, url: itemHTML, reference: agentsv1alpha1.ExternalReference{
+		Source: provider.Type, ServerURL: provider.ServerURL, RepositoryOwner: owner,
+		RepositoryName: repo, Kind: kind, ID: number,
+	}}, true, nil
 }
 
-func forgeRoutingKeys(ev parsedEvent, canonical []string) [][]string {
-	keys := [][]string{canonical}
-	// GitHub notification Message-IDs carry an issue number but not whether
-	// it is a pull request. Claim a shared thread alias for mail wakeups.
-	if ev.source == "github" && len(canonical) == 8 && canonical[3] == "https://github.com" {
-		keys = append(keys, []string{"external", "forge", "github", "https://github.com", canonical[4], canonical[5], "thread", canonical[7]})
+// probedForgeLogin reuses the Agent's current forge snapshot to avoid an
+// account lookup per event.
+func probedForgeLogin(agent *agentsv1alpha1.Agent, provider agentsv1alpha1.GitProvider) string {
+	if agent.Status.ForgesObservedGeneration != agent.Generation {
+		return ""
 	}
-	return keys
+	for _, forge := range agent.Status.Forges {
+		if forge.Status == "available" && forge.Type == provider.Type && forge.ServerURL == provider.ServerURL {
+			return forge.Login
+		}
+	}
+	return ""
 }
 
 func forgeAPIURL(provider agentsv1alpha1.GitProvider) (string, error) {

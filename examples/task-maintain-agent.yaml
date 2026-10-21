@@ -5,7 +5,7 @@ apiVersion: codemowers.cloud/v1alpha1
 kind: Task
 metadata:
   name: maintain-codemowers-agent
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
   agentRef: matmlazi
   objective: >-

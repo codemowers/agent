@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: agent-worker-laurivosandi
-  namespace: codemowers-agent-system
+  namespace: agents
   annotations:
     kubernetes.io/description: "No Kubernetes API access; token mount disabled."
 # The ServiceAccount still identifies the worker for its projected operator,

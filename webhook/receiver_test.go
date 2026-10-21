@@ -18,21 +18,20 @@ import (
 
 func TestExampleGiteaAndDiscordCEL(t *testing.T) {
 	for _, sample := range []struct {
-		protocol, binding, payload, eventType, wantSource, wantURL string
-		wantKey                                                    []string
+		protocol, binding, payload, eventType, wantType, wantURL, wantKey string
 	}{
-		{"gitea", "gitea-public", `{"repository":{"html_url":"https://gitea.com/team/repo","owner":{"login":"team"},"name":"repo"},"issue":{"number":7,"title":"Broken"},"sender":{"login":"alice"}}`, "issues", "gitea", "https://gitea.com/team/repo", []string{"forge", "gitea", "https://gitea.com", "team", "repo", "issue", "7"}},
-		{"gitea-issue-comment", "gitea-public", `{"action":"created","repository":{"html_url":"https://gitea.com/team/repo","owner":{"login":"team"},"name":"repo"},"issue":{"number":7,"title":"Broken","body":"Investigate the certificate chain","pull_request":null},"comment":{"body":"bingo bongo","html_url":"https://gitea.com/team/repo/issues/7#issuecomment-6"},"is_pull":false,"sender":{"login":"alice"}}`, "issue_comment", "gitea", "https://gitea.com/team/repo/issues/7#issuecomment-6", []string{"forge", "gitea", "https://gitea.com", "team", "repo", "issue", "7"}},
-		{"gitea-pr-comment", "gitea-public", `{"action":"created","repository":{"html_url":"https://gitea.com/team/repo","owner":{"login":"team"},"name":"repo"},"issue":{"number":8,"pull_request":null},"comment":{"body":"review"},"is_pull":true,"sender":{"login":"alice"}}`, "issue_comment", "gitea", "https://gitea.com/team/repo", []string{"forge", "gitea", "https://gitea.com", "team", "repo", "pull_request", "8"}},
-		{"discord-events", "discord-app", `{"application_id":"123456789012345678","type":1,"event":{"type":"LOBBY_MESSAGE_CREATE","timestamp":"2026-10-18T00:00:00Z","data":{"content":"hello","author":{"username":"alice"}}}}`, "", "discord", "", nil},
+		{"gitea", "gitea-public", `{"repository":{"html_url":"https://gitea.com/team/repo","full_name":"Team/Repo"},"issue":{"number":7,"title":"Broken"},"sender":{"login":"alice"}}`, "issues", "issues", "https://gitea.com/team/repo", "https://gitea.com/team/repo/issues/7"},
+		{"gitea-issue-comment", "gitea-public", `{"action":"created","repository":{"html_url":"https://gitea.com/team/repo","full_name":"Team/Repo"},"issue":{"number":7,"title":"Broken","body":"Investigate the certificate chain","pull_request":null},"comment":{"body":"bingo bongo","html_url":"https://gitea.com/team/repo/issues/7#issuecomment-6"},"is_pull":false,"sender":{"login":"alice"}}`, "issue_comment", "issue_comment.created", "https://gitea.com/team/repo/issues/7#issuecomment-6", "https://gitea.com/team/repo/issues/7"},
+		{"gitea-pr-comment", "gitea-public", `{"action":"created","repository":{"html_url":"https://gitea.com/team/repo","full_name":"Team/Repo"},"issue":{"number":8,"pull_request":null},"comment":{"body":"review"},"is_pull":true,"sender":{"login":"alice"}}`, "issue_comment", "issue_comment.created", "https://gitea.com/team/repo", "https://gitea.com/team/repo/issues/8"},
+		{"discord-events", "discord-app", `{"application_id":"123456789012345678","type":1,"event":{"type":"LOBBY_MESSAGE_CREATE","timestamp":"2026-10-18T00:00:00Z","data":{"content":"hello","author":{"username":"alice"}}}}`, "", "LOBBY_MESSAGE_CREATE", "", ""},
 	} {
 		t.Run(sample.protocol, func(t *testing.T) {
 			protocolName := sample.protocol
 			if strings.HasPrefix(protocolName, "gitea-") {
 				protocolName = "gitea"
 			}
-			protocol, _ := sampleReceiver(t, "ClusterWebhookReceiver", protocolName)
-			_, binding := sampleReceiver(t, "WebhookReceiver", sample.binding)
+			protocol, _ := sampleReceiver(t, "WebhookProtocol", protocolName)
+			_, binding := sampleReceiver(t, "WebhookBinding", sample.binding)
 			raw := []byte(sample.payload)
 			var body any
 			if err := json.Unmarshal(raw, &body); err != nil {
@@ -62,7 +61,7 @@ func TestExampleGiteaAndDiscordCEL(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if normalized.Source != sample.wantSource || normalized.URL != sample.wantURL || !equalKey(normalized.Key, sample.wantKey) {
+			if normalized.Type != sample.wantType || normalized.URL != sample.wantURL || normalized.Key != sample.wantKey {
 				t.Fatalf("normalized=%+v", normalized)
 			}
 			if sample.protocol == "gitea-issue-comment" && !strings.Contains(normalized.Text, "Investigate the certificate chain\n\nComment:\nbingo bongo") {
@@ -70,7 +69,7 @@ func TestExampleGiteaAndDiscordCEL(t *testing.T) {
 			}
 		})
 	}
-	protocol, _ := sampleReceiver(t, "ClusterWebhookReceiver", "discord-events")
+	protocol, _ := sampleReceiver(t, "WebhookProtocol", "discord-events")
 	public, private, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -88,8 +87,8 @@ func TestExampleGiteaAndDiscordCEL(t *testing.T) {
 }
 
 func TestExampleSlackIgnoresBotButKeepsHumanThreadReply(t *testing.T) {
-	protocol, _ := sampleReceiver(t, "ClusterWebhookReceiver", "slack-events")
-	_, binding := sampleReceiver(t, "WebhookReceiver", "slack-codemowers")
+	protocol, _ := sampleReceiver(t, "WebhookProtocol", "slack-events")
+	_, binding := sampleReceiver(t, "WebhookBinding", "slack-codemowers")
 	env, err := receiverEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +98,7 @@ func TestExampleSlackIgnoresBotButKeepsHumanThreadReply(t *testing.T) {
 		wantEvents    int
 	}{
 		{"bot", `{"type":"event_callback","team_id":"T0BTAN5EF5E","event_id":"bot-1","event":{"type":"message","subtype":"bot_message","bot_id":"B1","channel":"C1","ts":"2"}}`, 0},
-		{"human mention", `{"type":"event_callback","team_id":"T0BTAN5EF5E","event_id":"human-1","event":{"type":"message","user":"U1","text":"<@UAGENT> please investigate","channel":"C1","ts":"2.1","thread_ts":"1"}}`, 1},
+		{"human mention", `{"type":"event_callback","team_id":"T0BTAN5EF5E","event_id":"human-1","event":{"type":"message","user":"U1","text":"<@UAGENT> please investigate","channel":"C1","ts":"2.1","thread_ts":"1.0"}}`, 1},
 	} {
 		t.Run(sample.name, func(t *testing.T) {
 			var body any
@@ -122,7 +121,7 @@ func TestExampleSlackIgnoresBotButKeepsHumanThreadReply(t *testing.T) {
 			}
 			if sample.wantEvents == 1 {
 				normalized, err := normalizeReceiverEvent(binding, protocol, events[0].(map[string]any))
-				if err != nil || !equalKey(normalized.Key, []string{"slack", "T0BTAN5EF5E", "C1", "1"}) {
+				if err != nil || normalized.Key != "https://slack.com/archives/C1/p10" {
 					t.Fatalf("normalized=%+v err=%v", normalized, err)
 				}
 			}
@@ -132,9 +131,9 @@ func TestExampleSlackIgnoresBotButKeepsHumanThreadReply(t *testing.T) {
 
 func sampleReceiver(t *testing.T, kind, name string) (receiverProtocol, receiverBinding) {
 	t.Helper()
-	prefix := "receiver-"
-	if kind == "ClusterWebhookReceiver" {
-		prefix = "cluster-"
+	prefix := "binding-"
+	if kind == "WebhookProtocol" {
+		prefix = "protocol-"
 	}
 	contents, err := os.ReadFile("../examples/webhooks/" + prefix + name + ".yaml")
 	if os.IsNotExist(err) {
@@ -157,7 +156,7 @@ func sampleReceiver(t *testing.T, kind, name string) (receiverProtocol, receiver
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kind == "ClusterWebhookReceiver" {
+	if kind == "WebhookProtocol" {
 		if err = json.Unmarshal(encoded, &protocol); err != nil {
 			t.Fatal(err)
 		}
@@ -166,18 +165,18 @@ func sampleReceiver(t *testing.T, kind, name string) (receiverProtocol, receiver
 			t.Fatal(err)
 		}
 	}
-	if kind == "ClusterWebhookReceiver" && protocol.Spec.Event.EventsCEL == "" {
+	if kind == "WebhookProtocol" && protocol.Spec.Event.EventsCEL == "" {
 		t.Fatalf("missing protocol %s", name)
 	}
-	if kind == "WebhookReceiver" && binding.Spec.AgentRef == "" {
-		t.Fatalf("missing receiver %s", name)
+	if kind == "WebhookBinding" && binding.Spec.AgentRef == "" {
+		t.Fatalf("missing binding %s", name)
 	}
 	return protocol, binding
 }
 func TestExampleGitHubCEL(t *testing.T) {
-	protocol, _ := sampleReceiver(t, "ClusterWebhookReceiver", "github")
-	_, binding := sampleReceiver(t, "WebhookReceiver", "github-codemowers-agent")
-	body := []byte(`{"repository":{"html_url":"https://github.com/codemowers/agent","owner":{"login":"codemowers"},"name":"agent"},"issue":{"number":42,"title":"Fix bug","html_url":"https://github.com/codemowers/agent/issues/42"},"sender":{"login":"lauri"},"action":"opened"}`)
+	protocol, _ := sampleReceiver(t, "WebhookProtocol", "github")
+	_, binding := sampleReceiver(t, "WebhookBinding", "github-codemowers-agent")
+	body := []byte(`{"repository":{"html_url":"https://github.com/codemowers/agent","full_name":"Codemowers/Agent"},"issue":{"number":42,"title":"Fix bug","html_url":"https://github.com/codemowers/agent/issues/42"},"sender":{"login":"lauri"},"action":"opened"}`)
 	var parsed any
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatal(err)
@@ -207,8 +206,8 @@ func TestExampleGitHubCEL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"forge", "github", "https://github.com", "codemowers", "agent", "issue", "42"}
-	if !equalKey(normalized.Key, want) || normalized.URL != "https://github.com/codemowers/agent/issues/42" {
+	want := "https://github.com/codemowers/agent/issues/42"
+	if normalized.Key != want || normalized.Type != "issues.opened" || normalized.URL != "https://github.com/codemowers/agent/issues/42" {
 		t.Fatalf("normalized=%+v want key=%v", normalized, want)
 	}
 	event["url"] = "javascript:alert(1)"
@@ -222,19 +221,26 @@ func TestExampleGitHubCEL(t *testing.T) {
 		t.Fatalf("wrong hook accepted=%v err=%v", accept, err)
 	}
 }
-func equalKey(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+func TestEventKeyMustStayInsideProtocolPrefixes(t *testing.T) {
+	protocol, _ := sampleReceiver(t, "WebhookProtocol", "github")
+	_, binding := sampleReceiver(t, "WebhookBinding", "github-codemowers-agent")
+	for key, ok := range map[string]bool{
+		"https://GitHub.com/team/repo/issues/1":   true,
+		"https://github.com.evil.test/a/issues/1": false,
+		"https://git.codemowers.io/a/b/issues/1":  false,
+		"mid:root@example.test":                   false,
+	} {
+		_, err := normalizeReceiverEvent(binding, protocol, map[string]any{"deliveryID": "d", "type": "issues", "key": key})
+		if (err == nil) != ok {
+			t.Errorf("key %q: err=%v", key, err)
 		}
 	}
-	return true
+	if _, err := normalizeReceiverEvent(binding, protocol, map[string]any{"deliveryID": "d", "type": "issues", "key": []any{"forge"}}); err == nil {
+		t.Error("list key accepted")
+	}
 }
 func TestExampleSlackSignatureAndChallenge(t *testing.T) {
-	protocol, _ := sampleReceiver(t, "ClusterWebhookReceiver", "slack-events")
+	protocol, _ := sampleReceiver(t, "WebhookProtocol", "slack-events")
 	raw := []byte(`{"type":"url_verification","challenge":"challenge-value"}`)
 	request := httptest.NewRequest(http.MethodPost, "/hooks/team/slack", strings.NewReader(string(raw)))
 	request.Header.Set("X-Slack-Request-Timestamp", "1792310400")
@@ -268,8 +274,8 @@ func TestExampleSlackSignatureAndChallenge(t *testing.T) {
 	}
 }
 func TestExampleAlertmanagerEvents(t *testing.T) {
-	protocol, _ := sampleReceiver(t, "ClusterWebhookReceiver", "alertmanager")
-	_, binding := sampleReceiver(t, "WebhookReceiver", "alerts-by-instance")
+	protocol, _ := sampleReceiver(t, "WebhookProtocol", "alertmanager")
+	_, binding := sampleReceiver(t, "WebhookBinding", "alertmanager")
 	// One notification for a large group yields one event with a bounded ID.
 	alerts := make([]map[string]any, 150)
 	for i := range alerts {
@@ -299,18 +305,11 @@ func TestExampleAlertmanagerEvents(t *testing.T) {
 		t.Fatalf("events=%d", len(events))
 	}
 	event := events[0].(map[string]any)
-	vars["event"] = event
-	key, err := evalReceiver(env, binding.Spec.Routing.KeyCEL, vars)
-	if err != nil {
-		t.Fatal(err)
-	}
-	event["key"] = key
 	normalized, err := normalizeReceiverEvent(binding, protocol, event)
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance := binding.Spec.Match["instanceID"]
-	if instance == "" || !equalKey(normalized.Key, []string{"alertmanager", instance}) || normalized.URL != "https://alertmanager.example.test" ||
+	if normalized.Key != "https://alertmanager.example.test" || normalized.URL != "https://alertmanager.example.test" ||
 		normalized.Text != "[firing:150] CPUHigh: CPU high" {
 		t.Fatalf("normalized=%+v", normalized)
 	}

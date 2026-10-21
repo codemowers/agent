@@ -2,7 +2,7 @@ apiVersion: codemowers.cloud/v1alpha1
 kind: Agent
 metadata:
   name: matmlazi
-  namespace: codemowers-agent-system
+  namespace: agents
   annotations:
     kubernetes.io/description: "Developer agent — full toolchain, Kube RBAC, topic branches"
 spec:
@@ -26,6 +26,10 @@ spec:
         env:
           - name: PATH
             value: /opt/tools/kubectl/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          # The push Secret lives in the workload namespace demo, not in the
+          # worker's own namespace.
+          - name: SKAFFOLD_DEFAULT_REPO
+            value: zot.registry.ee-lte-1.codemowers.io/matmlazi
         volumeMounts:
           - name: workspace
             mountPath: /workspace

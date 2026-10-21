@@ -1,14 +1,14 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: clusterwebhookreceivers.codemowers.cloud
+  name: webhookprotocols.codemowers.cloud
 spec:
   group: codemowers.cloud
   scope: Cluster
   names:
-    plural: clusterwebhookreceivers
-    singular: clusterwebhookreceiver
-    kind: ClusterWebhookReceiver
+    plural: webhookprotocols
+    singular: webhookprotocol
+    kind: WebhookProtocol
   versions:
     - name: v1alpha1
       served: true
@@ -29,6 +29,9 @@ spec:
                   type: object
                   required:
                     - algorithm
+                  x-kubernetes-validations:
+                    - rule: self.algorithm != 'serviceAccountToken' || has(self.audience)
+                      message: serviceAccountToken requires an audience
                   properties:
                     algorithm:
                       type: string
@@ -36,7 +39,7 @@ spec:
                         - hmacSha256
                         - ed25519
                         - bearer
-                        - none
+                        - serviceAccountToken
                     keyEncoding:
                       type: string
                       enum:
@@ -57,6 +60,10 @@ spec:
                     signedBytesCEL:
                       type: string
                       maxLength: 4096
+                    audience:
+                      description: Token audience for serviceAccountToken; required with it.
+                      type: string
+                      maxLength: 253
                     freshness:
                       type: object
                       required:
@@ -80,6 +87,17 @@ spec:
                     acceptCEL:
                       type: string
                       maxLength: 8192
+                    allowedKeyPrefixes:
+                      description: Canonical key URI prefixes this protocol's events
+                        may carry, matched at a path boundary. Events with other keys
+                        are rejected; without prefixes, events carry no key.
+                      type: array
+                      maxItems: 16
+                      x-kubernetes-list-type: set
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 1024
                     eventsCEL:
                       type: string
                       maxLength: 16384

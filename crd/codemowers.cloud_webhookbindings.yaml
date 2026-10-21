@@ -1,14 +1,14 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: webhookreceivers.codemowers.cloud
+  name: webhookbindings.codemowers.cloud
 spec:
   group: codemowers.cloud
   scope: Namespaced
   names:
-    plural: webhookreceivers
-    singular: webhookreceiver
-    kind: WebhookReceiver
+    plural: webhookbindings
+    singular: webhookbinding
+    kind: WebhookBinding
   versions:
     - name: v1alpha1
       served: true
@@ -22,22 +22,12 @@ spec:
             spec:
               type: object
               required:
-                - sourceRef
+                - protocolRef
                 - agentRef
-                - routing
               properties:
-                sourceRef:
-                  type: object
-                  required:
-                    - kind
-                    - name
-                  properties:
-                    kind:
-                      type: string
-                      enum:
-                        - ClusterWebhookReceiver
-                    name:
-                      type: string
+                protocolRef:
+                  description: Cluster-scoped WebhookProtocol name.
+                  type: string
                 agentRef:
                   type: string
                 match:
@@ -56,16 +46,21 @@ spec:
                         - agent-operator-webhook-keys
                     key:
                       type: string
+                serviceAccounts:
+                  description: <namespace>/<name> senders a serviceAccountToken protocol accepts.
+                  type: array
+                  maxItems: 16
+                  items:
+                    type: string
+                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
                 routing:
                   type: object
                   properties:
                     keyCEL:
+                      description: Optional CEL returning the event's canonical key
+                        URI, within the protocol's allowedKeyPrefixes.
                       type: string
                       maxLength: 8192
-                    existingTask:
-                      type: string
-                      enum:
-                        - exactKey
                     otherwise:
                       type: object
                       properties:

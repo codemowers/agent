@@ -1,15 +1,13 @@
 # Public GitHub and GHES can send to /hooks/github. Each may instead use its
-# namespaced URL, such as /hooks/codemowers-agent-system/github-codemowers-agent. Their
+# namespaced URL, such as /hooks/agents/github-codemowers-agent. Their
 # server URL, hook ID, and signing key remain distinct binding settings.
 apiVersion: codemowers.cloud/v1alpha1
-kind: WebhookReceiver
+kind: WebhookBinding
 metadata:
   name: github-codemowers-agent
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
-  sourceRef:
-    kind: ClusterWebhookReceiver
-    name: github
+  protocolRef: github
   agentRef: matmlazi
   match:
     serverURL: https://github.com
@@ -17,5 +15,3 @@ spec:
   verificationKeyRef:
     name: agent-operator-webhook-keys
     key: github-public
-  routing:
-    existingTask: exactKey

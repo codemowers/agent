@@ -3,8 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -181,9 +179,9 @@ func agentTools() []map[string]any {
 		mcpTool("list_tasks", "List bounded Tasks of this Agent to find existing work and avoid duplicates.", map[string]any{}),
 		mcpTool("get_task", "Read one Task of this Agent, including its routing keys, references and recent conversation.", map[string]any{
 			"name": map[string]string{"type": "string"}}, "name"),
-		mcpTool("create_task", "Create a new Task for this Agent. Supply a routingKey to deduplicate repeated events.", map[string]any{
+		mcpTool("create_task", "Create a new Task for this Agent. Supply a canonical resource URI as routingKey to deduplicate repeated events.", map[string]any{
 			"objective":  map[string]string{"type": "string"},
-			"routingKey": map[string]any{"type": "array", "items": map[string]string{"type": "string"}}}, "objective"),
+			"routingKey": map[string]any{"type": "string", "format": "uri"}}, "objective"),
 		mcpTool("complete_task", "Complete a Task of this Agent and stop its worker while retaining history and workspace.", map[string]any{
 			"name": map[string]string{"type": "string"}, "reason": map[string]string{"type": "string"}}, "name", "reason"),
 	}
@@ -469,35 +467,28 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			"conversation": task.Status.Conversation, "summary": task.Status.Progress})
 	case "create_task":
 		var arg struct {
-			Objective  string   `json:"objective"`
-			RoutingKey []string `json:"routingKey"`
+			Objective  string `json:"objective"`
+			RoutingKey string `json:"routingKey"`
 		}
 		if decodeToolArgs(raw, &arg) != nil || strings.TrimSpace(arg.Objective) == "" || len(arg.Objective) > 16000 {
 			return nil, errors.New("objective required (up to 16000 bytes)")
 		}
 		name := "task-" + randHex(12)
-		if len(arg.RoutingKey) > 0 {
-			if len(arg.RoutingKey) > 16 || (arg.RoutingKey[0] != "internal" && arg.RoutingKey[0] != "external") {
-				return nil, errors.New("invalid routing key")
+		if arg.RoutingKey != "" {
+			key, err := agentsv1alpha1.CanonicalKey(arg.RoutingKey)
+			if err != nil {
+				return nil, errors.New("routingKey must be a canonical resource URI")
 			}
-			for _, segment := range arg.RoutingKey {
-				if segment == "" || len(segment) > 253 {
-					return nil, errors.New("invalid routing key segment")
-				}
-			}
-			keyJSON, _ := json.Marshal(arg.RoutingKey)
-			hash := sha256.Sum256(append([]byte(string(scope.Agent.UID)+":"), keyJSON...))
-			name = "task-" + hex.EncodeToString(hash[:12])
+			arg.RoutingKey = key
+			name = agentsv1alpha1.TaskNameForKey(scope.Agent.UID, key)
 			var tasks agentsv1alpha1.TaskList
 			if err := h.mcpReader().List(ctx, &tasks, client.InNamespace(scope.Task.Namespace), client.MatchingLabels{"codemowers.cloud/agent": scope.Agent.Name}); err != nil {
 				return nil, err
 			}
 			for i := range tasks.Items {
-				for _, existingKey := range tasks.Items[i].Spec.RoutingKeys {
-					if slices.Equal(existingKey, arg.RoutingKey) {
-						if existing, err := h.scopedTask(ctx, scope, tasks.Items[i].Name); err == nil {
-							return mcpText(map[string]any{"name": existing.Name, "namespace": existing.Namespace, "existing": true})
-						}
+				if slices.Contains(tasks.Items[i].Spec.RoutingKeys, arg.RoutingKey) {
+					if existing, err := h.scopedTask(ctx, scope, tasks.Items[i].Name); err == nil {
+						return mcpText(map[string]any{"name": existing.Name, "namespace": existing.Namespace, "existing": true})
 					}
 				}
 			}
@@ -509,17 +500,17 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent",
 				Name: scope.Agent.Name, UID: scope.Agent.UID, Controller: &controller, BlockOwnerDeletion: &controller}}},
 			Spec: agentsv1alpha1.TaskSpec{AgentRef: scope.Agent.Name, Objective: arg.Objective,
-				RoutingKeys: func() [][]string {
-					if len(arg.RoutingKey) == 0 {
+				RoutingKeys: func() []string {
+					if arg.RoutingKey == "" {
 						return nil
 					}
-					return [][]string{arg.RoutingKey}
+					return []string{arg.RoutingKey}
 				}(),
 				Suspend: scope.Agent.Spec.Suspended, IdleSeconds: int32Ptr(agentsv1alpha1.AgentIdleSeconds(&scope.Agent)),
 				Resources: agentsv1alpha1.AgentWorkerResources(&scope.Agent)}}
-		if err := h.Client.Create(ctx, task); apierrors.IsAlreadyExists(err) && len(arg.RoutingKey) > 0 {
+		if err := h.Client.Create(ctx, task); apierrors.IsAlreadyExists(err) && arg.RoutingKey != "" {
 			existing, lookupErr := h.scopedTask(ctx, scope, name)
-			if lookupErr != nil || len(existing.Spec.RoutingKeys) != 1 || !slices.Equal(existing.Spec.RoutingKeys[0], arg.RoutingKey) {
+			if lookupErr != nil || len(existing.Spec.RoutingKeys) != 1 || existing.Spec.RoutingKeys[0] != arg.RoutingKey {
 				return nil, errors.New("routing key collision")
 			}
 			return mcpText(map[string]any{"name": existing.Name, "namespace": existing.Namespace, "existing": true})

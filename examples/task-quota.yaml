@@ -4,7 +4,7 @@ apiVersion: v1
 kind: ResourceQuota
 metadata:
   name: tasks
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
   hard:
     count/tasks.codemowers.cloud: "1000"
@@ -14,7 +14,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: task-quota
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
   groups:
     - name: task-quota

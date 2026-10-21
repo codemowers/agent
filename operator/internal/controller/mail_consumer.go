@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
@@ -48,7 +47,7 @@ func (c *EventConsumer) handleMail(ctx context.Context, d amqp.Delivery) error {
 		return nil
 	}
 	var event mailDelivery
-	if json.Unmarshal(d.Body, &event) != nil || event.Version != 1 || event.Namespace != namespace || event.Mailbox != mailboxName || event.MailboxUID != mailboxUID || event.UID < 0 || event.UIDValidity < 1 || event.Folder == "" || len(event.ThreadID) > 256 || d.RoutingKey != "mailbox."+namespace+"."+mailboxName || d.MessageId != mailDeliveryID(event) || (event.UID == 0 && !event.Checkpoint) {
+	if json.Unmarshal(d.Body, &event) != nil || event.Version != 1 || event.Namespace != namespace || event.Mailbox != mailboxName || event.MailboxUID != mailboxUID || event.UID < 0 || event.UIDValidity < 1 || event.Folder == "" || len(event.ThreadID) > 256 || d.RoutingKey != "mail."+namespace+"."+mailboxName || d.MessageId != mailDeliveryID(event) || (event.UID == 0 && !event.Checkpoint) {
 		return nil
 	}
 	if len(event.Headers) > 128 {
@@ -82,83 +81,53 @@ func (c *EventConsumer) handleMail(ctx context.Context, d amqp.Delivery) error {
 	if event.Checkpoint {
 		return c.advanceMailCursor(ctx, &mailbox, event)
 	}
-	var subscriptions agentsv1alpha1.MailSubscriptionList
-	if err := c.APIReader.List(ctx, &subscriptions, client.InNamespace(namespace)); err != nil {
+	var bindings agentsv1alpha1.MailBindingList
+	if err := c.APIReader.List(ctx, &bindings, client.InNamespace(namespace)); err != nil {
 		return err
 	}
-	for i := range subscriptions.Items {
-		sub := &subscriptions.Items[i]
-		if sub.Spec.MailboxRef != mailboxName {
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		if binding.Spec.MailboxRef != mailboxName {
 			continue
 		}
 		var agent agentsv1alpha1.Agent
-		if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: sub.Spec.AgentRef}, &agent); err != nil {
+		if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: binding.Spec.AgentRef}, &agent); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue
 			}
 			return err
 		}
-		matchedEvent, matched, err := matchMailSubscription(sub.Spec, mailMetadata{Headers: event.Headers})
+		matchedEvent, matched, err := matchMailBinding(binding.Spec, mailMetadata{Headers: event.Headers})
 		if err != nil {
-			return fmt.Errorf("MailSubscription %s/%s: %w", namespace, sub.Name, err)
+			return fmt.Errorf("MailBinding %s/%s: %w", namespace, binding.Name, err)
 		}
 		if !matched {
 			continue
 		}
-		var tasks agentsv1alpha1.TaskList
-		if err := c.APIReader.List(ctx, &tasks, client.InNamespace(namespace), client.MatchingLabels{"codemowers.cloud/agent": agent.Name}); err != nil {
-			return err
-		}
-		var selected *agentsv1alpha1.Task
-		for j := range tasks.Items {
-			task := &tasks.Items[j]
-			if ownedByAgent(task, agent.Name, agent.UID) && routingKeyMatches(task, matchedEvent.Key) {
-				if selected != nil {
-					return fmt.Errorf("multiple Tasks claim mail key for Agent %s/%s", namespace, agent.Name)
-				}
-				selected = task
-			}
-		}
-		if selected == nil && sub.Spec.Routing.Otherwise.TaskRef != "" {
-			for j := range tasks.Items {
-				task := &tasks.Items[j]
-				if task.Name == sub.Spec.Routing.Otherwise.TaskRef && ownedByAgent(task, agent.Name, agent.UID) {
-					selected = task
-					break
-				}
-			}
-		}
-		if selected == nil {
-			continue
-		}
-		receipt := d.MessageId + "-" + string(sub.UID)
-		if taskHasDelivery(selected, receipt) {
-			continue
-		}
-		if routingKeyMatches(selected, matchedEvent.Key) {
-			root := threadRootMessageID(event.Headers)
-			if root != "" {
-				if err := c.ensureExternalReference(ctx, selected, agentsv1alpha1.ExternalReference{
-					Source: "imap", Kind: "thread", ID: root, MailboxRef: event.Mailbox,
-					MailboxUID: event.MailboxUID, Folder: event.Folder, IMAPThreadID: event.ThreadID,
-				}); err != nil {
-					return err
-				}
-			}
-		}
 		var coalesce time.Duration
-		if sub.Spec.Routing.CoalesceFor != "" {
-			coalesce, err = time.ParseDuration(sub.Spec.Routing.CoalesceFor)
+		if binding.Spec.Routing.CoalesceFor != "" {
+			coalesce, err = time.ParseDuration(binding.Spec.Routing.CoalesceFor)
 			if err != nil || coalesce < time.Second || coalesce > time.Hour {
-				return fmt.Errorf("invalid mail coalesceFor on %s/%s", namespace, sub.Name)
+				return fmt.Errorf("invalid mail coalesceFor on %s/%s", namespace, binding.Name)
 			}
 		}
 		text := matchedEvent.Text
 		if id, ok := singleMailHeader(event.Headers, "Message-ID"); ok {
 			text += " (Message-ID: " + id + ")"
 		}
-		if err := c.wakeTaskWithContent(ctx, selected, strings.Join(matchedEvent.Key, " / "), receipt, "imap", matchedEvent.Actor, text, matchedEvent.URL, coalesce); err != nil {
+		selected, err := c.routeEvent(ctx, &agent, intakeEvent{Namespace: namespace, Source: "imap", Type: matchedEvent.Type,
+			Actor: matchedEvent.Actor, Text: text, URL: matchedEvent.URL, Key: matchedEvent.Key,
+			FallbackTask: binding.Spec.Routing.Otherwise.TaskRef, Receipt: d.MessageId + "-" + string(binding.UID), Coalesce: coalesce})
+		if err != nil {
 			return err
+		}
+		if root := threadRootMessageID(event.Headers); selected != nil && root != "" {
+			if err := c.ensureExternalReference(ctx, selected, agentsv1alpha1.ExternalReference{
+				Source: "imap", Kind: "thread", ID: root, MailboxRef: event.Mailbox,
+				MailboxUID: event.MailboxUID, Folder: event.Folder, IMAPThreadID: event.ThreadID,
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	return c.advanceMailCursor(ctx, &mailbox, event)

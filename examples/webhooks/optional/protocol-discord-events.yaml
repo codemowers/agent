@@ -1,7 +1,7 @@
 # Discord webhook events are one-way. Interaction commands need a different
 # synchronous response preset and are outside this example.
 apiVersion: codemowers.cloud/v1alpha1
-kind: ClusterWebhookReceiver
+kind: WebhookProtocol
 metadata:
   name: discord-events
 spec:
@@ -19,7 +19,6 @@ spec:
     acceptCEL: "string(body.application_id) == binding.match.applicationID"
     eventsCEL: >-
       body.type == 1 && has(body.event) ? [{
-        'source': 'discord',
         'deliveryID': sha256Hex(rawBody),
         'type': body.event.type,
         'actor': has(body.event.data) && has(body.event.data.author) &&

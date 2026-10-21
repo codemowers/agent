@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -18,8 +20,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestFirstWebhookCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
+func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 	assigned := true
+	userCalls := 0
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		status := http.StatusOK
 		body := ""
@@ -29,6 +32,7 @@ func TestFirstWebhookCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/api/v3/user":
+			userCalls++
 			body = `{"login":"agent-bot"}`
 		case "/api/v3/repos/team/project/issues/8", "/api/v3/repos/team/project/issues/9":
 			assignees := `[]`
@@ -54,10 +58,20 @@ func TestFirstWebhookCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 			CredentialKeyRef: "git-token"}}}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agentsv1alpha1.ProviderTokensSecretName, Namespace: "team"},
 		Data: map[string][]byte{"git-token": []byte("configured-token")}}
-	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(agent, secret).Build()
+	policies := []client.Object{
+		&agentsv1alpha1.TaskPolicy{ObjectMeta: metav1.ObjectMeta{Name: "assigned", Namespace: "team"}, Spec: agentsv1alpha1.TaskPolicySpec{
+			AgentRef: "developer", KeyPrefix: "https://forge.example.test/team", EventTypes: []string{"issues.assigned"}, Verify: "forgeAssignment"}},
+		// A prefix boundary keeps this policy away from team/project.
+		&agentsv1alpha1.TaskPolicy{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "team"}, Spec: agentsv1alpha1.TaskPolicySpec{
+			AgentRef: "developer", KeyPrefix: "https://forge.example.test/team/proj", Verify: "none"}},
+	}
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(append(policies, agent, secret)...).Build()
 	consumer := &EventConsumer{Client: k8s, APIReader: k8s, HTTPClient: &http.Client{Transport: transport}}
-	event := parsedEvent{source: "github", serverURL: "forge.example.test", owner: "team", repo: "project", kind: "issue", id: "8"}
-	created, err := consumer.createTaskForAssignedIssue(context.Background(), "team", "developer", event, "delivery-1", "2m")
+	event := intakeEvent{Namespace: "team", Source: "github", Type: "issues.assigned", Key: "https://forge.example.test/team/project/issues/8", Receipt: "delivery-1", Coalesce: 2 * time.Minute}
+	if created, err := consumer.createTaskByPolicy(context.Background(), agent, intakeEvent{Namespace: "team", Type: "issue_comment.created", Key: event.Key}); err != nil || created {
+		t.Fatalf("event type outside the policy created a Task: %v %v", created, err)
+	}
+	created, err := consumer.createTaskByPolicy(context.Background(), agent, event)
 	if err != nil || !created {
 		t.Fatalf("assigned issue was not created: created=%v err=%v", created, err)
 	}
@@ -71,7 +85,7 @@ func TestFirstWebhookCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 	if tasks.Items[0].Annotations["codemowers.cloud/coalesce-until"] == "" {
 		t.Fatal("created Task did not start its coalesce window")
 	}
-	if !routingKeyMatches(&tasks.Items[0], eventTaskKey(event)) {
+	if !slices.Equal(tasks.Items[0].Spec.RoutingKeys, []string{event.Key}) || tasks.Items[0].Name != agentsv1alpha1.TaskNameForKey(agent.UID, event.Key) {
 		t.Fatalf("created Task lacks its forge routing key: %+v", tasks.Items[0].Spec.RoutingKeys)
 	}
 	if tasks.Items[0].Spec.AgentRef != agent.Name {
@@ -87,8 +101,9 @@ func TestFirstWebhookCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 		t.Fatalf("webhook Task did not copy Agent resources: %+v", tasks.Items[0].Spec.Resources)
 	}
 	assigned = false
-	event.id = "9"
-	created, err = consumer.createTaskForAssignedIssue(context.Background(), "team", "developer", event, "delivery-2", "")
+	event.Key = "https://forge.example.test/team/project/issues/9"
+	event.Receipt = "delivery-2"
+	created, err = consumer.createTaskByPolicy(context.Background(), agent, event)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +115,41 @@ func TestFirstWebhookCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 	}
 	if len(tasks.Items) != 1 {
 		t.Fatalf("unassigned issue changed Task count to %d", len(tasks.Items))
+	}
+	// A current forge snapshot replaces the per-event account lookup.
+	agent.Generation = 1
+	agent.Status = agentsv1alpha1.AgentStatus{ForgesObservedGeneration: 1, Forges: []agentsv1alpha1.ForgeCapability{{
+		Type: "github", ServerURL: "https://forge.example.test", Status: "available", Login: "agent-bot"}}}
+	calls := userCalls
+	if _, err := consumer.createTaskByPolicy(context.Background(), agent, event); err != nil || userCalls != calls {
+		t.Fatalf("probed login not reused: err=%v calls=%d", err, userCalls-calls)
+	}
+}
+
+func TestEquallySpecificTaskPoliciesCreateNothing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: "agent-uid"}}
+	var objects []client.Object
+	for _, name := range []string{"a", "b"} {
+		objects = append(objects, &agentsv1alpha1.TaskPolicy{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team"},
+			Spec: agentsv1alpha1.TaskPolicySpec{AgentRef: "developer", KeyPrefix: "mid:", Verify: "none"}})
+	}
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	consumer := &EventConsumer{Client: k8s, APIReader: k8s}
+	if created, err := consumer.createTaskByPolicy(context.Background(), agent, intakeEvent{Namespace: "team", Key: "mid:root@example.test"}); err != nil || created {
+		t.Fatalf("ambiguous policies created=%v err=%v", created, err)
+	}
+	if err := k8s.Delete(context.Background(), objects[1]); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := consumer.createTaskByPolicy(context.Background(), agent, intakeEvent{Namespace: "team", Source: "imap", Key: "mid:root@example.test"}); err != nil || created {
+		t.Fatalf("unverified mail created=%v err=%v", created, err)
+	}
+	if created, err := consumer.createTaskByPolicy(context.Background(), agent, intakeEvent{Namespace: "team", Source: "webhook", Key: "mid:root@example.test", Text: "hello"}); err != nil || !created {
+		t.Fatalf("verify none webhook created=%v err=%v", created, err)
 	}
 }
 

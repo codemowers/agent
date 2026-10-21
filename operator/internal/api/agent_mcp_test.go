@@ -143,10 +143,10 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	if !current.Spec.Suspend || current.Annotations["codemowers.cloud/completed"] != "true" {
 		t.Fatalf("peer was not completed: %+v", current)
 	}
-	if response := call("valid", "create_task", `{"objective":"New work","routingKey":["internal","test","one"]}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
+	if response := call("valid", "create_task", `{"objective":"New work","routingKey":"https://example.test/one"}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
 		t.Fatalf("create rejected: %s", response.Body.String())
 	}
-	if response := call("valid", "create_task", `{"objective":"New work","routingKey":["internal","test","one"]}`); !strings.Contains(response.Body.String(), `\"existing\":true`) {
+	if response := call("valid", "create_task", `{"objective":"New work","routingKey":"https://example.test/one"}`); !strings.Contains(response.Body.String(), `\"existing\":true`) {
 		t.Fatalf("duplicate key created: %s", response.Body.String())
 	}
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &current); err != nil {

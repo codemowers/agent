@@ -62,6 +62,14 @@ spec:
                 format: int32
                 minimum: 0
                 maximum: 86400
+              resourcePrefix:
+                description: >-
+                  Resource name prefix the worker is confined to by admission, also starting
+                  worker Pod and Task PVC names. Absent leaves the worker to plain RBAC and
+                  names Pods and PVCs "<Agent name>-".
+                type: string
+                maxLength: 30
+                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$'
               resources:
                 description: Worker container requests and limits copied into new Tasks.
                 type: object

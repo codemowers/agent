@@ -1,16 +1,21 @@
 # One event per Alertmanager notification; Alertmanager already groups alerts.
 # A retried notification has the same body and therefore the same deliveryID.
+# The key is the sending Alertmanager's external URL. Alertmanager sends a
+# projected ServiceAccount token for the audience below; each binding lists
+# the ServiceAccounts it accepts.
 apiVersion: codemowers.cloud/v1alpha1
-kind: ClusterWebhookReceiver
+kind: WebhookProtocol
 metadata:
   name: alertmanager
 spec:
   verification:
-    algorithm: none
+    algorithm: serviceAccountToken
+    audience: agent-webhook
   event:
+    allowedKeyPrefixes:
+      - https://alertmanager.example.test
     eventsCEL: >-
       [{
-        'source': 'alertmanager',
         'deliveryID': sha256Hex(rawBody),
         'type': body.status,
         'actor': 'Alertmanager',
@@ -19,7 +24,7 @@ spec:
           (has(body.commonAnnotations.summary) ?
             ': ' + body.commonAnnotations.summary : ''),
         'url': has(body.externalURL) ? body.externalURL : '',
-        'key': ['alertmanager', sha256Hex(bytes(body.groupKey))]
+        'key': body.externalURL
       }]
   response:
     status: 202

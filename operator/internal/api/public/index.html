@@ -721,10 +721,10 @@ function copyableCommand(host, label, command) {
 function giteaWebhookSetup(agent) {
   const host = document.createElement('div'); host.className = 'webhook-setup';
   const heading = document.createElement('h2'); heading.textContent = 'Gitea webhook setup'; host.append(heading);
-  const receiver = `gitea-${agent.name}`;
+  const binding = `gitea-${agent.name}`;
   const secretName = 'agent-operator-webhook-keys';
-  const secretKey = receiver;
-  const path = `/hooks/${encodeURIComponent(agent.namespace)}/${encodeURIComponent(receiver)}`;
+  const secretKey = binding;
+  const path = `/hooks/${encodeURIComponent(agent.namespace)}/${encodeURIComponent(binding)}`;
   const origin = oidc?.webhookOrigin?.replace(/\/$/, '') || '';
   const target = origin ? origin + path : path;
   const note = document.createElement('p');
@@ -738,24 +738,20 @@ function giteaWebhookSetup(agent) {
     `kubectl -n ${shellQuote(agent.namespace)} get secret ${shellQuote(secretName)} -o go-template=${shellQuote(template)} | base64 -d`);
   copyableCommand(host, 'Bind Gitea webhook to this Agent', `kubectl apply -f - <<'EOF'
 apiVersion: codemowers.cloud/v1alpha1
-kind: WebhookReceiver
+kind: WebhookBinding
 metadata:
-  name: ${JSON.stringify(receiver)}
+  name: ${JSON.stringify(binding)}
   namespace: ${JSON.stringify(agent.namespace)}
 spec:
-  sourceRef:
-    kind: ClusterWebhookReceiver
-    name: gitea
+  protocolRef: gitea
   agentRef: ${JSON.stringify(agent.name)}
   match:
     serverURL: https://git.codemowers.io
   verificationKeyRef:
     name: ${JSON.stringify(secretName)}
     key: ${JSON.stringify(secretKey)}
-  routing:
-    existingTask: exactKey
 EOF`);
-  const routing = document.createElement('p'); routing.textContent = 'Existing Tasks need an exact routing key. For automatic creation of newly assigned issue or pull request Tasks, add a TaskCreationPolicy after configuring this Agent’s Gitea API token.'; host.append(routing);
+  const routing = document.createElement('p'); routing.textContent = 'Events wake the Task whose routing keys include the issue URL, such as https://git.codemowers.io/owner/repo/issues/1. For automatic creation of assigned issue or pull request Tasks, add a TaskPolicy after configuring this Agent’s Gitea API token.'; host.append(routing);
   return host;
 }
 

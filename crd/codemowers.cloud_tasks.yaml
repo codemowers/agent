@@ -119,18 +119,15 @@ spec:
                     imapThreadId:
                       type: string
               routingKeys:
-                description: Exact ordered event aliases scoped to this Task's
-                  Agent and namespace. Each key is a list of non-empty segments.
+                description: Exact canonical resource URIs scoped to this Task's
+                  Agent and namespace.
                 items:
-                  items:
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                  maxItems: 16
-                  minItems: 1
-                  type: array
+                  maxLength: 1024
+                  minLength: 1
+                  type: string
                 maxItems: 32
                 type: array
+                x-kubernetes-list-type: set
               model:
                 description: Model overrides the Agent's default model for this Task.
                 properties:

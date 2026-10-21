@@ -39,15 +39,15 @@ trial.codemowers.cloud](https://trial.codemowers.cloud) and deploy the agent the
   and keeps the workspace, session and queued messages; Resume continues. Stop
   interrupts the current turn without stopping the worker.
 - **Delegate from GitHub and Gitea.** Signed webhooks route issue and pull-request
-  events to the Task that claims them. A TaskCreationPolicy creates a Task only
+  events to the Task that claims the issue URL. A TaskPolicy creates a Task only
   when the item is currently assigned to the Agent's forge account; updates keep
   reaching that Task after unassignment.
 - **Connect events.** Alertmanager, Slack and other senders post to
-  authenticated webhook receivers. Bounded CEL turns each payload into a routing
-  key; unmatched events reach a fallback Task. Bursts within a coalescing window
+  authenticated webhook bindings. Bounded CEL turns each payload into a
+  canonical resource URI; unmatched events reach a fallback Task. Bursts within a coalescing window
   wake a Task once more at the end.
 - **Mail.** Each Mailbox runs its own Pod with its IMAP and SMTP credentials.
-  New mail can wake Tasks through header-matching MailSubscriptions, and workers
+  New mail can wake Tasks through header-matching MailBindings, and workers
   send, list and read mail through that Mailbox's MCP.
 - **Remote devices.** Machines running `device-agent` connect over WebSocket.
   Workers run commands and read or write files on them through the Devices MCP.
@@ -150,24 +150,24 @@ Agents. Workers never read or write these resources through the Kubernetes API.
 | --- | --- | --- | --- | --- |
 | Agent | Namespaced | Namespace administrators | Operator; UI users with Agent `get` | Administrators (spec); operator (status only) |
 | Task | Namespaced | Namespace administrators; the operator creates event and UI Tasks | Operator; UI users with `get` on its Agent | Operator (derived spec fields and status, on behalf of UI users, events and the worker's Agent MCP calls); administrators (spec) |
-| WebhookReceiver | Namespaced | Namespace administrators | Webhook receiver | Administrators |
-| ClusterWebhookReceiver | Cluster | Cluster administrators | Webhook receiver | Cluster administrators |
-| TaskCreationPolicy | Namespaced | Namespace administrators | Operator | Administrators |
+| WebhookBinding | Namespaced | Namespace administrators | Webhook receiver | Administrators |
+| WebhookProtocol | Cluster | Cluster administrators | Webhook receiver | Cluster administrators |
+| TaskPolicy | Namespaced | Namespace administrators | Operator | Administrators |
 | Mailbox | Namespaced | Namespace administrators | Operator | Administrators (spec); operator (status: IMAP cursor) |
-| MailSubscription | Namespaced | Namespace administrators | Operator | Administrators |
+| MailBinding | Namespaced | Namespace administrators | Operator | Administrators |
 | Device | Namespaced | Namespace administrators | Device bridge | Administrators (spec); Device bridge (status: connection) |
 
 - **Agent** defines a worker: CLI and model, Pod template, workspace volume
   claims, Git providers, idle timeout and extra MCP servers.
-- **Task** is one objective with its own PVC, conversation, routing keys and
-  external references. UI actions such as prompts, Suspend and MCP toggles go
+- **Task** is one objective with its own PVC, conversation, routing keys
+  (canonical resource URIs such as an issue URL) and external references. UI actions such as prompts, Suspend and MCP toggles go
   through the operator, which checks the user's Agent access first.
-- **ClusterWebhookReceiver** defines a sender protocol: signature verification,
-  CEL extraction and the HTTP response. A **WebhookReceiver** binds one protocol
-  to one Agent with its routing and fallback Task.
-- **TaskCreationPolicy** decides when an unmatched event may create a Task.
+- **WebhookProtocol** defines a sender protocol: signature verification, CEL
+  extraction, the key prefixes its events may claim and the HTTP response. A
+  **WebhookBinding** binds one protocol to one Agent with its fallback Task.
+- **TaskPolicy** decides when an event whose key no Task claims may create one.
 - **Mailbox** runs one Pod holding that mailbox's IMAP and SMTP credentials.
-  A **MailSubscription** wakes one Agent's Tasks for matching mail headers.
+  A **MailBinding** wakes one Agent's Tasks for matching mail headers.
 - **Device** registers a remote machine and its connection key.
 
 Worker access to a Mailbox or Device is granted with custom RBAC verbs on that
@@ -205,7 +205,7 @@ Driftmower's in-cluster audience.
 | Identity | Permissions |
 | --- | --- |
 | `agent-operator` | Reads Agents, Mailboxes and policies; manages Tasks, worker Pods, PVCs and Mailbox Services; writes Agent, Task and Mailbox status; reads `agent-operator-provider-tokens` by name; creates TokenReviews and SubjectAccessReviews. |
-| `agent-operator-webhook` | Reads receivers and `agent-operator-webhook-keys` by name. |
+| `agent-operator-webhook` | Reads protocols, bindings and `agent-operator-webhook-keys` by name; creates TokenReviews for ServiceAccount-token senders. |
 | `agent-devices` | Reads Devices and `agent-device-keys`; writes Device status; creates TokenReviews and SubjectAccessReviews. |
 | `agent-mailbox` | Creates TokenReviews and SubjectAccessReviews. Only the Mailbox Pod's MCP container receives its token. |
 | `agent-worker-<agent>` | Whatever the namespace administrator grants; see [examples/](examples/README.md) for the three profiles below. |
@@ -235,10 +235,11 @@ Assume external credentials are already confined: for example, a dedicated GitHu
 account whose permissions and branch protection forbid pushing to `main`/`master`.
 Token theft still permits abuse within those external grants.
 
-When Agents share a namespace with the harness, an admission policy such as
-`agent-worker-prefix` must confine each `agent-worker-<agent>` ServiceAccount to
-resources named `<agent>-*`, including the ServiceAccounts, Secrets and PVCs its
-Pods and workload templates reference. Known gaps remain:
+When Agents with write access share a namespace, set each Agent's
+`resourcePrefix` and enforce it with an admission policy that takes Agents as
+parameters, confining the worker to resources with that prefix, including the
+ServiceAccounts, Secrets and PVCs its Pods and workload templates reference.
+Known gaps remain:
 
 - **Workers can manage broker topology.** Developer RBAC allows `rabbitmq.com`
   resources, so a worker sharing a namespace with the broker can declare a
@@ -342,7 +343,7 @@ reference:
 | Secret | Holds | Selected by |
 | --- | --- | --- |
 | `agent-operator-provider-tokens` | Model API keys and Git provider tokens | `credentialKeyRef` in Agent model and Git provider entries |
-| `agent-operator-webhook-keys` | Webhook signing keys | `secretKeyRef` in WebhookReceivers |
+| `agent-operator-webhook-keys` | Webhook signing keys | `verificationKeyRef` in WebhookBindings |
 | `agent-device-keys` | Device connection keys | `connectionSecretRef` in Devices |
 
 Mailbox credentials stay in Secrets named by each Mailbox's
@@ -370,6 +371,18 @@ builds and deployments; workers use their mounted kubeconfig and
 
 See [AGENTS.md](AGENTS.md) for architecture, routing, operations and
 development guidance.
+
+## Separable components
+
+These parts could move to their own Git repositories and run outside this
+project. The operator, its CRDs and the UI stay here.
+
+| Component | Path | Coupling to this project | Use outside it |
+| --- | --- | --- | --- |
+| Mail MCP | `mailbox/` | `mcp.js` authenticates with TokenReview and SubjectAccessReview; the IMAP reader publishes to the intake exchange with a projected token | IMAP/SMTP MCP server, for example under Docker Compose, with a pluggable bearer-token check and an optional event publisher |
+| Webhook intake | `webhook/` | Reads WebhookProtocol and WebhookBinding CRs and the keys Secret through the API | Signed webhook to AMQP gateway with CEL-defined protocols loaded from files |
+| Device bridge | `operator/devicebridge/` | Device CRD, `agent-device-keys` and Kubernetes RBAC verbs per Device | Remote machine shell and file MCP for `device-agent` |
+| Coding runner | `runner/`, `src/` | Reports to the Agent MCP and reads its Task queue | Container image wrapping the Claude and Codex CLIs with session persistence |
 
 ## Roadmap
 

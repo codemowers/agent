@@ -1,0 +1,22 @@
+# A durable capacity review: the Task keeps its conversation and workspace,
+# so each wakeup compares against earlier findings. Tasks have no schedule
+# yet; wake it from the UI to rerun the review.
+apiVersion: codemowers.cloud/v1alpha1
+kind: Task
+metadata:
+  name: krtek-capacity-review
+  namespace: agents
+spec:
+  agentRef: krtek
+  title: Capacity review
+  objective: >-
+    Review workload resource requests and limits and PersistentVolumeClaim
+    sizes against observed usage. Where they differ materially or volumes are
+    growing toward capacity, propose corrections as pull requests to the
+    repository each resource is deployed from, with the evidence behind each
+    change. You may apply increases of up to 20% to PVC sizes and memory
+    limits directly when 7 days of usage support them, and open the matching
+    pull request so the source agrees. Make no other live changes. Record
+    findings you cannot turn into a pull request as issues in the source
+    repository's tracker, updating an existing issue instead of opening a
+    duplicate, and compare each run with the previous one.

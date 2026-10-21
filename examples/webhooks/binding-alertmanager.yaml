@@ -1,0 +1,16 @@
+# Events carry the sending Alertmanager's external URL as their key. A Task
+# claiming that URL receives them; otherwise they reach alert-triage.
+apiVersion: codemowers.cloud/v1alpha1
+kind: WebhookBinding
+metadata:
+  name: alertmanager
+  namespace: agents
+spec:
+  protocolRef: alertmanager
+  agentRef: matmlazi
+  serviceAccounts:
+    - monitoring/alertmanager
+  routing:
+    otherwise:
+      taskRef: alert-triage
+    coalesceFor: 2m

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -31,13 +30,23 @@ const audience = "agent-devices-mcp"
 
 var deviceKeyPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
+// bridge serves Devices of every namespace. Connections are keyed by
+// namespace/name; workers see only Devices of their own namespace.
 type bridge struct {
-	namespace string
 	objects   client.Client
 	kube      kubernetes.Interface
 	mu        sync.Mutex
 	connected map[string]*deviceConn
 }
+
+// caller is an authenticated worker ServiceAccount. RBAC on each Device
+// decides access, so a caller may use Devices of other namespaces too.
+type caller struct {
+	user      *authnv1.UserInfo
+	namespace string
+}
+
+func deviceID(namespace, name string) string { return namespace + "/" + name }
 
 type deviceConn struct {
 	ws      *websocket.Conn
@@ -60,10 +69,6 @@ type commandResult struct {
 }
 
 func main() {
-	namespace := os.Getenv("POD_NAMESPACE")
-	if namespace == "" {
-		log.Fatal("POD_NAMESPACE is required")
-	}
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		log.Fatal(err)
@@ -83,7 +88,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	b := &bridge{namespace: namespace, objects: objects, kube: kube, connected: make(map[string]*deviceConn)}
+	b := &bridge{objects: objects, kube: kube, connected: make(map[string]*deviceConn)}
 	go b.reconcileLoop()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -93,9 +98,10 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
-func (b *bridge) devices(ctx context.Context) ([]devicesv1.Device, error) {
+// devices lists one namespace's Devices, or all of them for an empty namespace.
+func (b *bridge) devices(ctx context.Context, namespace string) ([]devicesv1.Device, error) {
 	var list devicesv1.DeviceList
-	if err := b.objects.List(ctx, &list, client.InNamespace(b.namespace)); err != nil {
+	if err := b.objects.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, err
 	}
 	return list.Items, nil
@@ -106,7 +112,7 @@ func (b *bridge) keyFor(ctx context.Context, d *devicesv1.Device) (string, error
 		return "", errors.New("invalid secret reference")
 	}
 	var secret corev1.Secret
-	if err := b.objects.Get(ctx, client.ObjectKey{Namespace: b.namespace, Name: secretName}, &secret); err != nil {
+	if err := b.objects.Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: secretName}, &secret); err != nil {
 		return "", err
 	}
 	key := string(secret.Data[d.Spec.ConnectionSecretRef.Key])
@@ -120,7 +126,7 @@ func (b *bridge) deviceForKey(ctx context.Context, key string) (*devicesv1.Devic
 	if !deviceKeyPattern.MatchString(key) {
 		return nil, errors.New("invalid key")
 	}
-	devices, err := b.devices(ctx)
+	devices, err := b.devices(ctx, "")
 	if err != nil {
 		return nil, err
 	}
@@ -162,22 +168,23 @@ func (b *bridge) connectDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	c := &deviceConn{ws: ws, uid: string(d.UID), key: key, pending: make(map[string]chan commandResult)}
 	ws.SetReadLimit(2 << 20)
+	id := deviceID(d.Namespace, d.Name)
 	b.mu.Lock()
-	previous := b.connected[d.Name]
-	b.connected[d.Name] = c
+	previous := b.connected[id]
+	b.connected[id] = c
 	b.mu.Unlock()
 	if previous != nil {
 		previous.ws.Close()
 	}
-	b.setStatus(d.Name, c, true, "", "")
+	b.setStatus(d.Namespace, d.Name, c, true, "", "")
 	defer func() {
 		ws.Close()
 		b.mu.Lock()
-		if b.connected[d.Name] == c {
-			delete(b.connected, d.Name)
+		if b.connected[id] == c {
+			delete(b.connected, id)
 		}
 		b.mu.Unlock()
-		b.setStatus(d.Name, c, false, "", "")
+		b.setStatus(d.Namespace, d.Name, c, false, "", "")
 	}()
 	for {
 		_, raw, err := ws.ReadMessage()
@@ -194,7 +201,7 @@ func (b *bridge) connectDevice(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if message.Type == "hello" {
-			b.setStatus(d.Name, c, true, limit(message.Hostname, 100), limit(message.Version, 40))
+			b.setStatus(d.Namespace, d.Name, c, true, limit(message.Hostname, 100), limit(message.Version, 40))
 			continue
 		}
 		if message.ID == "" {
@@ -221,16 +228,16 @@ func limit(value string, n int) string {
 	return value
 }
 
-func (b *bridge) setStatus(name string, c *deviceConn, connected bool, hostname, version string) {
+func (b *bridge) setStatus(namespace, name string, c *deviceConn, connected bool, hostname, version string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var d devicesv1.Device
-	if b.objects.Get(ctx, client.ObjectKey{Namespace: b.namespace, Name: name}, &d) != nil || string(d.UID) != c.uid {
+	if b.objects.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &d) != nil || string(d.UID) != c.uid {
 		return
 	}
 	// An old connection must never overwrite its replacement's status.
 	b.mu.Lock()
-	current := b.connected[name]
+	current := b.connected[deviceID(namespace, name)]
 	b.mu.Unlock()
 	if connected && current != c || !connected && current != nil {
 		return
@@ -251,7 +258,7 @@ func (b *bridge) setStatus(name string, c *deviceConn, connected bool, hostname,
 		}
 	}
 	if err := b.objects.Status().Update(ctx, &d); err != nil {
-		log.Printf("device status %s: %v", name, err)
+		log.Printf("device status %s/%s: %v", namespace, name, err)
 	}
 }
 
@@ -267,14 +274,14 @@ func (b *bridge) reconcileLoop() {
 func (b *bridge) reconcile() {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	devices, err := b.devices(ctx)
+	devices, err := b.devices(ctx, "")
 	if err != nil {
 		log.Printf("device reconcile: %v", err)
 		return
 	}
 	known := make(map[string]devicesv1.Device, len(devices))
 	for _, d := range devices {
-		known[d.Name] = d
+		known[deviceID(d.Namespace, d.Name)] = d
 	}
 	b.mu.Lock()
 	current := make(map[string]*deviceConn, len(b.connected))
@@ -294,33 +301,34 @@ func (b *bridge) reconcile() {
 		}
 	}
 	for _, d := range devices {
-		if current[d.Name] == nil && d.Status.Connected {
+		if current[deviceID(d.Namespace, d.Name)] == nil && d.Status.Connected {
 			d.Status.Connected = false
 			if err := b.objects.Status().Update(ctx, &d); err != nil {
-				log.Printf("stale device status %s: %v", d.Name, err)
+				log.Printf("stale device status %s/%s: %v", d.Namespace, d.Name, err)
 			}
 		}
 	}
 }
 
-func (b *bridge) authenticate(r *http.Request) (*authnv1.UserInfo, error) {
+func (b *bridge) authenticate(r *http.Request) (caller, error) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
-		return nil, errors.New("missing bearer token")
+		return caller{}, errors.New("missing bearer token")
 	}
 	token := strings.TrimPrefix(header, "Bearer ")
 	if token == "" {
-		return nil, errors.New("missing bearer token")
+		return caller{}, errors.New("missing bearer token")
 	}
 	review, err := b.kube.AuthenticationV1().TokenReviews().Create(r.Context(), &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token, Audiences: []string{audience}}}, metav1.CreateOptions{})
 	if err != nil || !review.Status.Authenticated || review.Status.Error != "" {
-		return nil, errors.New("token rejected")
+		return caller{}, errors.New("token rejected")
 	}
 	user := review.Status.User
-	if !strings.HasPrefix(user.Username, "system:serviceaccount:"+b.namespace+":") {
-		return nil, errors.New("wrong service account namespace")
+	parts := strings.Split(user.Username, ":")
+	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" || parts[2] == "" || parts[3] == "" {
+		return caller{}, errors.New("not a service account")
 	}
-	return &user, nil
+	return caller{user: &user, namespace: parts[2]}, nil
 }
 
 // Device verbs are capabilities rather than standard read verbs, so a broad
@@ -331,20 +339,21 @@ var deviceVerbs = []string{"exec", "read", "write"}
 var toolVerbs = map[string]string{"device_shell": "exec", "device_file_read": "read", "device_file_write": "write"}
 
 // allowedVerbs returns the Device verbs the caller holds, in deviceVerbs order.
-func (b *bridge) allowedVerbs(ctx context.Context, user *authnv1.UserInfo, name string) []string {
+func (b *bridge) allowedVerbs(ctx context.Context, c caller, namespace, name string) []string {
 	var verbs []string
 	for _, verb := range deviceVerbs {
-		if b.authorized(ctx, user, name, verb) {
+		if b.authorized(ctx, c, namespace, name, verb) {
 			verbs = append(verbs, verb)
 		}
 	}
 	return verbs
 }
 
-func (b *bridge) authorized(ctx context.Context, user *authnv1.UserInfo, name, verb string) bool {
+func (b *bridge) authorized(ctx context.Context, c caller, namespace, name, verb string) bool {
+	user := c.user
 	review, err := b.kube.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authzv1.SubjectAccessReview{Spec: authzv1.SubjectAccessReviewSpec{
 		User: user.Username, UID: user.UID, Groups: user.Groups, Extra: convertExtra(user.Extra),
-		ResourceAttributes: &authzv1.ResourceAttributes{Namespace: b.namespace, Verb: verb, Group: "codemowers.cloud", Resource: "devices", Name: name},
+		ResourceAttributes: &authzv1.ResourceAttributes{Namespace: namespace, Verb: verb, Group: "codemowers.cloud", Resource: "devices", Name: name},
 	}}, metav1.CreateOptions{})
 	return err == nil && review.Status.Allowed && !review.Status.Denied && review.Status.EvaluationError == ""
 }
@@ -357,9 +366,9 @@ func convertExtra(extra map[string]authnv1.ExtraValue) map[string]authzv1.ExtraV
 	return out
 }
 
-func (b *bridge) command(ctx context.Context, name, command string, args any) (commandResult, error) {
+func (b *bridge) command(ctx context.Context, namespace, name, command string, args any) (commandResult, error) {
 	var d devicesv1.Device
-	if err := b.objects.Get(ctx, client.ObjectKey{Namespace: b.namespace, Name: name}, &d); err != nil {
+	if err := b.objects.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &d); err != nil {
 		return commandResult{}, errors.New("device unavailable")
 	}
 	key, err := b.keyFor(ctx, &d)
@@ -367,7 +376,7 @@ func (b *bridge) command(ctx context.Context, name, command string, args any) (c
 		return commandResult{}, errors.New("device unavailable")
 	}
 	b.mu.Lock()
-	c := b.connected[name]
+	c := b.connected[deviceID(namespace, name)]
 	b.mu.Unlock()
 	if c == nil || c.uid != string(d.UID) || subtle.ConstantTimeCompare([]byte(key), []byte(c.key)) != 1 {
 		return commandResult{}, errors.New("device offline")

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,25 +15,38 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type normalizedEvent struct {
-	Version      int      `json:"version"`
-	Namespace    string   `json:"namespace"`
-	Agent        string   `json:"agent"`
-	Receiver     string   `json:"receiver"`
-	ReceiverUID  string   `json:"receiverUID"`
-	Protocol     string   `json:"protocol"`
-	Source       string   `json:"source"`
-	DeliveryID   string   `json:"deliveryID"`
-	Type         string   `json:"type"`
-	Action       string   `json:"action"`
-	Actor        string   `json:"actor"`
-	Text         string   `json:"text"`
-	URL          string   `json:"url,omitempty"`
-	Key          []string `json:"key"`
-	FallbackTask string   `json:"fallbackTask"`
-	CoalesceFor  string   `json:"coalesceFor,omitempty"`
+	Version      int    `json:"version"`
+	Namespace    string `json:"namespace"`
+	Agent        string `json:"agent"`
+	Binding      string `json:"binding"`
+	BindingUID   string `json:"bindingUID"`
+	Protocol     string `json:"protocol"`
+	DeliveryID   string `json:"deliveryID"`
+	Type         string `json:"type"`
+	Actor        string `json:"actor"`
+	Text         string `json:"text"`
+	URL          string `json:"url,omitempty"`
+	Key          string `json:"key,omitempty"`
+	FallbackTask string `json:"fallbackTask"`
+	CoalesceFor  string `json:"coalesceFor,omitempty"`
+}
+
+// intakeEvent is an authenticated arrival from any transport.
+type intakeEvent struct {
+	Namespace    string
+	Source       string // webhook protocol name, or imap
+	Type         string
+	Actor        string
+	Text         string
+	URL          string
+	Key          string // canonical resource URI; empty routes to the fallback
+	FallbackTask string
+	Receipt      string
+	Coalesce     time.Duration
 }
 
 func (c *EventConsumer) handleNormalized(ctx context.Context, d amqp.Delivery) error {
@@ -43,19 +57,27 @@ func (c *EventConsumer) handleNormalized(ctx context.Context, d amqp.Delivery) e
 	}
 	namespace, _ := d.Headers["x-namespace"].(string)
 	agentName, _ := d.Headers["x-agent"].(string)
-	receiverUID, _ := d.Headers["x-hook-id"].(string)
+	bindingUID, _ := d.Headers["x-binding-uid"].(string)
 	source, _ := d.Headers["x-source"].(string)
 	eventType, _ := d.Headers["x-event"].(string)
+	key, _ := d.Headers["x-key"].(string)
 	var event normalizedEvent
-	if json.Unmarshal(d.Body, &event) != nil || event.Version != 1 || event.Namespace != namespace || event.Agent != agentName || event.ReceiverUID != receiverUID || event.Source != source || event.Type != eventType || d.MessageId != normalizedMessageID(event) || d.RoutingKey != "receiver."+namespace+"."+event.Receiver {
+	if json.Unmarshal(d.Body, &event) != nil || event.Version != 2 || event.Namespace != namespace || event.Agent != agentName || event.BindingUID != bindingUID || event.Protocol != source || event.Type != eventType || event.Key != key || d.MessageId != normalizedMessageID(event) || d.RoutingKey != "webhook."+namespace+"."+event.Binding {
 		return nil
 	}
-	if len(event.Key) > 16 || len(event.Text) > 4096 || len(event.URL) > 2048 || event.DeliveryID == "" ||
-		(len(event.Key) > 0 && event.Key[0] != "internal" && event.Key[0] != "external") {
+	if len(event.Text) > 4096 || len(event.URL) > 2048 || event.DeliveryID == "" {
 		return nil
 	}
-	for _, part := range event.Key {
-		if part == "" || len(part) > 256 {
+	if event.Key != "" {
+		if canonical, err := agentsv1alpha1.CanonicalKey(event.Key); err != nil || canonical != event.Key {
+			return nil
+		}
+	}
+	var coalesce time.Duration
+	if event.CoalesceFor != "" {
+		var err error
+		coalesce, err = time.ParseDuration(event.CoalesceFor)
+		if err != nil || coalesce < time.Second || coalesce > time.Hour {
 			return nil
 		}
 	}
@@ -66,133 +88,96 @@ func (c *EventConsumer) handleNormalized(ctx context.Context, d amqp.Delivery) e
 		}
 		return fmt.Errorf("get event Agent: %w", err)
 	}
-	if selfForgeEvent(&agent, event) {
-		return nil
+	_, err := c.routeEvent(ctx, &agent, intakeEvent{Namespace: namespace, Source: event.Protocol, Type: event.Type,
+		Actor: event.Actor, Text: event.Text, URL: event.URL, Key: event.Key, FallbackTask: event.FallbackTask,
+		Receipt: d.MessageId, Coalesce: coalesce})
+	return err
+}
+
+// routeEvent wakes the Task that claims the event key, creates one through a
+// TaskPolicy, or wakes the fallback Task. It returns the Task woken by an
+// exact key match so transports can record their source reference.
+func (c *EventConsumer) routeEvent(ctx context.Context, agent *agentsv1alpha1.Agent, ev intakeEvent) (*agentsv1alpha1.Task, error) {
+	if selfEvent(agent, ev) {
+		return nil, nil
 	}
 	var tasks agentsv1alpha1.TaskList
-	if err := c.APIReader.List(ctx, &tasks, client.InNamespace(namespace), client.MatchingLabels{"codemowers.cloud/agent": agentName}); err != nil {
-		return err
+	if err := c.APIReader.List(ctx, &tasks, client.InNamespace(ev.Namespace), client.MatchingLabels{"codemowers.cloud/agent": agent.Name}); err != nil {
+		return nil, err
 	}
 	var matched *agentsv1alpha1.Task
+	ambiguous := false
 	for i := range tasks.Items {
 		task := &tasks.Items[i]
-		if ownedByAgent(task, agentName, agent.UID) && routingKeyMatches(task, event.Key) {
+		if ev.Key != "" && ownedByAgent(task, agent.Name, agent.UID) && slices.Contains(task.Spec.RoutingKeys, ev.Key) {
 			if matched != nil {
-				return fmt.Errorf("multiple Tasks claim event key")
+				ambiguous = true
 			}
 			matched = task
 		}
 	}
-	if matched == nil {
-		created, err := c.createTaskByPolicy(ctx, event, d.MessageId)
-		if err != nil {
-			return err
-		}
-		if created {
-			return nil
+	if ambiguous {
+		log.FromContext(ctx).Info("multiple Tasks claim event key, using fallback", "namespace", ev.Namespace, "agent", agent.Name)
+		matched = nil
+	}
+	byKey := matched != nil
+	if matched == nil && ev.Key != "" && !ambiguous {
+		created, err := c.createTaskByPolicy(ctx, agent, ev)
+		if err != nil || created {
+			return nil, err
 		}
 	}
-	if matched == nil && event.FallbackTask != "" {
+	if matched == nil && ev.FallbackTask != "" {
 		for i := range tasks.Items {
 			task := &tasks.Items[i]
-			if task.Name == event.FallbackTask && ownedByAgent(task, agentName, agent.UID) {
+			if task.Name == ev.FallbackTask && ownedByAgent(task, agent.Name, agent.UID) {
 				matched = task
 				break
 			}
 		}
 	}
-	if matched == nil || taskHasDelivery(matched, d.MessageId) {
-		return nil
+	if matched == nil || taskHasDelivery(matched, ev.Receipt) {
+		return nil, nil
 	}
-	message := event.Text
+	message := ev.Text
 	if message == "" {
-		message = "New " + event.Source + " event: " + event.Type
+		message = "New " + ev.Source + " event: " + ev.Type
 	}
-	var coalesceFor time.Duration
-	if event.CoalesceFor != "" {
-		var err error
-		coalesceFor, err = time.ParseDuration(event.CoalesceFor)
-		if err != nil || coalesceFor < time.Second || coalesceFor > time.Hour {
-			return nil
-		}
+	label := ev.Key
+	if label == "" {
+		label = ev.Source
 	}
-	return c.wakeTaskWithContent(ctx, matched, strings.Join(event.Key, " / "), d.MessageId, event.Source, event.Actor, message, event.URL, coalesceFor)
+	if err := c.wakeTaskWithContent(ctx, matched, label, ev.Receipt, ev.Source, ev.Actor, message, ev.URL, ev.Coalesce); err != nil {
+		return nil, err
+	}
+	if !byKey {
+		return nil, nil
+	}
+	return matched, nil
 }
 
-// The receiver extracts the authenticated sender; the operator compares that
-// account with the Agent's probed forge identity before routing an event.
-func selfForgeEvent(agent *agentsv1alpha1.Agent, event normalizedEvent) bool {
-	if len(event.Key) < 4 || event.Key[0] != "external" || event.Key[1] != "forge" ||
-		(event.Source != "github" && event.Source != "gitea") || event.Key[2] != event.Source ||
-		event.Actor == "" || agent.Status.ForgesObservedGeneration != agent.Generation {
+// selfEvent reports an event authored by the Agent's own probed forge account
+// on that forge's host, so a worker's comments do not wake its Task.
+func selfEvent(agent *agentsv1alpha1.Agent, ev intakeEvent) bool {
+	if ev.Key == "" || ev.Actor == "" || agent.Status.ForgesObservedGeneration != agent.Generation {
+		return false
+	}
+	key, err := url.Parse(ev.Key)
+	if err != nil || key.Host == "" {
 		return false
 	}
 	for _, forge := range agent.Status.Forges {
-		if forge.Status == "available" && forge.Type == event.Source && forge.ServerURL == event.Key[3] &&
-			forge.Login != "" && strings.EqualFold(forge.Login, event.Actor) {
+		server, err := url.Parse(forge.ServerURL)
+		if err == nil && forge.Status == "available" && forge.Login != "" &&
+			strings.EqualFold(server.Host, key.Host) && strings.EqualFold(forge.Login, ev.Actor) {
 			return true
 		}
 	}
 	return false
 }
+
 func normalizedMessageID(event normalizedEvent) string {
-	key, _ := json.Marshal([]any{event.ReceiverUID, event.DeliveryID, event.Source, event.Type, event.Key})
+	key, _ := json.Marshal([]any{event.BindingUID, event.DeliveryID, event.Type, event.Key})
 	sum := sha256.Sum256(key)
 	return hex.EncodeToString(sum[:])
-}
-
-func (c *EventConsumer) createTaskByPolicy(ctx context.Context, event normalizedEvent, messageID string) (bool, error) {
-	var policies agentsv1alpha1.TaskCreationPolicyList
-	if err := c.APIReader.List(ctx, &policies, client.InNamespace(event.Namespace)); err != nil {
-		return false, err
-	}
-	var policy *agentsv1alpha1.TaskCreationPolicy
-	for i := range policies.Items {
-		candidate := &policies.Items[i]
-		if candidate.Spec.AgentRef != event.Agent || candidate.Spec.ReceiverRef != event.Receiver || !hasKeyPrefix(event.Key, candidate.Spec.KeyPrefix) {
-			continue
-		}
-		if policy != nil {
-			return false, fmt.Errorf("ambiguous TaskCreationPolicy for receiver %s/%s", event.Namespace, event.Receiver)
-		}
-		policy = candidate
-	}
-	if policy == nil {
-		return false, nil
-	}
-	switch policy.Spec.Check {
-	case "currentForgeAssignment":
-		ev, ok := forgeEventFromKey(event.Key)
-		if !ok {
-			return false, nil
-		}
-		return c.createTaskForAssignedIssue(ctx, event.Namespace, event.Agent, ev, messageID, event.CoalesceFor)
-	default:
-		return false, fmt.Errorf("unsupported TaskCreationPolicy check %q", policy.Spec.Check)
-	}
-}
-func hasKeyPrefix(key, prefix []string) bool {
-	if len(prefix) == 0 || len(key) < len(prefix) {
-		return false
-	}
-	for i := range prefix {
-		if key[i] != prefix[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func forgeEventFromKey(key []string) (parsedEvent, bool) {
-	if len(key) != 8 || (key[0] != "external" && key[0] != "internal") || key[1] != "forge" || (key[2] != "github" && key[2] != "gitea") || (key[6] != "issue" && key[6] != "pull_request") {
-		return parsedEvent{}, false
-	}
-	server, err := url.Parse(key[3])
-	if err != nil || server.Scheme != "https" || server.Hostname() == "" || server.User != nil {
-		return parsedEvent{}, false
-	}
-	if key[4] == "" || key[5] == "" || key[7] == "" {
-		return parsedEvent{}, false
-	}
-	return parsedEvent{source: key[2], serverURL: strings.ToLower(server.Hostname()), owner: key[4], repo: key[5], kind: key[6], id: key[7], routeKey: append([]string(nil), key...)}, true
 }

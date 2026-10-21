@@ -44,7 +44,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: agent-worker-matmlazi
-    namespace: codemowers-agent-system
+    namespace: agents
   - kind: ServiceAccount
     name: agent-worker-krtek
-    namespace: codemowers-agent-system
+    namespace: agents

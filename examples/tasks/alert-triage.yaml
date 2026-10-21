@@ -4,13 +4,11 @@ apiVersion: codemowers.cloud/v1alpha1
 kind: Task
 metadata:
   name: alert-triage
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
   agentRef: matmlazi
   routingKeys:
-    - - internal
-      - alertmanager
-      - ee-lte-1
+    - http://am.ee-lte-1.codemowers.io
   objective: >-
     Triage incoming alerts in this durable conversation. Use the available
     cluster MCP to identify the affected environment and investigate current

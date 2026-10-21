@@ -9,7 +9,10 @@ const taglines = [
   'Context m**********r, do you speak it?!',
   'I accidentally Vercel.',
   'Nice to haves were implemented over the weekend. Product manager is now obsolete.',
-  'Someone is typing. It\'s your replacement.'
+  'Someone is typing. It\'s your replacement.',
+  'See kids, this is the f***in\' future.',
+  'The future is now, old man.',
+  'Hello fellow humans. I too enjoy manual deployments.'
 ];
 
 // Desktop truncates a long tagline with an ellipsis; the tooltip has it in full.

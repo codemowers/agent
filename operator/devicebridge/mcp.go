@@ -10,7 +10,6 @@ import (
 	"time"
 
 	devicesv1 "github.com/codemowers/agent/operator/api/v1alpha1"
-	authnv1 "k8s.io/api/authentication/v1"
 )
 
 type mcpRequest struct {
@@ -29,7 +28,7 @@ func tool(name, description string, properties map[string]any, required ...strin
 }
 
 func tools() []map[string]any {
-	device := map[string]any{"type": "string", "description": "Name of a Device granted to this worker ServiceAccount"}
+	device := map[string]any{"type": "string", "description": "Device as list_devices names it: bare in this worker's namespace, otherwise namespace/name"}
 	path := map[string]any{"type": "string", "description": "Path on the remote device"}
 	return []map[string]any{
 		tool("list_devices", "List devices this worker holds any verb on, with those verbs", map[string]any{}),
@@ -44,7 +43,7 @@ func (b *bridge) handleMCP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	user, err := b.authenticate(r)
+	c, err := b.authenticate(r)
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -64,11 +63,11 @@ func (b *bridge) handleMCP(w http.ResponseWriter, r *http.Request) {
 	switch request.Method {
 	case "initialize":
 		result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{}},
-			"serverInfo": map[string]any{"name": "agent-devices", "title": "Devices", "version": "0.1.0"}, "instructions": b.instructions(r.Context(), user)}
+			"serverInfo": map[string]any{"name": "agent-devices", "title": "Devices", "version": "0.1.0"}, "instructions": b.instructions(r.Context(), c)}
 	case "tools/list":
 		result = map[string]any{"tools": tools()}
 	case "tools/call":
-		result = b.callTool(r.Context(), user, request.Params.Name, request.Params.Arguments)
+		result = b.callTool(r.Context(), c, request.Params.Name, request.Params.Arguments)
 	default:
 		rpcError = map[string]any{"code": -32601, "message": "method not found"}
 	}
@@ -88,14 +87,14 @@ func mcpText(value string, failed bool) map[string]any {
 
 // instructions tells the model which remote Devices this caller may use, so
 // that "devices" is not mistaken for the worker container's /dev.
-func (b *bridge) instructions(ctx context.Context, user *authnv1.UserInfo) string {
-	devices, err := b.devices(ctx)
+func (b *bridge) instructions(ctx context.Context, c caller) string {
+	devices, err := b.devices(ctx, "")
 	if err != nil {
 		return "Remote device inventory is unavailable."
 	}
 	var parts []string
 	for _, d := range devices {
-		verbs := b.allowedVerbs(ctx, user, d.Name)
+		verbs := b.allowedVerbs(ctx, c, d.Namespace, d.Name)
 		if len(verbs) == 0 {
 			continue
 		}
@@ -106,7 +105,7 @@ func (b *bridge) instructions(ctx context.Context, user *authnv1.UserInfo) strin
 				state += ", host " + d.Status.Hostname
 			}
 		}
-		parts = append(parts, fmt.Sprintf("%s (%s; may %s)", d.Name, state, strings.Join(verbs, ", ")))
+		parts = append(parts, fmt.Sprintf("%s (%s; may %s)", c.deviceRef(&d), state, strings.Join(verbs, ", ")))
 	}
 	if len(parts) == 0 {
 		return "No remote devices are authorized for this worker."
@@ -115,16 +114,17 @@ func (b *bridge) instructions(ctx context.Context, user *authnv1.UserInfo) strin
 		". These are physical machines, not the worker container's /dev. exec permits device_shell, read device_file_read and write device_file_write."
 }
 
-func (b *bridge) callTool(ctx context.Context, user *authnv1.UserInfo, name string, raw json.RawMessage) any {
+func (b *bridge) callTool(ctx context.Context, c caller, name string, raw json.RawMessage) any {
 	if name == "list_devices" {
-		devices, err := b.devices(ctx)
+		devices, err := b.devices(ctx, "")
 		if err != nil {
 			return mcpText("Device inventory unavailable", true)
 		}
 		visible := make([]map[string]any, 0)
 		for _, d := range devices {
-			if verbs := b.allowedVerbs(ctx, user, d.Name); len(verbs) > 0 {
+			if verbs := b.allowedVerbs(ctx, c, d.Namespace, d.Name); len(verbs) > 0 {
 				summary := deviceSummary(&d)
+				summary["name"] = c.deviceRef(&d)
 				summary["verbs"] = verbs
 				visible = append(visible, summary)
 			}
@@ -145,8 +145,12 @@ func (b *bridge) callTool(ctx context.Context, user *authnv1.UserInfo, name stri
 	if !known {
 		return mcpText("Unknown tool", true)
 	}
-	allowed := b.authorized(ctx, user, args.Device, verb)
-	log.Printf("device tool %s device=%s user=%s verb=%s allowed=%t", name, args.Device, user.Username, verb, allowed)
+	namespace, device := c.namespace, args.Device
+	if before, after, found := strings.Cut(args.Device, "/"); found {
+		namespace, device = before, after
+	}
+	allowed := namespace != "" && device != "" && b.authorized(ctx, c, namespace, device, verb)
+	log.Printf("device tool %s device=%s/%s user=%s verb=%s allowed=%t", name, namespace, device, c.user.Username, verb, allowed)
 	if !allowed {
 		return mcpText("Device "+verb+" access denied", true)
 	}
@@ -173,7 +177,7 @@ func (b *bridge) callTool(ctx context.Context, user *authnv1.UserInfo, name stri
 	}
 	commandCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
-	response, err := b.command(commandCtx, args.Device, command, commandArgs)
+	response, err := b.command(commandCtx, namespace, device, command, commandArgs)
 	if err != nil {
 		return mcpText(err.Error(), true)
 	}
@@ -187,6 +191,15 @@ func (b *bridge) callTool(ctx context.Context, user *authnv1.UserInfo, name stri
 		return mcpText("File written", false)
 	}
 	return mcpText(fmt.Sprintf("exit_code: %d\nstdout:\n%s\nstderr:\n%s", response.ExitCode, response.Stdout, response.Stderr), false)
+}
+
+// deviceRef names a Device as tools accept it: bare in the caller's own
+// namespace, otherwise namespace/name.
+func (c caller) deviceRef(d *devicesv1.Device) string {
+	if d.Namespace == c.namespace {
+		return d.Name
+	}
+	return d.Namespace + "/" + d.Name
 }
 
 func deviceSummary(d *devicesv1.Device) map[string]any {

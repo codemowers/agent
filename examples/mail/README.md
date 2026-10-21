@@ -6,7 +6,7 @@
   operator attaches Mailboxes when it creates a worker Pod, so RBAC changes
   apply from the next worker Pod.
 - The `mail-intake` fallback Task must exist before routing starts.
-- `mailsubscription-matmlazi-github.yaml` trusts `Authentication-Results` only
+- `mailbinding-matmlazi-github.yaml` trusts `Authentication-Results` only
   from authserv-id `mail.codemowers.io`. That holds because Haraka strips
   sender-supplied results (`headers.clean_auth_results`, its default). Other
   mail servers need the same boundary before a rule relies on that header.

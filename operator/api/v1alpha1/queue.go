@@ -22,6 +22,14 @@ func WorkerServiceAccount(agent *Agent) string {
 	return "agent-worker-" + agent.Name
 }
 
+// ResourcePrefix starts the names of the Agent's worker Pods and Task PVCs.
+func ResourcePrefix(agent *Agent) string {
+	if agent.Spec.ResourcePrefix != "" {
+		return agent.Spec.ResourcePrefix
+	}
+	return agent.Name + "-"
+}
+
 // TaskQueue names the Task's RabbitMQ queue after the worker token subject.
 // The broker grants each token `{sub}:*`, so workers read only queues of
 // their own ServiceAccount. Kubernetes names cannot contain ':', and the

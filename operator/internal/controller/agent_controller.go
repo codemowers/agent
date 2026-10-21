@@ -114,6 +114,9 @@ type TaskReconciler struct {
 	AMQP        AMQPManager // nil when RabbitMQ is not configured
 	AMQPURL     string      // injected into worker pods as AMQP_URL
 	WorkerImage string      // approved runner image injected by deployment/Skaffold
+	// HarnessNamespace hosts the operator and Device bridge Services that
+	// workers of every Agent namespace call.
+	HarnessNamespace string
 }
 
 func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -307,7 +310,7 @@ func (r *TaskReconciler) ensureWorkspacePVCs(ctx context.Context, task *agentsv1
 		if _, exists := task.Status.WorkspacePVCs[name]; exists {
 			continue
 		}
-		pvcName := "agent-workspace-" + taskUID8 + "-" + name
+		pvcName := agentsv1alpha1.ResourcePrefix(agent) + name + "-" + taskUID8
 		spec := tmpl.Spec.DeepCopy()
 		pvc := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
@@ -565,7 +568,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseFailed, "WorkerImageMissing")
 	}
 
-	podName := workerPodName(agent.Name, task.Name, randSuffix())
+	podName := workerPodName(agentsv1alpha1.ResourcePrefix(agent), task.Name, randSuffix())
 	sa := agentsv1alpha1.WorkerServiceAccount(agent)
 	pod := r.buildWorkerPod(podName, task, agent, sa, r.authorizedMailboxes(ctx, task.Namespace, sa))
 
@@ -790,7 +793,7 @@ func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha
 		CredentialKeyRef string                       `json:"credentialKeyRef"`
 		Template         corev1.PodTemplateSpec       `json:"template"`
 		MCPEndpoints     []agentsv1alpha1.MCPEndpoint `json:"mcpEndpoints"`
-	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, agent.Spec.Template, agentsv1alpha1.WorkerMCPEndpoints(agent, task.Namespace, nil)})
+	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, agent.Spec.Template, agentsv1alpha1.WorkerMCPEndpoints(agent, "", task.Namespace, nil)})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -938,10 +941,11 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		{Name: "TASK_NAMESPACE", Value: task.Namespace},
 		{Name: "AGENT_WORKER_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}},
 		{Name: "AGENT_NAME", Value: agent.Name},
+		{Name: "AGENT_RESOURCE_PREFIX", Value: agent.Spec.ResourcePrefix},
 		{Name: "AGENT_MODE", Value: "task-worker"},
 		{Name: "AGENT_IDLE_SECONDS", Value: strconv.FormatInt(int64(taskIdleSeconds(task, agent)), 10)},
 		{Name: "AGENT_TASK_GENERATION", Value: strconv.FormatInt(task.Generation, 10)},
-		{Name: "AGENT_OPERATOR_MCP_URL", Value: "http://agent-operator." + task.Namespace + ".svc.cluster.local:8083/mcp"},
+		{Name: "AGENT_OPERATOR_MCP_URL", Value: agentsv1alpha1.OperatorMCPURL(r.HarnessNamespace)},
 		{Name: "AGENT_OPERATOR_MCP_TOKEN_FILE", Value: "/var/run/agent-operator-mcp/token"},
 	}
 	if task.Status.Progress != nil && task.Status.Progress.Summary != "" {
@@ -952,7 +956,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	} else if task.Status.Progress != nil && !task.Status.Progress.UpdatedAt.IsZero() {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_LAST_RESULT_AT", Value: task.Status.Progress.UpdatedAt.Time.Format(time.RFC3339Nano)})
 	}
-	endpointsJSON, _ := json.Marshal(agentsv1alpha1.WorkerMCPEndpoints(agent, task.Namespace, mailboxes))
+	endpointsJSON, _ := json.Marshal(agentsv1alpha1.WorkerMCPEndpoints(agent, r.HarnessNamespace, task.Namespace, mailboxes))
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MCP_ENDPOINTS", Value: string(endpointsJSON)})
 	disabledJSON, _ := json.Marshal(append([]string{}, task.Spec.DisabledMCPs...))
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_DISABLED_MCPS", Value: string(disabledJSON)})
@@ -1141,13 +1145,12 @@ func randSuffix() string {
 	return fmt.Sprintf("%x", b)
 }
 
-// workerPodName keeps the owning Agent visible while leaving room for a Task
+// workerPodName starts with the Agent's name prefix and leaves room for a Task
 // prefix and a fresh incarnation ID on every worker restart.
-func workerPodName(agentName, taskName, incarnation string) string {
-	taskPrefix := taskName[:min(8, len(taskName))]
-	maxAgentLength := 63 - len("agent---") - len(taskPrefix) - len(incarnation)
-	if len(agentName) > maxAgentLength {
-		agentName = strings.TrimRight(agentName[:maxAgentLength], "-")
+func workerPodName(prefix, taskName, incarnation string) string {
+	taskPrefix := strings.TrimRight(taskName[:min(8, len(taskName))], "-")
+	if maxPrefixLength := 63 - len(taskPrefix) - len("-") - len(incarnation); len(prefix) > maxPrefixLength {
+		prefix = strings.TrimRight(prefix[:maxPrefixLength-1], "-") + "-"
 	}
-	return fmt.Sprintf("agent-%s-%s-%s", agentName, taskPrefix, incarnation)
+	return prefix + taskPrefix + "-" + incarnation
 }

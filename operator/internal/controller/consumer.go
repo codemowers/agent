@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -129,67 +127,6 @@ func (c *EventConsumer) consume(ctx context.Context, ch *amqp.Channel) error {
 	}
 }
 
-// parsedEvent holds the structured fields extracted from the current broker
-// envelope. It is converted to an ordered Task key before matching.
-type parsedEvent struct {
-	source    string // github, gitea, slack, alertmanager
-	serverURL string // non-empty for GitHub Enterprise
-	owner     string
-	repo      string
-	kind      string // issue, pull_request, alert; empty for push/ping/ci
-	id        string
-	routeKey  []string // exact authenticated key, including a provider URL with port
-}
-
-func eventTaskKey(ev parsedEvent) []string {
-	if len(ev.routeKey) > 0 {
-		return append([]string(nil), ev.routeKey...)
-	}
-	if ev.source == "alertmanager" && ev.id != "" {
-		return []string{"internal", "alertmanager", ev.id}
-	}
-	if ev.source == "slack" && ev.owner != "" && ev.repo != "" && ev.kind == "thread" && ev.id != "" {
-		return []string{"external", "slack", ev.owner, ev.repo, ev.id}
-	}
-	if (ev.source != "github" && ev.source != "gitea") || ev.owner == "" || ev.repo == "" || ev.kind == "" || ev.id == "" {
-		return nil
-	}
-	host := ev.serverURL
-	if ev.source == "github" && host == "" {
-		host = "github.com"
-	}
-	if host == "" {
-		return nil
-	}
-	owner, repo := ev.owner, ev.repo
-	if ev.source == "github" {
-		owner, repo = strings.ToLower(owner), strings.ToLower(repo)
-	}
-	return []string{"external", "forge", ev.source, "https://" + strings.ToLower(host), owner, repo, ev.kind, ev.id}
-}
-
-func routingKeyMatches(task *agentsv1alpha1.Task, key []string) bool {
-	if len(key) == 0 {
-		return false
-	}
-	for _, candidate := range task.Spec.RoutingKeys {
-		if len(candidate) != len(key) {
-			continue
-		}
-		matched := true
-		for i := range key {
-			if candidate[i] != key[i] {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
-}
-
 func (c *EventConsumer) handle(ctx context.Context, d amqp.Delivery) error {
 	if d.Headers["x-source"] == "imap" {
 		return c.handleMail(ctx, d)
@@ -204,20 +141,6 @@ func ownedByAgent(task *agentsv1alpha1.Task, name string, uid types.UID) bool {
 		}
 	}
 	return false
-}
-
-func serverHost(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	if !strings.Contains(raw, "://") {
-		return strings.ToLower(raw)
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return strings.ToLower(parsed.Hostname())
 }
 
 // wakeTaskWithContent records an authenticated event and wakes its Task.

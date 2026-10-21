@@ -1,0 +1,52 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: taskpolicies.codemowers.cloud
+spec:
+  group: codemowers.cloud
+  scope: Namespaced
+  names:
+    plural: taskpolicies
+    singular: taskpolicy
+    kind: TaskPolicy
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - agentRef
+                - keyPrefix
+                - verify
+              properties:
+                agentRef:
+                  type: string
+                keyPrefix:
+                  description: Canonical key URI prefix, matched at a path boundary.
+                    The longest matching prefix wins; equal matches create nothing.
+                  type: string
+                  minLength: 1
+                  maxLength: 1024
+                eventTypes:
+                  description: Event types allowed to create a Task; empty allows all.
+                  type: array
+                  maxItems: 32
+                  x-kubernetes-list-type: set
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                verify:
+                  description: forgeAssignment requires an open forge issue or pull
+                    request assigned to the Agent's account; none creates directly.
+                  type: string
+                  enum:
+                    - forgeAssignment
+                    - none

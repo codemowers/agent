@@ -1,10 +1,10 @@
-# Installed in codemowers-agent-system. This uses the previous controller mail
-# settings and references its credential Secrets without copying their values.
+# The IMAP and SMTP credential Secrets are copies of the previous controller's
+# mail settings in codemowers-agent-system.
 apiVersion: codemowers.cloud/v1alpha1
 kind: Mailbox
 metadata:
   name: matmlazi-mail
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
   address: matmlazi@codemowers.io
   displayName: Mat Mlazi

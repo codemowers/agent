@@ -222,9 +222,11 @@ export async function seedTaskContext(repo, message) {
     + `Work on a topic branch. Do not push directly to main/master or force-push.\n`
     + `Verify build and deployment settings from the available MCPs before infrastructure actions.\n`
     + (process.env.SKAFFOLD_DEFAULT_REPO ? `Build with Skaffold's cluster builder: Kaniko pushes to ${process.env.SKAFFOLD_DEFAULT_REPO} `
-      + `using the ${pushSecret} Secret (build.cluster.dockerConfig.secretName), and Skaffold deploys into namespace ${process.env.SKAFFOLD_NAMESPACE}.\n` : '')
-    + `Name Kubernetes resources you create ${required('AGENT_NAME')}-*. Cluster admission may confine your writes, exec, `
-    + `ServiceAccounts, Secret references and PVC mounts to that prefix; Skaffold Kaniko builder Pods are exempt.\n`
+      + `using the ${pushSecret} Secret (build.cluster.dockerConfig.secretName) of the target namespace.\n` : '')
+    + `Your RBAC decides which namespaces you may deploy into; list them with the Driftmower MCP. Set the project's `
+    + `namespace as SKAFFOLD_NAMESPACE in its skaffold.env, and ask when the target namespace is unclear.\n`
+    + (process.env.AGENT_RESOURCE_PREFIX ? `Name Kubernetes resources you create ${process.env.AGENT_RESOURCE_PREFIX}*. Cluster admission `
+      + `confines your writes, exec, ServiceAccounts, Secret references and PVC mounts to that prefix; Skaffold Kaniko builder Pods are exempt.\n` : '')
     + `Do not improvise builders, registries, credentials or namespace privileges when infrastructure is unclear.\n`;
   await writeFile(join(repo, 'AGENTS.md'), instructions, {flag: 'wx'}).catch(error => {
     if (error.code !== 'EEXIST') throw error;

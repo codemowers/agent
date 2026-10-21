@@ -37,8 +37,9 @@ function getSecret(namespace, name, dir) {
   }));
 }
 
-// Lets kubectl and Skaffold deploy into the worker's own namespace with its own
-// ServiceAccount. Values the Agent's Pod template sets are kept. Workers
+// Lets kubectl and Skaffold use the worker's own ServiceAccount. RBAC decides
+// which namespaces it may deploy into; each project sets SKAFFOLD_NAMESPACE in
+// its skaffold.env. Values the Agent's Pod template sets are kept. Workers
 // without an API token, such as unprivileged support agents, are left alone.
 export async function prepareKubeEnv(home, env = process.env, dir = serviceAccountDir) {
   let namespace;
@@ -52,7 +53,6 @@ export async function prepareKubeEnv(home, env = process.env, dir = serviceAccou
     env.KUBECONFIG = path;
     env.SKAFFOLD_KUBE_CONTEXT ||= 'in-cluster';
   }
-  env.SKAFFOLD_NAMESPACE ||= namespace;
   if (env.SKAFFOLD_DEFAULT_REPO) return;
   // The push Secret names the registry; its credential stays in the Secret.
   try {

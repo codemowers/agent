@@ -25,12 +25,12 @@ test('workers without an API token get no Kubernetes environment', async t => {
   assert.deepEqual(env, {});
 });
 
-test('template settings win and the namespace comes from the ServiceAccount', async t => {
+test('template settings win and Skaffold gets no implicit namespace', async t => {
   const dir = await mkdtemp(tmpdir() + '/kube-sa-'); t.after(() => rm(dir, {recursive: true, force: true}));
   await writeFile(dir + '/namespace', 'team'); await writeFile(dir + '/token', 't');
   const env = {KUBERNETES_SERVICE_HOST: '10.0.0.1', SKAFFOLD_DEFAULT_REPO: 'registry.example.test/custom'};
   await prepareKubeEnv(dir, env, dir);
-  assert.equal(env.SKAFFOLD_NAMESPACE, 'team');
+  assert.equal(env.SKAFFOLD_NAMESPACE, undefined);
   assert.equal(env.SKAFFOLD_KUBE_CONTEXT, 'in-cluster');
   assert.equal(env.SKAFFOLD_DEFAULT_REPO, 'registry.example.test/custom');
   assert.equal(JSON.parse(await readFile(env.KUBECONFIG, 'utf8')).contexts[0].context.namespace, 'team');

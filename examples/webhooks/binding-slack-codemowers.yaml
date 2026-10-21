@@ -1,12 +1,10 @@
 apiVersion: codemowers.cloud/v1alpha1
-kind: WebhookReceiver
+kind: WebhookBinding
 metadata:
   name: slack-codemowers
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
-  sourceRef:
-    kind: ClusterWebhookReceiver
-    name: slack-events
+  protocolRef: slack-events
   agentRef: matmlazi
   match:
     teamID: T0BTAN5EF5E
@@ -14,6 +12,5 @@ spec:
     name: agent-operator-webhook-keys
     key: slack-codemowers
   routing:
-    existingTask: exactKey
     otherwise:
       taskRef: communications

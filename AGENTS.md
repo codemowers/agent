@@ -15,7 +15,7 @@ In the README segmentation example, customer support has the greatest external
 prompt-injection exposure, developer has the greatest supply-chain and
 privilege-escalation exposure, and kube admin has the greatest sensitive-data
 disclosure risk due to cluster-wide access. Developer builds with Kaniko and
-deploys development workloads only in its own namespace, alongside cluster-wide
+deploys development workloads only in namespaces its RBAC grants, alongside cluster-wide
 operational reads. Platform admission must enforce user namespace isolation
 (`hostUsers: false`) or a supported Kata runtime for those Pods and reject host
 access/confinement bypasses. Kata and local models do not remove API privileges
@@ -122,25 +122,46 @@ Provider tokens live under separate keys in the namespace's
 The operator has get-only RBAC for the provider Secret; the webhook receiver
 has get-only RBAC for the webhook-keys Secret. Neither ServiceAccount has
 Secret list/watch.
-Unsigned in-cluster receivers use only the named route on a separate internal
-webhook Service and listener; the public Ingress reaches only the signed
-listener. Restrict internal ingress to the sender Pods with a cluster-local
-NetworkPolicy. In-cluster DNS is not authentication. Keep sender namespace,
-Pod selectors and Alertmanager routing out of Helm values; the sender-side
-egress policy is an example manifest. Sender verification is separate from the
+In-cluster senders without a signing scheme, such as Alertmanager, use
+`verification.algorithm: serviceAccountToken`: they send a projected
+ServiceAccount token for the protocol's `audience` as a bearer token, the
+receiver checks it with a TokenReview, and the binding's `serviceAccounts`
+lists the accepted `<namespace>/<name>` senders. TokenReview results are
+cached by token hash for up to five minutes, never past token expiry, after
+screening the unverified audience and expiry. Protocols, bindings and signing
+keys are reused for ten seconds and, while the API server is unavailable, for
+up to ten minutes; an object the API server reports missing is dropped at
+once. An unavailable API server otherwise yields 503, which senders retry.
+The receiver has no unsigned
+or internal listener; in-cluster DNS and network position are not
+authentication. Keep sender namespace, Pod selectors and Alertmanager routing
+out of Helm values; the sender-side egress policy is an example manifest. Sender verification is separate from the
 RabbitMQ publisher identity described below.
 Agent and Task CRDs use `codemowers.cloud/v1alpha1` directly, with resource names
 `agents.codemowers.cloud` and `tasks.codemowers.cloud`.
 This checkout deploys the Go operator as `agent-operator` and the webhook
 receiver as `agent-operator-webhook` in the existing
-`codemowers-agent-system` namespace. Their hosts are `dashboard` and `webhook`. The chart owns
+`codemowers-agent-system` namespace. An Agent and its workers may live in the
+harness namespace or another namespace. The operator learns the harness
+namespace from its Pod's `metadata.namespace` fieldRef and points workers at the
+harness `agent_operator` and `devices` Services; Mailboxes run in the Agent's
+namespace. Harness NetworkPolicies admit worker Pods from any namespace, and
+Agent namespaces get no NetworkPolicies for now. Where a worker may deploy is
+RBAC alone: it can hold grants in several workload namespaces and discovers
+them through the Driftmower MCP. Here all Agents share the `agents`
+namespace and `matmlazi` deploys into `demo`. Placing workers in a namespace other
+than their Agent's, so that a hosted tenant's worker memory counts against a
+quota outside its sandbox, is not implemented yet. Their hosts are `dashboard` and `webhook`. The chart owns
 the `agent-events` RabbitmqCluster (`rabbitmq.name`) and its intake topology;
 the intake Queue uses `deletionPolicy: retain` so queued events survive its
 removal.
 The Device bridge is a separate Go Deployment and image named `agent-devices`.
 The existing operator Ingress routes `/devices/` to its Service, while workers
-call its namespace-local `/mcp` endpoint. A namespaced Device CR references
-one key in the fixed `agent-device-keys` Secret. The bridge owns device-agent
+call its `/mcp` endpoint in the harness namespace. A namespaced Device CR
+references one key in its namespace's fixed `agent-device-keys` Secret; the
+bridge reads Devices and that Secret in every namespace. A worker sees each
+Device on which it holds a verb, named bare in its own namespace and as
+`namespace/name` elsewhere. The bridge owns device-agent
 WebSockets and updates Device connection status. Every worker receives the
 `devices` MCP endpoint and a projected ServiceAccount token for audience
 `agent-devices-mcp`, never a Device key; Device RBAC alone decides access.
@@ -156,8 +177,11 @@ only where `exec` would also be acceptable. Device deletion or key rotation clos
 The operator sets the `worker` container image from the Skaffold runner image,
 overriding stale `image` values in Agent CRs. Signed forge events create
 Tasks only after checking the configured account and current assignment.
-Operator worker Pods are named `agent-<Agent name>-<Task prefix>-<incarnation ID>`;
-the Agent segment is shortened as needed to fit Kubernetes Pod name limits.
+Operator worker Pods are named `<prefix><Task prefix>-<incarnation ID>` and
+Task PVCs `<prefix><volume>-<Task UID prefix>`, where the prefix is
+`Agent.spec.resourcePrefix` or, when unset, `<Agent name>-`. The prefix is shortened as needed
+to fit Kubernetes Pod name limits. Existing PVCs keep the names recorded in
+`Task.status.workspacePVCs`.
 `Agent.spec.idleSeconds` (default 3600, range 0–86400) is copied into
 `Task.spec.idleSeconds` on creation, including directly created Tasks. Task
 idle changes are sent to the resident worker over RabbitMQ. Worker container
@@ -191,29 +215,36 @@ there is no live worker log polling. A terminal Pod's
 termination message remains a fallback summary. The Task view links structured
 GitHub and Gitea references. Prometheus Task gauges are rebuilt from Task
 status at scrape time with namespace, phase and activity labels.
-`Task.spec.routingKeys` holds exact ordered event aliases, scoped by the
-Task's namespace and Agent. The webhook endpoint prepends `internal` or
-`external` after CEL extraction; senders and receiver CEL cannot choose that
-first segment. Event-created forge Tasks receive a key of
-`[external, forge, provider, server URL, owner, repository, issue|pull_request, number]`.
-Slack thread keys are `[external, slack, workspace, channel, root timestamp]`;
-internal Alertmanager fingerprint keys are `[internal, alertmanager, fingerprint]`. A Task may
-claim several keys. Duplicate exact claims within one Agent are rejected at
-routing time. `Task.spec.externalReferences` supplies starting source links
+`Task.spec.routingKeys` holds exact canonical resource URIs, scoped by the
+Task's namespace and Agent; webhook and mail events share them. Forge issues
+and pull requests use `https://<forge>/<owner>/<repo>/issues/<number>` with
+lowercase owner and repository; Slack threads use
+`https://slack.com/archives/<channel>/p<root ts>`; Alertmanager uses its
+external URL; mail threads use `mid:<root Message-ID>`. Canonicalization
+lowercases scheme and host and drops a trailing slash; queries, fragments and
+user info are rejected. Each WebhookProtocol lists `allowedKeyPrefixes`,
+matched at a path boundary, that bound its CEL and binding `keyCEL` keys, so an
+in-cluster sender cannot claim a forge key. A Task may claim several
+keys. Duplicate exact claims within one Agent route to the fallback Task. `Task.spec.externalReferences` supplies starting source links
 and forge checkout context; `Task.status.externalReferences` records links
 collected later. Neither decides
 event routing. The webhook
-service reads ClusterWebhookReceiver and WebhookReceiver resources, verifies
+service reads WebhookProtocol and WebhookBinding resources, verifies
 each sender, evaluates bounded CEL, and publishes normalized key-bearing
-events to RabbitMQ. CEL extracts the forge actor. The operator accepts only events
+events to the `agent.intake` exchange with routing key
+`webhook.<namespace>.<binding>` and the key in header `x-key`; the Mailbox
+publishes `mail.<namespace>.<mailbox>`. CEL extracts the actor and an event
+type such as `issues.assigned`. The operator accepts only events
 whose broker-verified `user_id` is the webhook receiver's ServiceAccount and
-ignores events authored by the Agent's own probed forge login
-for the matching provider and server when that snapshot reflects the current
-Agent generation. It then resolves exact keys. It reads TaskCreationPolicy only
-when no Task claims a key; the implemented
-`currentForgeAssignment` check probes the configured forge account and current
-assignment before creating a Task. Unknown keys go to the binding's fallback
-Task. `routing.coalesceFor` wakes on the first event, records later events in
+ignores events whose actor is the Agent's own probed forge login on the key's
+host when that snapshot reflects the current Agent generation. It then
+resolves exact keys. It reads TaskPolicy only when no Task claims a key: the
+policy of the Agent with the longest matching `keyPrefix` and allowed
+`eventTypes` applies, and equally specific policies create nothing.
+`verify: forgeAssignment` checks with the Agent's credential that the issue or
+pull request is open and assigned to the Agent's account, reusing the current
+forge snapshot's login; `verify: none` creates directly but never for mail.
+Unknown keys go to the binding's fallback Task. `routing.coalesceFor` wakes on the first event, records later events in
 the window, and sends one trailing wake when they arrived. Workers hold no
 broker password: they log in to RabbitMQ with a projected ServiceAccount token
 for audience `agent-rabbitmq` and refresh it with AMQP `update-secret`. The
@@ -330,22 +361,25 @@ When a Mailbox is created, the operator reconciles one Node.js Pod with IMAP
 and/or SMTP containers. Each container receives only its protocol credential
 keys and nonsecret settings as explicit environment variables. The IMAP
 container uses IMAP IDLE, fetches headers only,
-and publishes persistent events to the existing RabbitMQ intake queue as the
+and publishes persistent events to the RabbitMQ intake exchange as the
 `agent-mailbox` ServiceAccount; the operator accepts mail events only from
 that ServiceAccount in the Mailbox's own namespace.
 The operator advances Mailbox.status.imap.cursor after routing the event.
-The MailSubscription CR binds one
+The MailBinding CR binds one
 Mailbox to one Agent for metadata-only notification routing through declarative
 header matchers. RE2 named captures and bounded built-in mail metadata expand
-literal event templates; there is no mail CEL evaluator or provider-specific
+literal event templates, and `${name|lower}` lowercases a value; there is no
+mail CEL evaluator or provider-specific
 parser. The receiving mail server checks SPF, DKIM and DMARC during SMTP
 delivery and stamps Authentication-Results. The IMAP service exposes bounded
 RFC 5322 headers to matchers; it does not redo those checks or synthesize
 authentication verdict fields. The GitHub example matches the local receiving
-server's authserv-id and DMARC result in the stored header. Ambiguous From or
-duplicate matched headers fail closed. The matched thread alias resolves through
-exact Task key lookup. New GitHub webhook Tasks claim this thread alias as
-well as their canonical issue or pull-request key. Cross-transport duplicate
+server's authserv-id and DMARC result in the stored header, and takes the
+issue URL from `References`, which GitHub's DKIM signature covers; its
+`Message-ID` and `X-GitHub-*` headers are unsigned. Ambiguous From or
+duplicate matched headers fail closed, and a template that expands to an
+invalid URI is a nonmatch. The key resolves through the same exact Task lookup
+and TaskPolicy as webhook events. Cross-transport duplicate
 wakeup suppression remains unimplemented; mail and webhook arrivals are both
 recorded with their own source and receipt. Mail body text is never routing
 authority.
@@ -356,8 +390,8 @@ threading. Namespace is implicit in the Task; the Mailbox UID prevents reuse
 after a Mailbox is recreated. This source reference does not change worker
 checkout configuration or event routing. Fallback intake Tasks do not claim
 the thread reference.
-Unmatched mail goes to a configured intake Task,
-without creating a Task from untrusted headers. A MailSubscription alone
+Unmatched mail goes to a configured intake Task unless a forge-verified
+TaskPolicy creates one; headers alone never create a Task. A MailBinding alone
 decides which Agent a Mailbox wakes. Kubernetes RBAC is the only mail access
 knob: when creating a worker Pod, the operator attaches each same-namespace
 Mailbox on which a SubjectAccessReview grants the worker ServiceAccount verb
@@ -372,8 +406,7 @@ that Mailbox; grant them with ordinary Roles. Only the `mcp` container
 receives the `agent-mailbox` ServiceAccount token, which needs only
 TokenReview and SubjectAccessReview creation, and it holds no mail credential.
 It forwards authorized calls over loopback to the IMAP listing and SMTP
-containers, which listen only on 127.0.0.1. A NetworkPolicy admits only worker
-Pods to the MCP port. Mail search remains pending.
+containers, which listen only on 127.0.0.1. Mail search remains pending.
 `send_email` succeeds only after SMTP acceptance;
 transport errors can leave the outcome unknown and are never retried
 automatically. Mailbox.status holds the IMAP UIDVALIDITY/UID cursor, advanced
@@ -384,7 +417,7 @@ exact SMTP message bytes with `\\Seen` after SMTP acceptance. SMTP success
 and archive failure are reported separately so a retry cannot silently send a
 duplicate.
 GitHub and GHES hooks can use `/hooks/github`, while each binding also has
-`/hooks/<namespace>/<receiver>`. Protocol and binding CRs replace
+`/hooks/<namespace>/<binding>`. Protocol and binding CRs replace
 `Agent.spec.githubWebhooks`. The fixed `agent-operator-webhook-keys` Secret
 holds sender verification keys only. Signed pings are acknowledged without routing;
 the operator records bounded per-Task delivery receipts. Use distinct keys for
@@ -396,7 +429,7 @@ and checked with SubjectAccessReview; the browser fetches changed state from
 the access-controlled API. RabbitMQ is not exposed to browsers.
 `spec.access` remains in the CRD but is ignored; the operator removes its old
 owned access RoleBindings. Grant read access through Kubernetes RBAC.
-Gitea webhook ingestion uses the generic receiver binding; use a namespaced
+Gitea webhook ingestion uses the generic WebhookBinding; use a namespaced
 path and distinct signing key per instance. Helm has no organization source or
 group allowlist configuration.
 The Gitea protocol copies the original issue or pull request title and body,
@@ -404,10 +437,10 @@ when present, into each bounded normalized event before appending comment text.
 This lets workers see the original post from a signed comment delivery even
 when a private repository cannot be fetched anonymously. A provider API token
 is still needed for live repository reads and assignment checks.
-The `laurivosandi` Gitea receiver routes unmatched verified events to its
+The `laurivosandi` Gitea binding routes unmatched verified events to its
 namespaced `laurivosandi-gitea-intake` Task. Gitea ping events produce no Task
 arrival. Per-issue Task creation still requires a Gitea API token in the Agent
-and a matching TaskCreationPolicy.
+and a matching TaskPolicy.
 PostgreSQL, memory checkpoint/restore,
 Agent Substrate and a new sandbox management system remain unnecessary.
 
@@ -511,11 +544,14 @@ there is no discovery, API adapter or compatibility proxy in this release.
 
 Workers reach the Kubernetes API with their own ServiceAccount. When its token
 is mounted, the worker writes an in-cluster kubeconfig (context `in-cluster`,
-rotating `tokenFile`) and sets `SKAFFOLD_KUBE_CONTEXT` and `SKAFFOLD_NAMESPACE` to
-its own namespace. If it can read `zot-registry-cluster-push-kaniko`, it sets
-`SKAFFOLD_DEFAULT_REPO` to that Secret's single registry host followed by the
-Agent name, without exposing the credential. Values from the Agent's Pod
-template environment take precedence. Do not duplicate kubeconfig or
+rotating `tokenFile`) and sets `SKAFFOLD_KUBE_CONTEXT`. It does not set
+`SKAFFOLD_NAMESPACE`: RBAC decides which workload namespaces it may deploy into,
+the Driftmower MCP lists them, and each project sets its namespace in its
+`skaffold.env`. If it can read `zot-registry-cluster-push-kaniko` in its own
+namespace, it sets `SKAFFOLD_DEFAULT_REPO` to that Secret's single registry
+host followed by the Agent name, without exposing the credential; otherwise
+the Agent's Pod template sets it. Values from the Agent's Pod template
+environment take precedence. Do not duplicate kubeconfig or
 context in Skaffold YAML, rewrite endpoints or perform human OIDC bootstrap in a
 worker. Push only with `zot-registry-cluster-push-kaniko`, never the reflected
 pull Secret, and do not generate registry users or mutate credentials.
@@ -574,19 +610,22 @@ results and external evidence. MCP progress or a model completion claim does not
 own lifecycle. Missing final reports must remain recoverable from worker output
 and observed exit state; successful exit does not establish acceptance criteria.
 
-Agents may share a namespace with the harness. The developer role has no
+Agents may also share a namespace with the harness. The developer role has no
 Secret access apart from `get` on the Kaniko push Secret, which Skaffold checks
-before mounting it. The cluster's `agent-worker-prefix` admission policy confines
-`agent-worker-<agent>` ServiceAccounts to namespaced resources named
-`<agent>-*`: create, update, delete and exec, plus Pod and Pod-template
-ServiceAccounts, Secret references and PVC mounts. Exceptions:
-- Skaffold `kaniko-*` builder Pods labelled `skaffold-kaniko`.
-- The shared `zot-registry-cluster-push-kaniko` Secret.
-- ServiceAccounts listed in the cluster value `agentWorkerPrefixExempt`, such as
-  the cluster-admin `agent-worker-krtek`.
+before mounting it. When an Agent sets `spec.resourcePrefix`, the cluster's
+`agent-resource-prefix` admission policy, which takes the Agents of the
+request's namespace as parameters, confines its worker ServiceAccount within
+the Agent's own namespace to resources with that prefix: create, update,
+delete and exec, plus Pod and Pod-template ServiceAccounts,
+Secret references and PVC mounts. Skaffold `kaniko-*` builder Pods labelled
+`skaffold-kaniko` and the shared `zot-registry-cluster-push-kaniko` Secret are
+excepted. The operator passes the prefix to the worker as
+`AGENT_RESOURCE_PREFIX`. Writes into other namespaces, and every write of an
+Agent without `resourcePrefix`, are decided by plain, namespace-scoped RBAC,
+so an admin Agent such as `krtek` needs only its cluster-admin binding.
 
 `codemowers.io/created-by` creator annotations are immutable after creation.
-The workspace instructions tell workers to use the prefix.
+The workspace instructions tell confined workers to use their prefix.
 Supporting worker RBAC covers approved namespaced workloads/platform offerings
 (OIDC, S3, CNPG, Dragonfly, RabbitMQ, Redpanda, OpenSearch, Elasticsearch, EMQX,
 MongoDB), certificates, generated Secrets, monitoring and snapshots. There is no

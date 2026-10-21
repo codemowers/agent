@@ -1,12 +1,10 @@
 apiVersion: codemowers.cloud/v1alpha1
-kind: WebhookReceiver
+kind: WebhookBinding
 metadata:
   name: gitea-laurivosandi
-  namespace: codemowers-agent-system
+  namespace: agents
 spec:
-  sourceRef:
-    kind: ClusterWebhookReceiver
-    name: gitea
+  protocolRef: gitea
   agentRef: laurivosandi
   match:
     serverURL: https://git.codemowers.io
@@ -14,6 +12,5 @@ spec:
     name: agent-operator-webhook-keys
     key: gitea-laurivosandi
   routing:
-    existingTask: exactKey
     otherwise:
       taskRef: laurivosandi-gitea-intake

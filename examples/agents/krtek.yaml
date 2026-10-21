@@ -2,7 +2,7 @@ apiVersion: codemowers.cloud/v1alpha1
 kind: Agent
 metadata:
   name: krtek
-  namespace: codemowers-agent-system
+  namespace: agents
   annotations:
     kubernetes.io/description: "Admin agent — kubectl + helm, cluster-admin SA, no GitHub webhooks"
 spec:

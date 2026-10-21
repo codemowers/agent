@@ -393,12 +393,16 @@ func TestWorkerConfigChangeStopsOwnedPodOnce(t *testing.T) {
 	}
 }
 
-func TestWorkerPodNameIncludesAgentAndIncarnation(t *testing.T) {
-	name := workerPodName("matmlazi", "issue-12345", "ab12cd34")
-	if name != "agent-matmlazi-issue-12-ab12cd34" {
+func TestWorkerPodNameStartsWithAgentPrefix(t *testing.T) {
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "matmlazi"}}
+	if name := workerPodName(agentsv1alpha1.ResourcePrefix(agent), "issue-12345", "ab12cd34"); name != "matmlazi-issue-12-ab12cd34" {
 		t.Fatalf("unexpected worker Pod name: %s", name)
 	}
-	longName := workerPodName("agent-with-a-very-long-name-that-needs-to-be-shortened-before-the-task-and-incarnation", "task-1234", "ab12cd34")
+	agent.Spec.ResourcePrefix = "mat-"
+	if name := workerPodName(agentsv1alpha1.ResourcePrefix(agent), "task-1234", "ab12cd34"); name != "mat-task-123-ab12cd34" {
+		t.Fatalf("unexpected worker Pod name: %s", name)
+	}
+	longName := workerPodName("agent-with-a-very-long-name-that-needs-to-be-shortened-before-the-task-and-incarnation-", "task-1234", "ab12cd34")
 	if len(longName) > 63 || longName[len(longName)-8:] != "ab12cd34" {
 		t.Fatalf("invalid long worker Pod name: %s", longName)
 	}

@@ -1,5 +1,5 @@
 apiVersion: codemowers.cloud/v1alpha1
-kind: ClusterWebhookReceiver
+kind: WebhookProtocol
 metadata:
   name: gitea
 spec:
@@ -11,6 +11,9 @@ spec:
       encoding: hex
     signedBytesCEL: rawBody
   event:
+    allowedKeyPrefixes:
+      - https://git.codemowers.io
+      - https://gitea.com
     requiredHeaders:
       - x-gitea-delivery
       - x-gitea-event
@@ -20,11 +23,10 @@ spec:
        urlHost(body.repository.html_url) == urlHost(binding.match.serverURL))
     eventsCEL: >-
       headers['x-gitea-event'] == 'ping' ? [] : [{
-        'source': 'gitea',
         'deliveryID': headers['x-gitea-delivery'],
-        'type': headers['x-gitea-event-type'] != '' ?
-          headers['x-gitea-event-type'] : headers['x-gitea-event'],
-        'action': has(body.action) ? body.action : '',
+        'type': (headers['x-gitea-event-type'] != '' ?
+          headers['x-gitea-event-type'] : headers['x-gitea-event']) +
+          (has(body.action) ? '.' + body.action : ''),
         'actor': has(body.sender) && has(body.sender.login) ? body.sender.login :
           has(body.sender) && has(body.sender.username) ? body.sender.username : 'Gitea',
         'text': (has(body.issue) && body.issue != null && has(body.issue.title) ?
@@ -41,16 +43,9 @@ spec:
             has(body.pull_request.html_url) ? body.pull_request.html_url :
           has(body.issue) && has(body.issue.html_url) ? body.issue.html_url :
           has(body.repository) && has(body.repository.html_url) ? body.repository.html_url : '',
-        'key': has(body.repository) && (has(body.issue) || has(body.pull_request)) ? [
-          'forge', 'gitea', binding.match.serverURL,
-          has(body.repository.owner.login) ? body.repository.owner.login :
-            has(body.repository.owner.username) ? body.repository.owner.username : '',
-          body.repository.name,
-          (has(body.is_pull) ? body.is_pull :
-            has(body.pull_request) && body.pull_request != null) ?
-            'pull_request' : 'issue',
-          has(body.issue) ? string(body.issue.number) : string(body.pull_request.number)
-        ] : []
+        'key': has(body.repository) && (has(body.issue) || has(body.pull_request)) ?
+          binding.match.serverURL + '/' + body.repository.full_name.lowerAscii() + '/issues/' +
+          string(has(body.issue) ? body.issue.number : body.pull_request.number) : ''
       }]
   response:
     status: 202

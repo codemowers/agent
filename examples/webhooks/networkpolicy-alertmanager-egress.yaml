@@ -22,4 +22,4 @@ spec:
               app: agent-operator-webhook
       ports:
         - protocol: TCP
-          port: 8083
+          port: 8080

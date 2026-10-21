@@ -18,8 +18,8 @@ rules:
       - watch
   - apiGroups: [codemowers.cloud]
     resources:
-      - taskcreationpolicies
-      - mailsubscriptions
+      - taskpolicies
+      - mailbindings
     verbs:
       - list
   - apiGroups: [codemowers.cloud]
@@ -154,6 +154,10 @@ spec:
               path: /healthz
               port: healthz
           env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: AGENT_WEBHOOK_ORIGIN
               value: {{ .Values.webhook.publicOrigin | quote }}
             - name: AGENT_WORKER_IMAGE

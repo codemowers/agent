@@ -1,6 +1,6 @@
-# Draft generic mail thread subscription; no forge-specific parsing is needed.
+# Draft generic mail thread binding; no forge-specific parsing is needed.
 apiVersion: codemowers.cloud/v1alpha1
-kind: MailSubscription
+kind: MailBinding
 metadata:
   name: support-threads
   namespace: example
@@ -16,6 +16,4 @@ spec:
     type: mail_message
     actor: '${mail.fromAddress}'
     text: New mail in support thread
-    key: [mail, support, '${mail.threadRootMessageID}']
-  routing:
-    existingTask: exactKey
+    key: 'mid:${mail.threadRootMessageID}'
