@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [agent, agent-mailbox, agent-operator, agent-devices, agent-webhook]
+        image: [agent-worker, agent-mailbox, agent-operator, agent-devices, agent-webhook]
     steps:
       - uses: actions/download-artifact@v8
         with:
