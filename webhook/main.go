@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -33,6 +34,9 @@ func amqpURL() string {
 	return fmt.Sprintf("amqp://%s/%s", net.JoinHostPort(envOrDefault("AMQP_HOST", "localhost"), envOrDefault("AMQP_PORT", "5672")), url.PathEscape(envOrDefault("AMQP_VHOST", "/")))
 }
 
+// userAgent identifies harness-owned HTTP requests.
+const userAgent = "codemowers-agent (+https://github.com/codemowers/agent)"
+
 func readToken(path string) (string, error) {
 	token, err := os.ReadFile(path)
 	return strings.TrimSpace(string(token)), err
@@ -45,7 +49,14 @@ func main() {
 		os.Exit(1)
 	}
 	pub := &publisher{url: amqpURL(), tokenFile: envOrDefault("AGENT_RABBITMQ_TOKEN_FILE", "/var/run/agent-rabbitmq/token"),
-		userID: os.Getenv("AMQP_USER_ID"), exchange: envOrDefault("AMQP_EXCHANGE", "agent.intake"), resolver: newCachedResolver(resolver)}
+		userID: os.Getenv("AMQP_USER_ID"), exchange: envOrDefault("AMQP_EXCHANGE", "agent.intake"), resolver: newCachedResolver(resolver),
+		githubMeta: newGitHubMetaCache(&http.Client{Timeout: 10 * time.Second})}
+	// Only these peers may supply the client address in X-Forwarded-For.
+	pub.trustedProxies, err = parsePrefixes(strings.Split(os.Getenv("WEBHOOK_TRUSTED_PROXIES"), ","))
+	if err != nil {
+		slog.Error("invalid WEBHOOK_TRUSTED_PROXIES", "err", err)
+		os.Exit(1)
+	}
 	if pub.userID == "" {
 		slog.Error("AMQP_USER_ID is required")
 		os.Exit(1)
@@ -60,8 +71,8 @@ func main() {
 	go pub.refreshToken(5 * time.Minute)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.HandleFunc("POST /hooks/{source}", logHook(pub.receiverHandler))
-	mux.HandleFunc("POST /hooks/{namespace}/{binding}", logHook(pub.receiverHandler))
+	mux.HandleFunc("POST /hooks/{receiver}", logHook(pub.receiverHandler))
+	mux.HandleFunc("POST /hooks/{namespace}/{receiver}", logHook(pub.receiverHandler))
 	addr := envOrDefault("LISTEN_ADDR", ":8080")
 	slog.Info("webhook handler listening", "addr", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
@@ -87,7 +98,7 @@ func (r *hookRecorder) WriteHeader(status int) {
 // strings or keys.
 func logHook(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		attrs := []any{"protocol", r.PathValue("source"), "namespace", r.PathValue("namespace"), "binding", r.PathValue("binding")}
+		attrs := []any{"namespace", r.PathValue("namespace"), "receiver", r.PathValue("receiver")}
 		slog.Info("webhook request", attrs...)
 		recorder := &hookRecorder{ResponseWriter: w, status: http.StatusOK}
 		started := time.Now()
@@ -107,6 +118,11 @@ type publisher struct {
 	ch       *amqp.Channel
 	exchange string
 	resolver receiverResolver
+	// githubMeta and trustedProxies serve receivers that restrict addresses.
+	githubMeta     *githubMetaCache
+	trustedProxies []netip.Prefix
+	// publish replaces publishEnvelope in tests.
+	publish func(event normalizedEvent, messageID string, payload []byte) error
 }
 
 func dialAMQP(brokerURL, tokenFile string) (*amqp.Connection, *amqp.Channel, error) {

@@ -5,7 +5,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// WebhookBinding binds one protocol to an Agent in its own namespace.
+// WebhookBinding subscribes an Agent in its namespace to a receiver's events.
 type WebhookBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -17,18 +17,17 @@ type WebhookBindingList struct {
 	Items           []WebhookBinding `json:"items"`
 }
 type WebhookBindingSpec struct {
-	ProtocolRef        string               `json:"protocolRef"`
-	AgentRef           string               `json:"agentRef"`
-	Match              map[string]string    `json:"match,omitempty"`
-	VerificationKeyRef *WebhookSecretKeyRef `json:"verificationKeyRef,omitempty"`
-	// ServiceAccounts lists the <namespace>/<name> senders accepted by a
-	// serviceAccountToken protocol.
-	ServiceAccounts []string       `json:"serviceAccounts,omitempty"`
-	Routing         WebhookRouting `json:"routing"`
+	ReceiverRef WebhookReceiverRef `json:"receiverRef"`
+	AgentRef    string             `json:"agentRef"`
+	// KeyPrefixes limits the binding to events whose key starts with one of
+	// them at a path boundary; required for a ClusterWebhookReceiver.
+	KeyPrefixes []string       `json:"keyPrefixes,omitempty"`
+	Routing     WebhookRouting `json:"routing,omitempty"`
 }
-type WebhookSecretKeyRef struct {
+type WebhookReceiverRef struct {
+	// Kind is WebhookReceiver (same namespace) or ClusterWebhookReceiver.
+	Kind string `json:"kind"`
 	Name string `json:"name"`
-	Key  string `json:"key"`
 }
 type WebhookRouting struct {
 	KeyCEL      string          `json:"keyCEL,omitempty"`
@@ -42,12 +41,7 @@ type WebhookFallback struct {
 func (in *WebhookBinding) DeepCopyObject() runtime.Object {
 	out := *in
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec.Match = copyStringMap(in.Spec.Match)
-	out.Spec.ServiceAccounts = append([]string(nil), in.Spec.ServiceAccounts...)
-	if in.Spec.VerificationKeyRef != nil {
-		key := *in.Spec.VerificationKeyRef
-		out.Spec.VerificationKeyRef = &key
-	}
+	out.Spec.KeyPrefixes = append([]string(nil), in.Spec.KeyPrefixes...)
 	return &out
 }
 func (in *WebhookBindingList) DeepCopyObject() runtime.Object {

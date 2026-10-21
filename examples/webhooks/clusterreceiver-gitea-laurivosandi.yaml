@@ -1,0 +1,16 @@
+# The laurivosandi hook on git.codemowers.io posts to /hooks/gitea-laurivosandi.
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterWebhookReceiver
+metadata:
+  name: gitea-laurivosandi
+spec:
+  protocolRef: gitea
+  match:
+    serverURL: https://git.codemowers.io
+  senders:
+    secretKeyRef:
+      namespace: agents
+      name: agent-operator-webhook-keys
+      key: gitea-laurivosandi
+    # Optionally also require Gitea's outbound address:
+    # cidrs: [78.28.64.14/32]

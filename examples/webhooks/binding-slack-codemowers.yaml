@@ -4,13 +4,10 @@ metadata:
   name: slack-codemowers
   namespace: agents
 spec:
-  protocolRef: slack-events
+  receiverRef:
+    kind: WebhookReceiver
+    name: slack-codemowers
   agentRef: matmlazi
-  match:
-    teamID: T0BTAN5EF5E
-  verificationKeyRef:
-    name: agent-operator-webhook-keys
-    key: slack-codemowers
   routing:
     otherwise:
       taskRef: communications

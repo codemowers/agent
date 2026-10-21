@@ -17,23 +17,22 @@ type WebhookProtocolList struct {
 	Items           []WebhookProtocol `json:"items"`
 }
 type WebhookProtocolSpec struct {
-	Verification WebhookVerification `json:"verification"`
-	Event        WebhookEventSpec    `json:"event"`
-	Response     WebhookResponse     `json:"response,omitempty"`
-}
-type WebhookVerification struct {
-	Algorithm      string            `json:"algorithm"`
-	KeyEncoding    string            `json:"keyEncoding,omitempty"`
-	Signature      WebhookSignature  `json:"signature,omitempty"`
-	SignedBytesCEL string            `json:"signedBytesCEL,omitempty"`
-	Freshness      *WebhookFreshness `json:"freshness,omitempty"`
-	// Audience is the token audience for algorithm serviceAccountToken.
-	Audience string `json:"audience,omitempty"`
+	// Signature describes how the sender signs requests; the key comes from
+	// the receiver.
+	Signature *WebhookSignature `json:"signature,omitempty"`
+	Event     WebhookEventSpec  `json:"event"`
+	Response  WebhookResponse   `json:"response,omitempty"`
 }
 type WebhookSignature struct {
-	Header   string `json:"header,omitempty"`
-	Prefix   string `json:"prefix,omitempty"`
-	Encoding string `json:"encoding,omitempty"`
+	// Algorithm is hmacSha256 with the receiver's secret, or ed25519 with its
+	// public key.
+	Algorithm      string            `json:"algorithm"`
+	KeyEncoding    string            `json:"keyEncoding,omitempty"`
+	Header         string            `json:"header"`
+	Prefix         string            `json:"prefix,omitempty"`
+	Encoding       string            `json:"encoding"`
+	SignedBytesCEL string            `json:"signedBytesCEL,omitempty"`
+	Freshness      *WebhookFreshness `json:"freshness,omitempty"`
 }
 type WebhookFreshness struct {
 	TimestampHeader string `json:"timestampHeader"`
@@ -65,9 +64,13 @@ func (in *WebhookProtocol) DeepCopyObject() runtime.Object {
 	out.Spec.Event.RequiredHeaders = append([]string(nil), in.Spec.Event.RequiredHeaders...)
 	out.Spec.Event.AllowedKeyPrefixes = append([]string(nil), in.Spec.Event.AllowedKeyPrefixes...)
 	out.Spec.Response.Rules = append([]WebhookResponseRule(nil), in.Spec.Response.Rules...)
-	if in.Spec.Verification.Freshness != nil {
-		v := *in.Spec.Verification.Freshness
-		out.Spec.Verification.Freshness = &v
+	if in.Spec.Signature != nil {
+		v := *in.Spec.Signature
+		if v.Freshness != nil {
+			f := *v.Freshness
+			v.Freshness = &f
+		}
+		out.Spec.Signature = &v
 	}
 	return &out
 }

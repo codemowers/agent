@@ -3,27 +3,24 @@ kind: WebhookProtocol
 metadata:
   name: github
 spec:
-  verification:
+  signature:
     algorithm: hmacSha256
     keyEncoding: utf8
-    signature:
-      header: x-hub-signature-256
-      prefix: sha256=
-      encoding: hex
+    header: x-hub-signature-256
+    prefix: sha256=
+    encoding: hex
     signedBytesCEL: rawBody
   event:
     # Add each GitHub Enterprise host whose bindings use this protocol.
     allowedKeyPrefixes:
       - https://github.com
     requiredHeaders:
-      - x-github-hook-id
       - x-github-delivery
       - x-github-event
     acceptCEL: >-
-      headers['x-github-hook-id'] == binding.match.hookID &&
-      (headers['x-github-event'] == 'ping' || !has(body.repository) ||
+      headers['x-github-event'] == 'ping' || !has(body.repository) ||
       (has(body.repository.html_url) &&
-       urlHost(body.repository.html_url) == urlHost(binding.match.serverURL)))
+       urlHost(body.repository.html_url) == urlHost(receiver.match.serverURL))
     eventsCEL: >-
       headers['x-github-event'] == 'ping' ? [] : [{
         'deliveryID': headers['x-github-delivery'],
@@ -40,8 +37,10 @@ spec:
           has(body.issue) && has(body.issue.html_url) ? body.issue.html_url :
           has(body.repository) && has(body.repository.html_url) ? body.repository.html_url : '',
         'key': has(body.repository) && (has(body.issue) || has(body.pull_request)) ?
-          binding.match.serverURL + '/' + body.repository.full_name.lowerAscii() + '/issues/' +
-          string(has(body.issue) ? body.issue.number : body.pull_request.number) : ''
+          receiver.match.serverURL + '/' + body.repository.full_name.lowerAscii() + '/issues/' +
+          string(has(body.issue) ? body.issue.number : body.pull_request.number) :
+          has(body.repository) && has(body.repository.full_name) ?
+          receiver.match.serverURL + '/' + body.repository.full_name.lowerAscii() : ''
       }]
   response:
     status: 202

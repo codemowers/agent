@@ -57,41 +57,41 @@ func (c *staleCache[V]) get(key string, fetch func() (V, error)) (V, error) {
 }
 
 // cachedResolver keeps receivers working through brief API server outages.
-// Deleted protocols, bindings and keys stop matching within resolverFreshFor
-// once the API server reports them missing.
+// Deleted protocols, receivers, bindings and keys stop matching within
+// resolverFreshFor once the API server reports them missing.
 type cachedResolver struct {
 	inner     receiverResolver
 	tokens    *tokenReviewCache
 	protocols *staleCache[receiverProtocol]
-	bindings  *staleCache[receiverBinding]
-	lists     *staleCache[[]receiverBinding]
+	receivers *staleCache[webhookReceiver]
+	bindings  *staleCache[[]receiverBinding]
 	keys      *staleCache[[]byte]
 }
 
 func newCachedResolver(inner receiverResolver) *cachedResolver {
 	return &cachedResolver{inner: inner, tokens: newTokenReviewCache(inner.ReviewToken),
-		protocols: newStaleCache[receiverProtocol](time.Now), bindings: newStaleCache[receiverBinding](time.Now),
-		lists: newStaleCache[[]receiverBinding](time.Now), keys: newStaleCache[[]byte](time.Now)}
+		protocols: newStaleCache[receiverProtocol](time.Now), receivers: newStaleCache[webhookReceiver](time.Now),
+		bindings: newStaleCache[[]receiverBinding](time.Now), keys: newStaleCache[[]byte](time.Now)}
 }
 
 func (c *cachedResolver) Protocol(ctx context.Context, name string) (receiverProtocol, error) {
 	return c.protocols.get(name, func() (receiverProtocol, error) { return c.inner.Protocol(ctx, name) })
 }
-func (c *cachedResolver) Binding(ctx context.Context, namespace, name string) (receiverBinding, error) {
-	return c.bindings.get(namespace+"/"+name, func() (receiverBinding, error) { return c.inner.Binding(ctx, namespace, name) })
+func (c *cachedResolver) Receiver(ctx context.Context, namespace, name string) (webhookReceiver, error) {
+	return c.receivers.get(namespace+"/"+name, func() (webhookReceiver, error) { return c.inner.Receiver(ctx, namespace, name) })
 }
-func (c *cachedResolver) Bindings(ctx context.Context, protocol string) ([]receiverBinding, error) {
-	return c.lists.get(protocol, func() ([]receiverBinding, error) { return c.inner.Bindings(ctx, protocol) })
+func (c *cachedResolver) Bindings(ctx context.Context, r webhookReceiver) ([]receiverBinding, error) {
+	return c.bindings.get(r.kind()+"/"+r.Metadata.Namespace+"/"+r.Metadata.Name, func() ([]receiverBinding, error) { return c.inner.Bindings(ctx, r) })
 }
 
-// BindingKey is keyed by the binding UID and key reference, so a recreated
-// binding or a changed reference fetches the Secret again.
-func (c *cachedResolver) BindingKey(ctx context.Context, b receiverBinding) ([]byte, error) {
-	key := b.Metadata.Namespace + "/" + b.Metadata.UID
-	if ref := b.Spec.VerificationKeyRef; ref != nil {
-		key += "/" + ref.Name + "/" + ref.Key
+// ReceiverKey is keyed by the receiver UID and its reference, so a recreated
+// receiver or a changed reference fetches the Secret again.
+func (c *cachedResolver) ReceiverKey(ctx context.Context, r webhookReceiver) ([]byte, error) {
+	key := r.Metadata.Namespace + "/" + r.Metadata.UID
+	if ref := r.Spec.Senders.SecretKeyRef; ref != nil {
+		key += "/" + ref.Namespace + "/" + ref.Name + "/" + ref.Key
 	}
-	return c.keys.get(key, func() ([]byte, error) { return c.inner.BindingKey(ctx, b) })
+	return c.keys.get(key, func() ([]byte, error) { return c.inner.ReceiverKey(ctx, r) })
 }
 func (c *cachedResolver) ReviewToken(ctx context.Context, token, audience string) (string, error) {
 	return c.tokens.ReviewToken(ctx, token, audience)

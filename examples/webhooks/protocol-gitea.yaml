@@ -3,12 +3,11 @@ kind: WebhookProtocol
 metadata:
   name: gitea
 spec:
-  verification:
+  signature:
     algorithm: hmacSha256
     keyEncoding: utf8
-    signature:
-      header: x-gitea-signature
-      encoding: hex
+    header: x-gitea-signature
+    encoding: hex
     signedBytesCEL: rawBody
   event:
     allowedKeyPrefixes:
@@ -20,7 +19,7 @@ spec:
     acceptCEL: >-
       !has(body.repository) ||
       (has(body.repository.html_url) &&
-       urlHost(body.repository.html_url) == urlHost(binding.match.serverURL))
+       urlHost(body.repository.html_url) == urlHost(receiver.match.serverURL))
     eventsCEL: >-
       headers['x-gitea-event'] == 'ping' ? [] : [{
         'deliveryID': headers['x-gitea-delivery'],
@@ -44,8 +43,10 @@ spec:
           has(body.issue) && has(body.issue.html_url) ? body.issue.html_url :
           has(body.repository) && has(body.repository.html_url) ? body.repository.html_url : '',
         'key': has(body.repository) && (has(body.issue) || has(body.pull_request)) ?
-          binding.match.serverURL + '/' + body.repository.full_name.lowerAscii() + '/issues/' +
-          string(has(body.issue) ? body.issue.number : body.pull_request.number) : ''
+          receiver.match.serverURL + '/' + body.repository.full_name.lowerAscii() + '/issues/' +
+          string(has(body.issue) ? body.issue.number : body.pull_request.number) :
+          has(body.repository) && has(body.repository.full_name) ?
+          receiver.match.serverURL + '/' + body.repository.full_name.lowerAscii() : ''
       }]
   response:
     status: 202

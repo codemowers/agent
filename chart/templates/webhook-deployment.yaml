@@ -46,6 +46,10 @@ spec:
               value: system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-webhook
             - name: AGENT_RABBITMQ_TOKEN_FILE
               value: /var/run/agent-rabbitmq/token
+            # Peers allowed to supply the client address in X-Forwarded-For,
+            # for receivers that restrict sender addresses.
+            - name: WEBHOOK_TRUSTED_PROXIES
+              value: {{ .Values.webhook.trustedProxies | quote }}
           volumeMounts:
             - name: agent-rabbitmq-token
               mountPath: /var/run/agent-rabbitmq
@@ -81,13 +85,15 @@ rules:
   - apiGroups: [codemowers.cloud]
     resources:
       - webhookprotocols
+      - webhookreceivers
+      - clusterwebhookreceivers
     verbs:
       - get
+  # Receivers name their signing-key Secret, so any Secret a receiver
+  # references must be readable. Who may create receivers decides which.
   - apiGroups: [""]
     resources:
       - secrets
-    resourceNames:
-      - agent-operator-webhook-keys
     verbs:
       - get
   # Authenticates senders of serviceAccountToken protocols.

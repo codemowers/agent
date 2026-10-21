@@ -22,48 +22,40 @@ spec:
             spec:
               type: object
               required:
-                - verification
                 - event
               properties:
-                verification:
+                signature:
+                  description: How the sender signs requests. The key comes from the receiver.
                   type: object
                   required:
                     - algorithm
-                  x-kubernetes-validations:
-                    - rule: self.algorithm != 'serviceAccountToken' || has(self.audience)
-                      message: serviceAccountToken requires an audience
+                    - header
+                    - encoding
                   properties:
                     algorithm:
+                      description: hmacSha256 with the receiver's secret, or ed25519 with its public key.
                       type: string
                       enum:
                         - hmacSha256
                         - ed25519
-                        - bearer
-                        - serviceAccountToken
                     keyEncoding:
+                      description: Encoding of the receiver's hmacSha256 secret.
                       type: string
                       enum:
                         - utf8
                         - hex
-                    signature:
-                      type: object
-                      properties:
-                        header:
-                          type: string
-                        prefix:
-                          type: string
-                        encoding:
-                          type: string
-                          enum:
-                            - hex
-                            - base64
+                    header:
+                      type: string
+                    prefix:
+                      type: string
+                    encoding:
+                      type: string
+                      enum:
+                        - hex
+                        - base64
                     signedBytesCEL:
                       type: string
                       maxLength: 4096
-                    audience:
-                      description: Token audience for serviceAccountToken; required with it.
-                      type: string
-                      maxLength: 253
                     freshness:
                       type: object
                       required:

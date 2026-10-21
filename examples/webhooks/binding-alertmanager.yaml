@@ -6,10 +6,10 @@ metadata:
   name: alertmanager
   namespace: agents
 spec:
-  protocolRef: alertmanager
+  receiverRef:
+    kind: WebhookReceiver
+    name: alertmanager
   agentRef: krtek
-  serviceAccounts:
-    - monitoring/alertmanager
   routing:
     otherwise:
       taskRef: alert-triage

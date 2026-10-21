@@ -19,6 +19,9 @@ bootstrapRbac: true
 webhook:
   # Full public origin displayed in the UI's webhook setup instructions.
   publicOrigin: ""
+  # Comma-separated CIDRs of the ingress proxies whose X-Forwarded-For is
+  # trusted; needed only by receivers with githubMeta or cidrs.
+  trustedProxies: ""
   # host: short hostname for the webhook ingress (admission expands it).
   host: webhook
   resources:

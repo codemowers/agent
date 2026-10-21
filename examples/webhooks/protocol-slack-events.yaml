@@ -3,13 +3,12 @@ kind: WebhookProtocol
 metadata:
   name: slack-events
 spec:
-  verification:
+  signature:
     algorithm: hmacSha256
     keyEncoding: utf8
-    signature:
-      header: x-slack-signature
-      prefix: v0=
-      encoding: hex
+    header: x-slack-signature
+    prefix: v0=
+    encoding: hex
     signedBytesCEL: "bytes('v0:' + headers['x-slack-request-timestamp'] + ':') + rawBody"
     freshness:
       timestampHeader: x-slack-request-timestamp
@@ -21,7 +20,7 @@ spec:
     requiredHeaders:
       - x-slack-signature
       - x-slack-request-timestamp
-    acceptCEL: "body.type == 'url_verification' || body.team_id == binding.match.teamID"
+    acceptCEL: "body.type == 'url_verification' || body.team_id == receiver.match.teamID"
     eventsCEL: >-
       body.type == 'event_callback' && has(body.event) &&
       !has(body.event.bot_id) &&

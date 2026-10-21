@@ -1,0 +1,13 @@
+# Alertmanager posts to /hooks/agents/alertmanager with a projected token of
+# its ServiceAccount for audience agent-webhook.
+apiVersion: codemowers.cloud/v1alpha1
+kind: WebhookReceiver
+metadata:
+  name: alertmanager
+  namespace: agents
+spec:
+  protocolRef: alertmanager
+  senders:
+    serviceAccounts:
+      - monitoring/alertmanager
+    audience: agent-webhook

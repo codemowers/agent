@@ -16,6 +16,8 @@ func init() {
 	SchemeBuilder.Register(&Agent{}, &AgentList{})
 	SchemeBuilder.Register(&Task{}, &TaskList{})
 	SchemeBuilder.Register(&WebhookProtocol{}, &WebhookProtocolList{})
+	SchemeBuilder.Register(&WebhookReceiver{}, &WebhookReceiverList{})
+	SchemeBuilder.Register(&ClusterWebhookReceiver{}, &ClusterWebhookReceiverList{})
 	SchemeBuilder.Register(&WebhookBinding{}, &WebhookBindingList{})
 	SchemeBuilder.Register(&TaskPolicy{}, &TaskPolicyList{})
 	SchemeBuilder.Register(&Mailbox{}, &MailboxList{})

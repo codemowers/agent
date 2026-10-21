@@ -1,0 +1,13 @@
+# Discord posts to /hooks/agents/discord-app, signed with the application's
+# Ed25519 key; the public key is not a secret.
+apiVersion: codemowers.cloud/v1alpha1
+kind: WebhookReceiver
+metadata:
+  name: discord-app
+  namespace: agents
+spec:
+  protocolRef: discord-events
+  match:
+    applicationID: "123456789012345678"
+  senders:
+    ed25519PublicKey: "0000000000000000000000000000000000000000000000000000000000000000"

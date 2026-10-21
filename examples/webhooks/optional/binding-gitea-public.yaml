@@ -1,18 +1,13 @@
-# Optional Gitea.com template. Supply a real signing key before applying.
-# The namespaced path is /hooks/agents/gitea-public.
 apiVersion: codemowers.cloud/v1alpha1
 kind: WebhookBinding
 metadata:
   name: gitea-public
   namespace: agents
 spec:
-  protocolRef: gitea
+  receiverRef:
+    kind: WebhookReceiver
+    name: gitea-public
   agentRef: matmlazi
-  match:
-    serverURL: https://gitea.com
-  verificationKeyRef:
-    name: agent-operator-webhook-keys
-    key: gitea-public
   routing:
     otherwise:
       taskRef: webhook-triage

@@ -1,0 +1,16 @@
+# The codemowers hook on git.codemowers.io posts to /hooks/gitea-codemowers.
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterWebhookReceiver
+metadata:
+  name: gitea-codemowers
+spec:
+  protocolRef: gitea
+  match:
+    serverURL: https://git.codemowers.io
+  senders:
+    secretKeyRef:
+      namespace: agents
+      name: agent-operator-webhook-keys
+      key: gitea-codemowers
+    # Optionally also require Gitea's outbound address:
+    # cidrs: [78.28.64.14/32]

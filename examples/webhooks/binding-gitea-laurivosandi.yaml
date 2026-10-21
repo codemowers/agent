@@ -4,13 +4,12 @@ metadata:
   name: gitea-laurivosandi
   namespace: agents
 spec:
-  protocolRef: gitea
+  receiverRef:
+    kind: ClusterWebhookReceiver
+    name: gitea-laurivosandi
   agentRef: laurivosandi
-  match:
-    serverURL: https://git.codemowers.io
-  verificationKeyRef:
-    name: agent-operator-webhook-keys
-    key: gitea-laurivosandi
+  keyPrefixes:
+    - https://git.codemowers.io/laurivosandi
   routing:
     otherwise:
       taskRef: laurivosandi-gitea-intake

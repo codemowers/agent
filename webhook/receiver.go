@@ -5,13 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -32,22 +32,18 @@ type receiverProtocol struct {
 		UID  string `json:"uid"`
 	} `json:"metadata"`
 	Spec struct {
-		Verification struct {
-			Algorithm   string `json:"algorithm"`
-			KeyEncoding string `json:"keyEncoding"`
-			Signature   struct {
-				Header   string `json:"header"`
-				Prefix   string `json:"prefix"`
-				Encoding string `json:"encoding"`
-			} `json:"signature"`
+		Signature *struct {
+			Algorithm      string `json:"algorithm"`
+			KeyEncoding    string `json:"keyEncoding"`
+			Header         string `json:"header"`
+			Prefix         string `json:"prefix"`
+			Encoding       string `json:"encoding"`
 			SignedBytesCEL string `json:"signedBytesCEL"`
-			// Audience is the token audience for serviceAccountToken.
-			Audience  string `json:"audience"`
-			Freshness *struct {
+			Freshness      *struct {
 				TimestampHeader string `json:"timestampHeader"`
 				MaxSkew         string `json:"maxSkew"`
 			} `json:"freshness"`
-		} `json:"verification"`
+		} `json:"signature"`
 		Event struct {
 			RequiredHeaders    []string `json:"requiredHeaders"`
 			AcceptCEL          string   `json:"acceptCEL"`
@@ -66,6 +62,40 @@ type receiverProtocol struct {
 		} `json:"response"`
 	} `json:"spec"`
 }
+
+// webhookReceiver is a WebhookReceiver or, with an empty namespace, a
+// ClusterWebhookReceiver.
+type webhookReceiver struct {
+	Metadata struct {
+		Namespace string `json:"namespace"`
+		Name      string `json:"name"`
+		UID       string `json:"uid"`
+	} `json:"metadata"`
+	Spec struct {
+		ProtocolRef string            `json:"protocolRef"`
+		Match       map[string]string `json:"match"`
+		Senders     struct {
+			SecretKeyRef *struct {
+				Namespace string `json:"namespace"`
+				Name      string `json:"name"`
+				Key       string `json:"key"`
+			} `json:"secretKeyRef"`
+			GitHubMeta       string   `json:"githubMeta"`
+			CIDRs            []string `json:"cidrs"`
+			ServiceAccounts  []string `json:"serviceAccounts"`
+			Audience         string   `json:"audience"`
+			Ed25519PublicKey string   `json:"ed25519PublicKey"`
+		} `json:"senders"`
+	} `json:"spec"`
+}
+
+func (r webhookReceiver) kind() string {
+	if r.Metadata.Namespace == "" {
+		return "ClusterWebhookReceiver"
+	}
+	return "WebhookReceiver"
+}
+
 type receiverBinding struct {
 	Metadata struct {
 		Namespace string `json:"namespace"`
@@ -73,17 +103,13 @@ type receiverBinding struct {
 		UID       string `json:"uid"`
 	} `json:"metadata"`
 	Spec struct {
-		ProtocolRef        string            `json:"protocolRef"`
-		AgentRef           string            `json:"agentRef"`
-		Match              map[string]string `json:"match"`
-		VerificationKeyRef *struct {
+		ReceiverRef struct {
+			Kind string `json:"kind"`
 			Name string `json:"name"`
-			Key  string `json:"key"`
-		} `json:"verificationKeyRef"`
-		// ServiceAccounts lists the <namespace>/<name> senders a
-		// serviceAccountToken protocol accepts for this binding.
-		ServiceAccounts []string `json:"serviceAccounts"`
-		Routing         struct {
+		} `json:"receiverRef"`
+		AgentRef    string   `json:"agentRef"`
+		KeyPrefixes []string `json:"keyPrefixes"`
+		Routing     struct {
 			KeyCEL    string `json:"keyCEL"`
 			Otherwise struct {
 				TaskRef string `json:"taskRef"`
@@ -92,6 +118,14 @@ type receiverBinding struct {
 		} `json:"routing"`
 	} `json:"spec"`
 }
+
+// subscribes reports whether the binding references the receiver: a
+// WebhookReceiver only from its own namespace.
+func (b receiverBinding) subscribes(r webhookReceiver) bool {
+	return b.Spec.ReceiverRef.Kind == r.kind() && b.Spec.ReceiverRef.Name == r.Metadata.Name &&
+		(r.Metadata.Namespace == "" || b.Metadata.Namespace == r.Metadata.Namespace)
+}
+
 type receiverBindingList struct {
 	Metadata struct {
 		Continue string `json:"continue"`
@@ -123,58 +157,78 @@ func (k *kubeHookResolver) Protocol(ctx context.Context, name string) (receiverP
 	err := k.get(ctx, "/apis/codemowers.cloud/v1alpha1/webhookprotocols/"+url.PathEscape(name), &v)
 	return v, err
 }
-func (k *kubeHookResolver) Binding(ctx context.Context, namespace, name string) (receiverBinding, error) {
-	var v receiverBinding
-	if !validKubernetesName(namespace) || !validKubernetesName(name) {
-		return v, fmt.Errorf("invalid binding path")
+
+// Receiver reads a WebhookReceiver, or a ClusterWebhookReceiver when
+// namespace is empty.
+func (k *kubeHookResolver) Receiver(ctx context.Context, namespace, name string) (webhookReceiver, error) {
+	var v webhookReceiver
+	if !validKubernetesName(name) || (namespace != "" && !validKubernetesName(namespace)) {
+		return v, fmt.Errorf("invalid receiver path")
 	}
-	err := k.get(ctx, "/apis/codemowers.cloud/v1alpha1/namespaces/"+url.PathEscape(namespace)+"/webhookbindings/"+url.PathEscape(name), &v)
+	path := "/apis/codemowers.cloud/v1alpha1/clusterwebhookreceivers/" + url.PathEscape(name)
+	if namespace != "" {
+		path = "/apis/codemowers.cloud/v1alpha1/namespaces/" + url.PathEscape(namespace) + "/webhookreceivers/" + url.PathEscape(name)
+	}
+	err := k.get(ctx, path, &v)
 	return v, err
 }
-func (k *kubeHookResolver) Bindings(ctx context.Context, protocol string) ([]receiverBinding, error) {
+
+// ReceiverKey reads the signing key a receiver's secretKeyRef selects: in the
+// receiver's namespace, or in the named namespace for a cluster receiver.
+func (k *kubeHookResolver) ReceiverKey(ctx context.Context, r webhookReceiver) ([]byte, error) {
+	ref := r.Spec.Senders.SecretKeyRef
+	if ref == nil {
+		return nil, fmt.Errorf("receiver has no secretKeyRef")
+	}
+	namespace := ref.Namespace
+	if r.Metadata.Namespace != "" {
+		namespace = r.Metadata.Namespace
+	}
+	if !validKubernetesName(namespace) || !validKubernetesName(ref.Name) || !validSecretKey(ref.Key) {
+		return nil, fmt.Errorf("invalid secretKeyRef")
+	}
+	var secret struct {
+		Data map[string][]byte `json:"data"`
+	}
+	if err := k.get(ctx, "/api/v1/namespaces/"+url.PathEscape(namespace)+"/secrets/"+url.PathEscape(ref.Name), &secret); err != nil {
+		return nil, err
+	}
+	key := secret.Data[ref.Key]
+	if len(key) == 0 {
+		return nil, fmt.Errorf("signing key is missing: %w", errNotFound)
+	}
+	return key, nil
+}
+
+// Bindings lists the WebhookBindings subscribed to a receiver: of every
+// namespace for a ClusterWebhookReceiver, of its own for a WebhookReceiver.
+func (k *kubeHookResolver) Bindings(ctx context.Context, r webhookReceiver) ([]receiverBinding, error) {
+	base := "/apis/codemowers.cloud/v1alpha1/webhookbindings"
+	if r.Metadata.Namespace != "" {
+		base = "/apis/codemowers.cloud/v1alpha1/namespaces/" + url.PathEscape(r.Metadata.Namespace) + "/webhookbindings"
+	}
 	var out []receiverBinding
-	path := "/apis/codemowers.cloud/v1alpha1/webhookbindings?limit=100"
+	path := base + "?limit=500"
 	for {
 		var page receiverBindingList
 		if err := k.get(ctx, path, &page); err != nil {
 			return nil, err
 		}
 		for _, b := range page.Items {
-			if b.Spec.ProtocolRef == protocol {
+			if b.subscribes(r) {
 				out = append(out, b)
 			}
 		}
-		if len(out) > 100 {
-			return nil, fmt.Errorf("too many webhook bindings")
-		}
 		if page.Metadata.Continue == "" {
-			break
+			return out, nil
 		}
-		path = "/apis/codemowers.cloud/v1alpha1/webhookbindings?limit=100&continue=" + url.QueryEscape(page.Metadata.Continue)
+		path = base + "?limit=500&continue=" + url.QueryEscape(page.Metadata.Continue)
 	}
-	return out, nil
-}
-func (k *kubeHookResolver) BindingKey(ctx context.Context, b receiverBinding) ([]byte, error) {
-	if b.Spec.VerificationKeyRef == nil || b.Spec.VerificationKeyRef.Name != "agent-operator-webhook-keys" || !validSecretKey(b.Spec.VerificationKeyRef.Key) {
-		return nil, fmt.Errorf("invalid verification key reference")
-	}
-	var secret struct {
-		Data map[string][]byte `json:"data"`
-	}
-	path := "/api/v1/namespaces/" + url.PathEscape(b.Metadata.Namespace) + "/secrets/agent-operator-webhook-keys"
-	if err := k.get(ctx, path, &secret); err != nil {
-		return nil, err
-	}
-	key := secret.Data[b.Spec.VerificationKeyRef.Key]
-	if len(key) == 0 {
-		return nil, fmt.Errorf("verification key is missing: %w", errNotFound)
-	}
-	return key, nil
 }
 
 func receiverEnv() (*cel.Env, error) {
 	return cel.NewEnv(ext.Strings(),
-		cel.Variable("rawBody", cel.BytesType), cel.Variable("body", cel.DynType), cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)), cel.Variable("binding", cel.DynType), cel.Variable("event", cel.DynType),
+		cel.Variable("rawBody", cel.BytesType), cel.Variable("body", cel.DynType), cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)), cel.Variable("receiver", cel.DynType), cel.Variable("event", cel.DynType),
 		cel.Function("urlHost", cel.Overload("url_host_string", []*cel.Type{cel.StringType}, cel.StringType, cel.UnaryBinding(func(v ref.Val) ref.Val {
 			u, e := url.Parse(v.Value().(string))
 			if e != nil {
@@ -248,15 +302,28 @@ func receiverHeaders(r *http.Request) map[string]string {
 			m[strings.ToLower(k)] = v[0]
 		}
 	}
-	for _, k := range []string{"x-github-event", "x-github-delivery", "x-github-hook-id", "x-gitea-event", "x-gitea-event-type", "x-gitea-delivery", "x-slack-signature", "x-slack-request-timestamp", "x-signature-ed25519", "x-signature-timestamp"} {
+	for _, k := range []string{"x-github-event", "x-github-delivery", "x-gitea-event", "x-gitea-event-type", "x-gitea-delivery", "x-signature-ed25519", "x-signature-timestamp"} {
 		if _, ok := m[k]; !ok {
 			m[k] = ""
 		}
 	}
 	return m
 }
-func checkReceiverSignature(r *http.Request, p receiverProtocol, key, raw []byte, vars map[string]any, env *cel.Env) (bool, error) {
-	v := p.Spec.Verification
+
+// checkReceiverSignature verifies the protocol's signature with the
+// receiver's key: the shared secret for hmacSha256, the public key for ed25519.
+func checkReceiverSignature(r *http.Request, p receiverProtocol, key []byte, raw []byte, vars map[string]any, env *cel.Env) (bool, error) {
+	v := p.Spec.Signature
+	if v == nil {
+		return false, fmt.Errorf("protocol defines no signature")
+	}
+	if v.Algorithm == "hmacSha256" && v.KeyEncoding == "hex" {
+		decoded, err := hex.DecodeString(strings.TrimSpace(string(key)))
+		if err != nil {
+			return false, fmt.Errorf("invalid signing key")
+		}
+		key = decoded
+	}
 	if v.Freshness != nil {
 		duration, err := time.ParseDuration(v.Freshness.MaxSkew)
 		if err != nil || duration <= 0 || duration > time.Hour {
@@ -279,50 +346,35 @@ func checkReceiverSignature(r *http.Request, p receiverProtocol, key, raw []byte
 		}
 		signed = bytes
 	}
+	signature, ok := strings.CutPrefix(r.Header.Get(v.Header), v.Prefix)
+	if !ok || signature == "" {
+		return false, nil
+	}
+	var decoded []byte
+	var err error
+	switch v.Encoding {
+	case "hex":
+		decoded, err = hex.DecodeString(signature)
+	case "base64":
+		decoded, err = base64.StdEncoding.DecodeString(signature)
+	default:
+		return false, fmt.Errorf("unsupported signature encoding")
+	}
+	if err != nil {
+		return false, nil
+	}
 	switch v.Algorithm {
-	case "bearer":
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		return len(got) > 0 && subtle.ConstantTimeCompare(key, []byte(got)) == 1, nil
-	case "hmacSha256", "ed25519":
-		signature := r.Header.Get(v.Signature.Header)
-		if !strings.HasPrefix(signature, v.Signature.Prefix) {
-			return false, nil
-		}
-		signature = strings.TrimPrefix(signature, v.Signature.Prefix)
-		var decoded []byte
-		var err error
-		if v.Signature.Encoding == "hex" {
-			decoded, err = hex.DecodeString(signature)
-		} else if v.Signature.Encoding == "base64" {
-			decoded, err = base64.StdEncoding.DecodeString(signature)
-		} else {
-			return false, fmt.Errorf("unsupported signature encoding")
-		}
-		if err != nil {
-			return false, nil
-		}
-		if v.Algorithm == "hmacSha256" {
-			if v.KeyEncoding == "hex" {
-				key, err = hex.DecodeString(strings.TrimSpace(string(key)))
-				if err != nil {
-					return false, fmt.Errorf("invalid HMAC key")
-				}
-			}
-			mac := hmac.New(sha256.New, key)
-			mac.Write(signed)
-			return hmac.Equal(mac.Sum(nil), decoded), nil
-		}
-		if v.KeyEncoding == "hex" {
-			key, err = hex.DecodeString(strings.TrimSpace(string(key)))
-			if err != nil {
-				return false, fmt.Errorf("invalid Ed25519 key")
-			}
-		}
+	case "hmacSha256":
+		mac := hmac.New(sha256.New, key)
+		mac.Write(signed)
+		return hmac.Equal(mac.Sum(nil), decoded), nil
+	case "ed25519":
 		return len(key) == ed25519.PublicKeySize && ed25519.Verify(ed25519.PublicKey(key), signed, decoded), nil
 	default:
-		return false, fmt.Errorf("unsupported verification algorithm")
+		return false, fmt.Errorf("unsupported signature algorithm")
 	}
 }
+
 func parseReceiverTime(s string) (time.Time, error) {
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err == nil {
@@ -331,60 +383,20 @@ func parseReceiverTime(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339, s)
 }
 
-// bindingAllowsSender reports whether a reviewed ServiceAccount username is
-// one of the binding's senders.
-func bindingAllowsSender(b receiverBinding, username string) bool {
-	for _, sa := range b.Spec.ServiceAccounts {
-		namespace, name, ok := strings.Cut(sa, "/")
-		if ok && username == "system:serviceaccount:"+namespace+":"+name {
-			return true
-		}
-	}
-	return false
-}
-
 func (p *publisher) receiverHandler(w http.ResponseWriter, r *http.Request) {
-	resolver := p.resolver
-	source := r.PathValue("source")
-	namespace := r.PathValue("namespace")
-	name := r.PathValue("binding")
-	var named *receiverBinding
-	if name != "" {
-		b, err := resolver.Binding(r.Context(), namespace, name)
-		if err != nil {
-			http.Error(w, "binding unavailable", 503)
-			return
-		}
-		if !validKubernetesName(b.Spec.ProtocolRef) {
-			http.Error(w, "invalid binding protocol", 422)
-			return
-		}
-		named = &b
-		source = b.Spec.ProtocolRef
+	receiver, err := p.resolver.Receiver(r.Context(), r.PathValue("namespace"), r.PathValue("receiver"))
+	if errors.Is(err, errNotFound) {
+		http.Error(w, "unknown receiver", http.StatusNotFound)
+		return
 	}
-	protocol, err := resolver.Protocol(r.Context(), source)
+	if err != nil {
+		http.Error(w, "receiver unavailable", 503)
+		return
+	}
+	protocol, err := p.resolver.Protocol(r.Context(), receiver.Spec.ProtocolRef)
 	if err != nil {
 		http.Error(w, "protocol unavailable", 503)
 		return
-	}
-	tokenAuth := protocol.Spec.Verification.Algorithm == "serviceAccountToken"
-	if protocol.Spec.Verification.Algorithm == "" {
-		http.Error(w, "verification algorithm missing", 422)
-		return
-	}
-	if tokenAuth && (protocol.Spec.Verification.Audience == "" || protocol.Spec.Verification.Freshness != nil || protocol.Spec.Verification.SignedBytesCEL != "") {
-		http.Error(w, "invalid verification configuration", 503)
-		return
-	}
-	var bindings []receiverBinding
-	if named != nil {
-		bindings = []receiverBinding{*named}
-	} else {
-		bindings, err = resolver.Bindings(r.Context(), source)
-		if err != nil {
-			http.Error(w, "webhook bindings unavailable", 503)
-			return
-		}
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
@@ -396,94 +408,42 @@ func (p *publisher) receiverHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	env, err := receiverEnv()
+	if err != nil {
+		http.Error(w, "CEL unavailable", 503)
+		return
+	}
 	headers := receiverHeaders(r)
+	vars := map[string]any{"rawBody": raw, "headers": headers, "body": map[string]any{}, "receiver": map[string]any{"match": receiver.Spec.Match}, "event": map[string]any{}}
+	// Authenticate the sender before evaluating any payload-dependent CEL.
+	status, err := p.authenticateSender(r, receiver, protocol, raw, vars, env)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
 	for _, h := range protocol.Spec.Event.RequiredHeaders {
 		if headers[strings.ToLower(h)] == "" {
 			http.Error(w, "missing required header", 400)
 			return
 		}
 	}
-	env, err := receiverEnv()
-	if err != nil {
-		http.Error(w, "CEL unavailable", 503)
+	var body any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		http.Error(w, "malformed JSON", 400)
 		return
 	}
-	// A ServiceAccount token is reviewed once; each binding then decides
-	// whether its sender is allowed.
-	var sender string
-	if tokenAuth {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || token == "" {
-			http.Error(w, "bearer token required", http.StatusUnauthorized)
-			return
-		}
-		sender, err = resolver.ReviewToken(r.Context(), token, protocol.Spec.Verification.Audience)
+	vars["body"] = body
+	accepted := true
+	if expression := protocol.Spec.Event.AcceptCEL; expression != "" {
+		value, err := evalReceiver(env, expression, vars)
 		if err != nil {
-			http.Error(w, "token review unavailable", 503)
+			http.Error(w, "invalid acceptCEL", 422)
 			return
 		}
-		if sender == "" {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
-			return
-		}
+		accepted = value == true
 	}
-	// Authenticate each candidate before evaluating any payload-dependent CEL.
-	var matchedVars map[string]any
 	var pending []normalizedEvent
-	for _, b := range bindings {
-		if !validKubernetesName(b.Metadata.Namespace) || !validKubernetesName(b.Metadata.Name) ||
-			!validKubernetesName(b.Spec.AgentRef) || b.Metadata.UID == "" ||
-			b.Spec.ProtocolRef != source {
-			continue
-		}
-		vars := map[string]any{"rawBody": raw, "headers": headers, "body": map[string]any{}, "binding": map[string]any{"match": b.Spec.Match}, "event": map[string]any{}}
-		var valid bool
-		if tokenAuth {
-			if b.Spec.VerificationKeyRef != nil {
-				http.Error(w, "token binding must not reference a key", 422)
-				return
-			}
-			valid = bindingAllowsSender(b, sender)
-		} else {
-			if b.Spec.VerificationKeyRef == nil {
-				http.Error(w, "verification key missing", 422)
-				return
-			}
-			key, err := resolver.BindingKey(r.Context(), b)
-			if err != nil {
-				http.Error(w, "verification key unavailable", 503)
-				return
-			}
-			valid, err = checkReceiverSignature(r, protocol, key, raw, vars, env)
-			if err != nil {
-				http.Error(w, "invalid verification configuration", 503)
-				return
-			}
-		}
-		if !valid {
-			continue
-		}
-		var body any
-		if err := json.Unmarshal(raw, &body); err != nil {
-			http.Error(w, "malformed JSON", 400)
-			return
-		}
-		vars["body"] = body
-		if expression := protocol.Spec.Event.AcceptCEL; expression != "" {
-			accepted, err := evalReceiver(env, expression, vars)
-			if err != nil {
-				http.Error(w, "invalid acceptCEL", 422)
-				return
-			}
-			if accepted != true {
-				continue
-			}
-		}
-		if matchedVars != nil {
-			http.Error(w, "ambiguous webhook bindings", http.StatusConflict)
-			return
-		}
-		matchedVars = vars
+	if accepted {
 		value, err := evalReceiver(env, protocol.Spec.Event.EventsCEL, vars)
 		if err != nil {
 			http.Error(w, "invalid eventsCEL", 422)
@@ -494,39 +454,54 @@ func (p *publisher) receiverHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "eventsCEL must return a bounded list", 422)
 			return
 		}
-		for _, entry := range events {
-			event, ok := entry.(map[string]any)
-			if !ok {
-				http.Error(w, "invalid normalized event", 422)
-				return
+		bindings, err := p.resolver.Bindings(r.Context(), receiver)
+		if err != nil {
+			http.Error(w, "webhook bindings unavailable", 503)
+			return
+		}
+		// Each event reaches every subscribed binding whose key prefixes it matches.
+		for _, b := range bindings {
+			if !validKubernetesName(b.Metadata.Namespace) || !validKubernetesName(b.Metadata.Name) ||
+				!validKubernetesName(b.Spec.AgentRef) || b.Metadata.UID == "" || !b.subscribes(receiver) ||
+				(receiver.kind() == "ClusterWebhookReceiver" && len(b.Spec.KeyPrefixes) == 0) {
+				continue
 			}
-			if b.Spec.Routing.KeyCEL != "" {
-				vars["event"] = event
-				key, err := evalReceiver(env, b.Spec.Routing.KeyCEL, vars)
-				if err != nil {
-					http.Error(w, "invalid keyCEL", 422)
+			for _, entry := range events {
+				event, ok := entry.(map[string]any)
+				if !ok {
+					http.Error(w, "invalid normalized event", 422)
 					return
 				}
-				event["key"] = key
+				event = maps.Clone(event)
+				if b.Spec.Routing.KeyCEL != "" {
+					vars["event"] = event
+					key, err := evalReceiver(env, b.Spec.Routing.KeyCEL, vars)
+					if err != nil {
+						http.Error(w, "invalid keyCEL", 422)
+						return
+					}
+					event["key"] = key
+				}
+				normalized, err := normalizeReceiverEvent(b, protocol, event)
+				if err != nil {
+					http.Error(w, err.Error(), 422)
+					return
+				}
+				if len(b.Spec.KeyPrefixes) > 0 && !slices.ContainsFunc(b.Spec.KeyPrefixes, func(prefix string) bool {
+					return normalized.Key != "" && keyHasPrefix(normalized.Key, prefix)
+				}) {
+					continue
+				}
+				payload, _ := json.Marshal(normalized)
+				if len(payload) > 16384 {
+					http.Error(w, "normalized event too large", 422)
+					return
+				}
+				pending = append(pending, normalized)
 			}
-			normalized, err := normalizeReceiverEvent(b, protocol, event)
-			if err != nil {
-				http.Error(w, err.Error(), 422)
-				return
-			}
-			payload, _ := json.Marshal(normalized)
-			if len(payload) > 16384 {
-				http.Error(w, "normalized event too large", 422)
-				return
-			}
-			pending = append(pending, normalized)
 		}
 	}
-	if matchedVars == nil {
-		http.Error(w, "unauthorized", 401)
-		return
-	}
-	status := protocol.Spec.Response.Status
+	status = protocol.Spec.Response.Status
 	if status == 0 {
 		status = protocol.Spec.Response.DefaultStatus
 	}
@@ -536,7 +511,7 @@ func (p *publisher) receiverHandler(w http.ResponseWriter, r *http.Request) {
 	var responseBody string
 	var responseContentType string
 	for _, rule := range protocol.Spec.Response.Rules {
-		value, err := evalReceiver(env, rule.WhenCEL, matchedVars)
+		value, err := evalReceiver(env, rule.WhenCEL, vars)
 		if err != nil {
 			http.Error(w, "invalid response rule", 422)
 			return
@@ -549,7 +524,7 @@ func (p *publisher) receiverHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		responseContentType = rule.ContentType
 		if rule.BodyCEL != "" {
-			body, err := evalReceiver(env, rule.BodyCEL, matchedVars)
+			body, err := evalReceiver(env, rule.BodyCEL, vars)
 			if err != nil {
 				http.Error(w, "invalid response body", 422)
 				return
@@ -569,7 +544,11 @@ func (p *publisher) receiverHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "encode event", 500)
 			return
 		}
-		if err := p.publishEnvelope(event, receiverMessageID(event), payload); err != nil {
+		publish := p.publishEnvelope
+		if p.publish != nil {
+			publish = p.publish
+		}
+		if err := publish(event, receiverMessageID(event), payload); err != nil {
 			http.Error(w, "event publish failed", 503)
 			return
 		}

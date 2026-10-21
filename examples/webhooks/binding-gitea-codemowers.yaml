@@ -4,10 +4,9 @@ metadata:
   name: gitea-codemowers
   namespace: agents
 spec:
-  protocolRef: gitea
+  receiverRef:
+    kind: ClusterWebhookReceiver
+    name: gitea-codemowers
   agentRef: matmlazi
-  match:
-    serverURL: https://git.codemowers.io
-  verificationKeyRef:
-    name: agent-operator-webhook-keys
-    key: gitea-codemowers
+  keyPrefixes:
+    - https://git.codemowers.io/codemowers

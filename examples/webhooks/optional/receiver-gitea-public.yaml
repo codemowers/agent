@@ -1,0 +1,15 @@
+# A namespace's own Gitea.com hook posts to /hooks/agents/gitea-public, as on
+# clusters without cluster receivers. Supply a real signing key first.
+apiVersion: codemowers.cloud/v1alpha1
+kind: WebhookReceiver
+metadata:
+  name: gitea-public
+  namespace: agents
+spec:
+  protocolRef: gitea
+  match:
+    serverURL: https://gitea.com
+  senders:
+    secretKeyRef:
+      name: agent-operator-webhook-keys
+      key: gitea-public

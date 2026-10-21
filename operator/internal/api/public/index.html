@@ -721,35 +721,46 @@ function copyableCommand(host, label, command) {
 function giteaWebhookSetup(agent) {
   const host = document.createElement('div'); host.className = 'webhook-setup';
   const heading = document.createElement('h2'); heading.textContent = 'Gitea webhook setup'; host.append(heading);
-  const binding = `gitea-${agent.name}`;
+  const receiver = `gitea-${agent.name}`;
   const secretName = 'agent-operator-webhook-keys';
-  const secretKey = binding;
-  const path = `/hooks/${encodeURIComponent(agent.namespace)}/${encodeURIComponent(binding)}`;
+  const secretKey = receiver;
+  const path = `/hooks/${encodeURIComponent(agent.namespace)}/${encodeURIComponent(receiver)}`;
   const origin = oidc?.webhookOrigin?.replace(/\/$/, '') || '';
   const target = origin ? origin + path : path;
   const note = document.createElement('p');
   note.textContent = 'To add a Gitea webhook at https://git.codemowers.io, use the repository or organization settings: HTTP POST, application/json, active, with issue, issue comment and pull request events. Target URL: ';
   const url = document.createElement('strong'); url.textContent = target; note.append(url); host.append(note);
   const secret = document.createElement('p');
-  secret.textContent = `After Mittwald generates the ${secretKey} key in ${secretName}, use its value as Gitea’s Secret. This is a new binding template; an existing hook can have another name and key. A Gitea API token for this Agent is separate and must be issued by Gitea before assignment based Task creation can work.`;
+  secret.textContent = `After Mittwald generates the ${secretKey} key in ${secretName}, use its value as Gitea’s Secret. This template creates a receiver for this namespace; where the cluster offers a ClusterWebhookReceiver for this Gitea, bind to it with keyPrefixes instead and skip the hook and secret. A Gitea API token for this Agent is separate and must be issued by Gitea before assignment based Task creation can work.`;
   host.append(secret);
   const template = `{{ index .data ${JSON.stringify(secretKey)} }}`;
   copyableCommand(host, 'Read Gitea webhook signing secret',
     `kubectl -n ${shellQuote(agent.namespace)} get secret ${shellQuote(secretName)} -o go-template=${shellQuote(template)} | base64 -d`);
-  copyableCommand(host, 'Bind Gitea webhook to this Agent', `kubectl apply -f - <<'EOF'
+  copyableCommand(host, 'Receive Gitea webhooks for this Agent', `kubectl apply -f - <<'EOF'
 apiVersion: codemowers.cloud/v1alpha1
-kind: WebhookBinding
+kind: WebhookReceiver
 metadata:
-  name: ${JSON.stringify(binding)}
+  name: ${JSON.stringify(receiver)}
   namespace: ${JSON.stringify(agent.namespace)}
 spec:
   protocolRef: gitea
-  agentRef: ${JSON.stringify(agent.name)}
   match:
     serverURL: https://git.codemowers.io
-  verificationKeyRef:
-    name: ${JSON.stringify(secretName)}
-    key: ${JSON.stringify(secretKey)}
+  senders:
+    secretKeyRef:
+      name: ${JSON.stringify(secretName)}
+      key: ${JSON.stringify(secretKey)}
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: WebhookBinding
+metadata:
+  name: ${JSON.stringify(receiver)}
+  namespace: ${JSON.stringify(agent.namespace)}
+spec:
+  receiverRef:
+    kind: WebhookReceiver
+    name: ${JSON.stringify(receiver)}
+  agentRef: ${JSON.stringify(agent.name)}
 EOF`);
   const routing = document.createElement('p'); routing.textContent = 'Events wake the Task whose routing keys include the issue URL, such as https://git.codemowers.io/owner/repo/issues/1. For automatic creation of assigned issue or pull request Tasks, add a TaskPolicy after configuring this Agent’s Gitea API token.'; host.append(routing);
   return host;

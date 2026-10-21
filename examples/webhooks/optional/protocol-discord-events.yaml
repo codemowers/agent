@@ -5,18 +5,16 @@ kind: WebhookProtocol
 metadata:
   name: discord-events
 spec:
-  verification:
+  signature:
     algorithm: ed25519
-    keyEncoding: hex
-    signature:
-      header: x-signature-ed25519
-      encoding: hex
+    header: x-signature-ed25519
+    encoding: hex
     signedBytesCEL: "bytes(headers['x-signature-timestamp']) + rawBody"
   event:
     requiredHeaders:
       - x-signature-ed25519
       - x-signature-timestamp
-    acceptCEL: "string(body.application_id) == binding.match.applicationID"
+    acceptCEL: "string(body.application_id) == receiver.match.applicationID"
     eventsCEL: >-
       body.type == 1 && has(body.event) ? [{
         'deliveryID': sha256Hex(rawBody),

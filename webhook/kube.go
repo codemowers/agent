@@ -36,9 +36,11 @@ func validSecretKey(name string) bool {
 
 type receiverResolver interface {
 	Protocol(context.Context, string) (receiverProtocol, error)
-	Binding(context.Context, string, string) (receiverBinding, error)
-	Bindings(context.Context, string) ([]receiverBinding, error)
-	BindingKey(context.Context, receiverBinding) ([]byte, error)
+	// Receiver reads a WebhookReceiver, or a ClusterWebhookReceiver when the
+	// namespace is empty.
+	Receiver(ctx context.Context, namespace, name string) (webhookReceiver, error)
+	Bindings(context.Context, webhookReceiver) ([]receiverBinding, error)
+	ReceiverKey(context.Context, webhookReceiver) ([]byte, error)
 	// ReviewToken returns the authenticated username of a token issued for
 	// audience, or "" when the API server rejects it.
 	ReviewToken(ctx context.Context, token, audience string) (string, error)

@@ -1,0 +1,16 @@
+# A GitHub Enterprise Server's hooks post to /hooks/github-enterprise. Add its
+# host to the github protocol's allowedKeyPrefixes.
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterWebhookReceiver
+metadata:
+  name: github-enterprise
+spec:
+  protocolRef: github
+  match:
+    serverURL: https://github.enterprise.example
+  senders:
+    secretKeyRef:
+      namespace: codemowers-agent-system
+      name: agent-operator-webhook-keys
+      key: github-enterprise
+    githubMeta: https://github.enterprise.example/api/v3/meta

@@ -117,19 +117,31 @@ a matching external repository reference also receives its selected key as
 configured provider credentials.
 Provider tokens live under separate keys in the namespace's
 `agent-operator-provider-tokens` Secret. Model and Git provider
-`credentialKeyRef` fields select a key. Signed webhook subscriptions use
-`secretKeyRef` to select a signing key in `agent-operator-webhook-keys`.
-The operator has get-only RBAC for the provider Secret; the webhook receiver
-has get-only RBAC for the webhook-keys Secret. Neither ServiceAccount has
-Secret list/watch.
-In-cluster senders without a signing scheme, such as Alertmanager, use
-`verification.algorithm: serviceAccountToken`: they send a projected
-ServiceAccount token for the protocol's `audience` as a bearer token, the
-receiver checks it with a TokenReview, and the binding's `serviceAccounts`
-lists the accepted `<namespace>/<name>` senders. TokenReview results are
+`credentialKeyRef` fields select a key. The operator has get-only RBAC for
+the provider Secret. Neither the operator nor the webhook receiver has Secret
+list/watch.
+Webhook endpoints are receivers. A namespaced WebhookReceiver serves
+`/hooks/<namespace>/<name>` to WebhookBindings of its namespace; a
+cluster-scoped ClusterWebhookReceiver serves `/hooks/<name>` and fans each
+event out to bindings of any namespace, so one GitHub or Gitea hook per org
+can feed hundreds of Agents. A receiver names its WebhookProtocol, `match`
+values for its CEL (such as `serverURL`, which separates github.com from GHE)
+and its senders: an HMAC `secretKeyRef` (in the receiver's namespace, or a
+named namespace for a cluster receiver), `serviceAccounts` with an `audience`
+for in-cluster senders such as Alertmanager, or an `ed25519PublicKey`. One
+must pass. `cidrs` and `githubMeta` (GitHub's hooks address ranges, cached
+hourly and kept up to a day when GitHub is unreachable) additionally restrict
+client addresses, taken from Traefik's `X-Forwarded-For` only when the peer is
+in `webhook.trustedProxies`. Bindings hold no key: they name the receiver, the
+Agent, routing and `keyPrefixes`, required for cluster receivers, which select
+a hierarchy of events by canonical key such as `https://github.com/codemowers`
+or `https://github.com/codemowers/agent`. Events without an issue carry the
+repository URL as their key. The webhook service needs Secret `get` because
+receivers name their Secret; cluster admission decides who may reference a
+ClusterWebhookReceiver. TokenReview results are
 cached by token hash for up to five minutes, never past token expiry, after
-screening the unverified audience and expiry. Protocols, bindings and signing
-keys are reused for ten seconds and, while the API server is unavailable, for
+screening the unverified audience and expiry. Protocols, receivers, bindings
+and signing keys are reused for ten seconds and, while the API server is unavailable, for
 up to ten minutes; an object the API server reports missing is dropped at
 once. An unavailable API server otherwise yields 503, which senders retry.
 The receiver has no unsigned
@@ -231,8 +243,9 @@ keys. Duplicate exact claims within one Agent route to the fallback Task. `Task.
 and forge checkout context; `Task.status.externalReferences` records links
 collected later. Neither decides
 event routing. The webhook
-service reads WebhookProtocol and WebhookBinding resources, verifies
-each sender, evaluates bounded CEL, and publishes normalized key-bearing
+service reads receivers, protocols and bindings, verifies each sender,
+evaluates bounded CEL once, and publishes one normalized key-bearing event per
+matching binding
 events to the `agent.intake` exchange with routing key
 `webhook.<namespace>.<binding>` and the key in header `x-key`; the Mailbox
 publishes `mail.<namespace>.<mailbox>`. CEL extracts the actor and an event
@@ -339,7 +352,8 @@ includes a `kubectl apply -f - <<'EOF'` Task manifest template using the
 current Agent and namespace; the user fills in a Task name and objective.
 The New Task form and Task detail expose a Gitea webhook setup template for
 the selected Agent. Its named path uses the configured public webhook origin,
-and the UI gives copyable receiver and signing-key retrieval commands. These
+and the UI gives copyable WebhookReceiver, binding and signing-key retrieval
+commands. These
 are instructions and never expose Secret values through the API. The expected
 Mittwald-generated signing key is distinct from a Gitea API token.
 The same view gives a copyable command that prints the `device-agent
@@ -423,12 +437,10 @@ archiving preflights a unique selectable IMAP Sent folder, then appends the
 exact SMTP message bytes with `\\Seen` after SMTP acceptance. SMTP success
 and archive failure are reported separately so a retry cannot silently send a
 duplicate.
-GitHub and GHES hooks can use `/hooks/github`, while each binding also has
-`/hooks/<namespace>/<binding>`. Protocol and binding CRs replace
-`Agent.spec.githubWebhooks`. The fixed `agent-operator-webhook-keys` Secret
-holds sender verification keys only. Signed pings are acknowledged without routing;
-the operator records bounded per-Task delivery receipts. Use distinct keys for
-distinct GitHub hooks since the hook ID header is not signed. The operator UI uses its native OIDCClient owner
+Signed pings are acknowledged without routing; the operator records bounded
+per-Task delivery receipts. Anyone holding a receiver's secret can forge its
+deliveries, and GitHub and Gitea sign neither headers nor a timestamp, so keep
+secrets with the receiver owner. The operator UI uses its native OIDCClient owner
 Secret and bearer tokens, then SubjectAccessReview for Agent `get` rights.
 Its API streams Agent and Task cache invalidations to the browser over an
 authenticated HTTP event stream. Task subscriptions are scoped to Agent names
@@ -436,9 +448,7 @@ and checked with SubjectAccessReview; the browser fetches changed state from
 the access-controlled API. RabbitMQ is not exposed to browsers.
 `spec.access` remains in the CRD but is ignored; the operator removes its old
 owned access RoleBindings. Grant read access through Kubernetes RBAC.
-Gitea webhook ingestion uses the generic WebhookBinding; use a namespaced
-path and distinct signing key per instance. Helm has no organization source or
-group allowlist configuration.
+Helm has no organization source or group allowlist configuration.
 The Gitea protocol copies the original issue or pull request title and body,
 when present, into each bounded normalized event before appending comment text.
 This lets workers see the original post from a signed comment delivery even

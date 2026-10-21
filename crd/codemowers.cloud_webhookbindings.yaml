@@ -22,37 +22,38 @@ spec:
             spec:
               type: object
               required:
-                - protocolRef
+                - receiverRef
                 - agentRef
+              x-kubernetes-validations:
+                - rule: self.receiverRef.kind != 'ClusterWebhookReceiver' || has(self.keyPrefixes)
+                  message: bindings to a ClusterWebhookReceiver need keyPrefixes
               properties:
-                protocolRef:
-                  description: Cluster-scoped WebhookProtocol name.
-                  type: string
-                agentRef:
-                  type: string
-                match:
-                  type: object
-                  additionalProperties:
-                    type: string
-                verificationKeyRef:
+                receiverRef:
                   type: object
                   required:
+                    - kind
                     - name
-                    - key
                   properties:
-                    name:
+                    kind:
                       type: string
                       enum:
-                        - agent-operator-webhook-keys
-                    key:
+                        - WebhookReceiver
+                        - ClusterWebhookReceiver
+                    name:
                       type: string
-                serviceAccounts:
-                  description: <namespace>/<name> senders a serviceAccountToken protocol accepts.
+                agentRef:
+                  type: string
+                keyPrefixes:
+                  description: Only events whose key starts with one of these canonical URI
+                    prefixes, at a path boundary, reach this binding.
                   type: array
-                  maxItems: 16
+                  minItems: 1
+                  maxItems: 64
+                  x-kubernetes-list-type: set
                   items:
                     type: string
-                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    minLength: 1
+                    maxLength: 1024
                 routing:
                   type: object
                   properties:

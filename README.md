@@ -151,6 +151,8 @@ Agents. Workers never read or write these resources through the Kubernetes API.
 | Agent | Namespaced | Namespace administrators | Operator; UI users with Agent `get` | Administrators (spec); operator (status only) |
 | Task | Namespaced | Namespace administrators; the operator creates event and UI Tasks | Operator; UI users with `get` on its Agent | Operator (derived spec fields and status, on behalf of UI users, events and the worker's Agent MCP calls); administrators (spec) |
 | WebhookBinding | Namespaced | Namespace administrators | Webhook receiver | Administrators |
+| WebhookReceiver | Namespaced | Namespace administrators | Webhook receiver | Administrators |
+| ClusterWebhookReceiver | Cluster | Cluster administrators | Webhook receiver | Cluster administrators |
 | WebhookProtocol | Cluster | Cluster administrators | Webhook receiver | Cluster administrators |
 | TaskPolicy | Namespaced | Namespace administrators | Operator | Administrators |
 | Mailbox | Namespaced | Namespace administrators | Operator | Administrators (spec); operator (status: IMAP cursor) |
@@ -162,9 +164,14 @@ Agents. Workers never read or write these resources through the Kubernetes API.
 - **Task** is one objective with its own PVC, conversation, routing keys
   (canonical resource URIs such as an issue URL) and external references. UI actions such as prompts, Suspend and MCP toggles go
   through the operator, which checks the user's Agent access first.
-- **WebhookProtocol** defines a sender protocol: signature verification, CEL
-  extraction, the key prefixes its events may claim and the HTTP response. A
-  **WebhookBinding** binds one protocol to one Agent with its fallback Task.
+- **WebhookProtocol** defines a sender protocol: signature format, CEL
+  extraction, the key prefixes its events may claim and the HTTP response.
+  A **WebhookReceiver** (namespaced, `/hooks/<namespace>/<name>`) or
+  **ClusterWebhookReceiver** (`/hooks/<name>`) is an endpoint holding the
+  sender's secret, token or key and optional address limits. A
+  **WebhookBinding** subscribes one Agent to a receiver, filtered by key
+  prefixes such as `https://github.com/codemowers`, with its fallback Task;
+  a cluster receiver fans each event out to every matching binding.
 - **TaskPolicy** decides when an event whose key no Task claims may create one.
 - **Mailbox** runs one Pod holding that mailbox's IMAP and SMTP credentials.
   A **MailBinding** wakes one Agent's Tasks for matching mail headers.
@@ -205,7 +212,7 @@ Driftmower's in-cluster audience.
 | Identity | Permissions |
 | --- | --- |
 | `agent-operator` | Reads Agents, Mailboxes and policies; manages Tasks, worker Pods, PVCs and Mailbox Services; writes Agent, Task and Mailbox status; reads `agent-operator-provider-tokens` by name; creates TokenReviews and SubjectAccessReviews. |
-| `agent-operator-webhook` | Reads protocols, bindings and `agent-operator-webhook-keys` by name; creates TokenReviews for ServiceAccount-token senders. |
+| `agent-operator-webhook` | Reads protocols, receivers and bindings, and the Secret each receiver names; creates TokenReviews for ServiceAccount-token senders. |
 | `agent-devices` | Reads Devices and `agent-device-keys`; writes Device status; creates TokenReviews and SubjectAccessReviews. |
 | `agent-mailbox` | Creates TokenReviews and SubjectAccessReviews. Only the Mailbox Pod's MCP container receives its token. |
 | `agent-worker-<agent>` | Whatever the namespace administrator grants; see [examples/](examples/README.md) for the three profiles below. |
@@ -343,7 +350,7 @@ reference:
 | Secret | Holds | Selected by |
 | --- | --- | --- |
 | `agent-operator-provider-tokens` | Model API keys and Git provider tokens | `credentialKeyRef` in Agent model and Git provider entries |
-| `agent-operator-webhook-keys` | Webhook signing keys | `verificationKeyRef` in WebhookBindings |
+| Any, conventionally `agent-operator-webhook-keys` | Webhook signing keys | `senders.secretKeyRef` in receivers |
 | `agent-device-keys` | Device connection keys | `connectionSecretRef` in Devices |
 
 Mailbox credentials stay in Secrets named by each Mailbox's
@@ -380,7 +387,7 @@ project. The operator, its CRDs and the UI stay here.
 | Component | Path | Coupling to this project | Use outside it |
 | --- | --- | --- | --- |
 | Mail MCP | `mailbox/` | `mcp.js` authenticates with TokenReview and SubjectAccessReview; the IMAP reader publishes to the intake exchange with a projected token | IMAP/SMTP MCP server, for example under Docker Compose, with a pluggable bearer-token check and an optional event publisher |
-| Webhook intake | `webhook/` | Reads WebhookProtocol and WebhookBinding CRs and the keys Secret through the API | Signed webhook to AMQP gateway with CEL-defined protocols loaded from files |
+| Webhook intake | `webhook/` | Reads protocol, receiver and binding CRs and receivers' key Secrets through the API | Signed webhook to AMQP gateway with CEL-defined protocols loaded from files |
 | Device bridge | `operator/devicebridge/` | Device CRD, `agent-device-keys` and Kubernetes RBAC verbs per Device | Remote machine shell and file MCP for `device-agent` |
 | Coding runner | `runner/`, `src/` | Reports to the Agent MCP and reads its Task queue | Container image wrapping the Claude and Codex CLIs with session persistence |
 

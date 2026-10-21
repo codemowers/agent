@@ -4,14 +4,12 @@ metadata:
   name: github-enterprise
   namespace: agents
 spec:
-  protocolRef: github
+  receiverRef:
+    kind: ClusterWebhookReceiver
+    name: github-enterprise
   agentRef: matmlazi
-  match:
-    serverURL: https://github.enterprise.example
-    hookID: "67890"
-  verificationKeyRef:
-    name: agent-operator-webhook-keys
-    key: github-enterprise
+  keyPrefixes:
+    - https://github.enterprise.example/platform
   routing:
     otherwise:
       taskRef: webhook-triage

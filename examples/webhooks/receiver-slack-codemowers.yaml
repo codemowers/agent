@@ -1,0 +1,15 @@
+# Slack posts to /hooks/agents/slack-codemowers. The key is the app's signing
+# secret; mat-slack-token holds API tokens and cannot verify events.
+apiVersion: codemowers.cloud/v1alpha1
+kind: WebhookReceiver
+metadata:
+  name: slack-codemowers
+  namespace: agents
+spec:
+  protocolRef: slack-events
+  match:
+    teamID: T0BTAN5EF5E
+  senders:
+    secretKeyRef:
+      name: agent-operator-webhook-keys
+      key: slack-codemowers

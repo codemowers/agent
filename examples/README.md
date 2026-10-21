@@ -25,8 +25,10 @@ Apply with the context and namespace from `skaffold.env`. Files under
    `rbac.yaml` and `agents/`.
 2. `tasks/fallbacks.yaml`, and optionally the durable `tasks/krtek-capacity-review.yaml`.
    Creating a Task starts a worker turn.
-3. `webhooks/protocol-*.yaml`, then the `binding-*.yaml` and `policy-*.yaml`
-   files you use. Set each protocol's `allowedKeyPrefixes` to your hosts.
+3. `webhooks/protocol-*.yaml`, the `clusterreceiver-*.yaml` and
+   `receiver-*.yaml` you use, then their `binding-*.yaml` and `policy-*.yaml`.
+   Set each protocol's `allowedKeyPrefixes` to your hosts, and point each
+   forge hook at its receiver's path.
 4. `mail/rbac.yaml`, then the Mailboxes and MailBinding.
 5. `devices/blueos.yaml`.
 

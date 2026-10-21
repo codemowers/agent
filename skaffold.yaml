@@ -47,6 +47,7 @@ manifests:
         setValueTemplates:
           operator.apiResource: "{{.AGENT_OPERATOR_API_RESOURCE}}"
           webhook.publicOrigin: "{{.AGENT_WEBHOOK_PUBLIC_ORIGIN}}"
+          webhook.trustedProxies: "{{.AGENT_WEBHOOK_TRUSTED_PROXIES}}"
 
 # The operator reads worker and Mailbox images from ConfigMaps.
 resourceSelector:
