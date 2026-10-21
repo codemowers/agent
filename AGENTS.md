@@ -318,8 +318,8 @@ configuration from its next turn. `agent_operator` cannot be disabled. It
 keeps the last completed result in `Task.status.mcpProbe` with its `checkedAt`
 time and shows it washed out while a check is pending, after a failed check or
 when the worker is stopped; only a fresh result of the current worker is shown
-at full strength. The Task title and idle
-deadline remain in the header, while namespace, Agent, Task name and phase
+at full strength. The Task title remains in
+the header, while namespace, Agent, Task name and phase
 stay in the Task list instead of a duplicate subtitle.
 Transitional states animate: a working turn shows a typing bubble, a starting
 or stopping worker shows a spinner line, and the Task list dot pulses. Pending
@@ -347,9 +347,10 @@ The same view gives a copyable command that prints the `device-agent
 through its connectionSecretRef with the user's own kubectl.
 Task selection is encoded as `namespace` and `task` URL query parameters,
 restored after OIDC callback and kept in browser history.
-The Task header calculates worker idle shutdown from `Task.spec.idleSeconds`
-and `Task.status.lastResultAt` while activity is idle. It updates locally each
-second, labels the deadline as expected, and states that Task deletion is manual.
+While the worker idles, a system line after the last reply counts down to idle
+shutdown from `Task.spec.idleSeconds` and `Task.status.lastResultAt`. It updates
+locally each second, labels the deadline as expected, and states that Task
+deletion is manual; other worker states appear only in the timeline.
 It records accepted UI prompts, routed webhook notices with validated source
 URLs when provided, and worker `agent_result` lines from the owned Pod's bounded logs; full native CLI
 transcripts remain private on the Task PVC. The `matmlazi-mail` Mailbox Pod

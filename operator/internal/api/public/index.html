@@ -139,7 +139,6 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
 .mcp-probe .available::before { background: #4ade80; box-shadow: 0 0 4px #4ade80; }
 .mcp-probe .unavailable::before, .mcp-probe .failed::before { background: #f87171; box-shadow: 0 0 4px #f87171; }
 .mcp-probe .pending::before { background: #fbbf24; }
-.task-idle { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .task-references { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .task-references a, .task-references span { color: var(--accent); font-size: 12px; overflow-wrap: anywhere; }
 .task-references a { text-decoration: none; }
@@ -1043,17 +1042,7 @@ function renderDetail(task) {
   const head = document.createElement('div'); head.className = 'chat-head';
   const heading = document.createElement('div'); heading.className = 'chat-heading';
   const title = document.createElement('h2'); title.textContent = task.title || task.name;
-  const idle = document.createElement('div'); idle.className = 'task-idle';
-  const updateIdle = () => { idle.textContent = idleCountdownText(task); idle.hidden = !idle.textContent; };
-  updateIdle();
-  if (task.phase === 'Running' && task.activity === 'idle' && task.workerPod && task.lastResultAt && task.idleSeconds > 0) {
-    const deadline = new Date(Date.parse(task.lastResultAt) + task.idleSeconds * 1000);
-    if (Number.isFinite(deadline.getTime())) {
-      idle.title = `Expected worker idle shutdown around ${formatTime(deadline)}; queued work may change this.`;
-      idleCountdownTimer = setInterval(updateIdle, 1000);
-    }
-  }
-  heading.append(title, idle);
+  heading.append(title);
   const probe = document.createElement('div'); probe.className = 'mcp-probe';
   const report = task.mcpProbe;
   const disabledMcps = new Set(task.disabledMcps || []);
@@ -1260,6 +1249,16 @@ function renderDetail(task) {
       line.append(`${busy}…`); history.append(line);
     }
     line.setAttribute('role', 'status'); line.prepend(spinner());
+  } else if (idleCountdownText(task)) {
+    // The idle shutdown countdown follows the last reply as a system line.
+    const idle = document.createElement('div'); idle.className = 'message system';
+    const updateIdle = () => { idle.textContent = idleCountdownText(task); };
+    updateIdle(); history.append(idle);
+    const deadline = new Date(Date.parse(task.lastResultAt) + task.idleSeconds * 1000);
+    if (Number.isFinite(deadline.getTime())) {
+      idle.title = `Expected worker idle shutdown around ${formatTime(deadline)}; queued work may change this.`;
+      idleCountdownTimer = setInterval(updateIdle, 1000);
+    }
   }
   const compose = document.createElement('div'); compose.className = 'chat-compose';
   const input = document.createElement('textarea'); input.id = 'promptInput'; input.placeholder = wakePrompt;
