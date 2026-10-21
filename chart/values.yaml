@@ -1,17 +1,8 @@
-# imageRegistry: prefix prepended to all built image names.
-# Set to "ghcr.io" (default) to pull release images from GitHub Container Registry.
-# Set to "" in Skaffold so rendered names match artifact names and Skaffold
-# replaces them with the locally built digest automatically.
-imageRegistry: "ghcr.io/codemowers"
-
-# workerImage: short name without registry; imageRegistry is prepended.
-workerImage: "agent"
-
-mailbox:
-  image: agent-mailbox
+# Optional registry/namespace prefix without a trailing slash. Skaffold sets
+# it empty so it can replace the bare image names with its builds.
+imageRepository: ghcr.io/codemowers
 
 deviceBridge:
-  image: agent-devices
   resources:
     requests:
       memory: 32Mi
@@ -28,7 +19,6 @@ bootstrapRbac: true
 webhook:
   # Full public origin displayed in the UI's webhook setup instructions.
   publicOrigin: ""
-  image: agent-webhook
   # host: short hostname for the webhook ingress (admission expands it).
   host: webhook
   resources:
@@ -40,7 +30,6 @@ webhook:
       cpu: 200m
 
 operator:
-  image: agent-operator
   # host: short hostname for the dashboard (admission expands it).
   host: dashboard
   apiResource: ""

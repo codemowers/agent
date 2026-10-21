@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         image:
-          - {name: agent, context: ., file: Dockerfile, target: runner}
+          - {name: agent-worker, context: ., file: Dockerfile, target: runner}
           - {name: agent-mailbox, context: ., file: Dockerfile, target: mailbox}
           - {name: agent-operator, context: operator, file: operator/Dockerfile}
           - {name: agent-devices, context: operator, file: operator/devicebridge/Dockerfile}

@@ -67,14 +67,28 @@ func (c *EventConsumer) Start(ctx context.Context) error {
 				continue
 			}
 		}
-		backoff = time.Second
-
 		logger.Info("amqp connected", "queue", c.Queue)
-		if err := c.consume(ctx, ch); err != nil {
-			logger.Error(err, "consume loop exited, reconnecting")
-		}
+		connected := time.Now()
+		err = c.consume(ctx, ch)
 		ch.Close()
 		conn.Close()
+		if err == nil || time.Since(connected) > time.Minute {
+			backoff = time.Second
+		}
+		if err == nil {
+			continue
+		}
+		// A missing queue fails immediately after connecting, so back off here
+		// too instead of reconnecting in a tight loop.
+		logger.Error(err, "consume loop exited, reconnecting", "backoff", backoff)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(backoff):
+			if backoff < 60*time.Second {
+				backoff *= 2
+			}
+		}
 	}
 }
 

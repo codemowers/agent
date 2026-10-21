@@ -21,7 +21,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: webhook
-          image: {{ if .Values.imageRegistry }}{{ .Values.imageRegistry }}/{{ end }}{{ .Values.webhook.image }}
+          image: {{ include "agent.image" (list . "agent-webhook") }}
           imagePullPolicy: Always
           securityContext:
             readOnlyRootFilesystem: true

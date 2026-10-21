@@ -174,8 +174,8 @@ ServiceAccounts may hold those grants. Standard verbs such as `get` grant
 nothing, so broad read-only roles never reach a Device. `write` can usually be
 turned into code execution by overwriting scripts or service files, so grant it
 only where `exec` would also be acceptable. Device deletion or key rotation closes the connection.
-The operator sets the `worker` container image from the Skaffold runner image,
-overriding stale `image` values in Agent CRs. Signed forge events create
+The operator sets the `worker` container image from the `agent-worker-image`
+ConfigMap, overriding stale `image` values in Agent CRs. Signed forge events create
 Tasks only after checking the configured account and current assignment.
 Operator worker Pods are named `<prefix><Task prefix>-<incarnation ID>` and
 Task PVCs `<prefix><volume>-<Task UID prefix>`, where the prefix is
@@ -468,8 +468,11 @@ Pod UID remains necessary for execution identity and safe adoption.
 `skaffold.yaml` reads it from `AGENT_OPERATOR_API_RESOURCE` in local `skaffold.env`.
 Do not use the short host for this resource: OIDC admission expands URI,
 redirect and CORS fields but does not expand `allowedResources`.
-`skaffold.yaml` injects image references; there is no separate cluster values
-file. Operator, worker and RabbitMQ defaults live in the chart.
+The chart names its images `<imageRepository>/<name>:latest`, with
+`imageRepository` defaulting to `ghcr.io/codemowers`. Skaffold sets it empty
+and replaces the bare names with its builds, including the `image` key of the
+`agent-worker-image` and `agent-mailbox-image` ConfigMaps the operator reads.
+There are no per-image values and no separate cluster values file. Operator, worker and RabbitMQ defaults live in the chart.
 
 ## Task identity, state and execution
 

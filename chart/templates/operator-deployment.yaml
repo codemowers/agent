@@ -131,7 +131,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: operator
-          image: {{ if .Values.imageRegistry }}{{ .Values.imageRegistry }}/{{ end }}{{ .Values.operator.image }}
+          image: {{ include "agent.image" (list . "agent-operator") }}
           imagePullPolicy: Always
           securityContext:
             readOnlyRootFilesystem: true
@@ -160,10 +160,13 @@ spec:
                   fieldPath: metadata.namespace
             - name: AGENT_WEBHOOK_ORIGIN
               value: {{ .Values.webhook.publicOrigin | quote }}
-            - name: AGENT_WORKER_IMAGE
-              value: {{ printf "%s%s" (ternary (printf "%s/" .Values.imageRegistry) "" (ne .Values.imageRegistry "")) .Values.workerImage | quote }}
-            - name: AGENT_MAILBOX_IMAGE
-              value: {{ printf "%s%s" (ternary (printf "%s/" .Values.imageRegistry) "" (ne .Values.imageRegistry "")) .Values.mailbox.image | quote }}
+            {{- range $env, $configMap := dict "AGENT_WORKER_IMAGE" "agent-worker-image" "AGENT_MAILBOX_IMAGE" "agent-mailbox-image" }}
+            - name: {{ $env }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $configMap }}
+                  key: image
+            {{- end }}
             {{- range $name := list "OIDC_IDP_URI" "OIDC_CLIENT_ID" "OIDC_CLIENT_ORIGIN" "OIDC_REDIRECT_URIS" }}
             - name: {{ $name }}
               valueFrom:
@@ -278,3 +281,15 @@ spec:
                 name: agent-devices
                 port:
                   name: http
+---
+# The operator reads the images it starts from these ConfigMaps; their `image`
+# key lets Skaffold rewrite them like container images.
+{{- range $name := list "agent-worker" "agent-mailbox" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-image
+data:
+  image: {{ include "agent.image" (list $ $name) }}
+---
+{{- end }}

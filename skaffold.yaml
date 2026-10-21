@@ -12,7 +12,7 @@ build:
   tagPolicy:
     inputDigest: {}
   artifacts:
-    - image: agent
+    - image: agent-worker
       context: .
       kaniko:
         target: runner
@@ -43,15 +43,16 @@ manifests:
           operator.host: dashboard
           webhook.host: webhook
           rabbitmq.name: agent-events
-          imageRegistry: ""
+          imageRepository: ""
         setValueTemplates:
-          workerImage: "{{.IMAGE_FULLY_QUALIFIED_agent}}"
-          webhook.image: "{{.IMAGE_FULLY_QUALIFIED_agent_webhook}}"
-          operator.image: "{{.IMAGE_FULLY_QUALIFIED_agent_operator}}"
-          deviceBridge.image: "{{.IMAGE_FULLY_QUALIFIED_agent_devices}}"
-          mailbox.image: "{{.IMAGE_FULLY_QUALIFIED_agent_mailbox}}"
           operator.apiResource: "{{.AGENT_OPERATOR_API_RESOURCE}}"
           webhook.publicOrigin: "{{.AGENT_WEBHOOK_PUBLIC_ORIGIN}}"
+
+# The operator reads worker and Mailbox images from ConfigMaps.
+resourceSelector:
+  allow:
+    - groupKind: ConfigMap
+      image: [.data.image]
 
 deploy:
   kubectl:
