@@ -209,7 +209,8 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
   .identity { margin-left: auto; }
   .brand { font-size: 17px; }
   .brand-details small { font-size: 10px; }
-  .identity-name { max-width: 95px; }
+  /* The avatar alone stays as the sign-out button. */
+  .identity-name, .brand-details .tagline { display: none; }
   #authStatus { display: none; }
   .brand-details { max-width: 38vw; white-space: normal; }
   .welcome { padding: 18px; }

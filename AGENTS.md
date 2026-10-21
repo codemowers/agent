@@ -728,8 +728,9 @@ credentials. Anonymous public draft/shared views are separately scoped below.
 - Report turn duration and input/output/cache tokens on agent bubbles. Show
   proxy errors such as a 504 as readable text with their HTTP status.
 - Use restrained Matrix greens, red errors and amber pending states. On desktop a
-  long tagline ends in an ellipsis with the full text in a tooltip; on mobile it
-  wraps. Keep automatic header height and a bottom composer with a scrolling
+  long tagline ends in an ellipsis with the full text in a tooltip; on mobile the
+  tagline and the signed-in name are hidden and the avatar remains the sign-out
+  button. Keep automatic header height and a bottom composer with a scrolling
   timeline filling the remaining viewport. Link the brand to codemowers/agent on GitHub.
 
 ### Drafts
