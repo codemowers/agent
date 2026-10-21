@@ -52,7 +52,7 @@ func main() {
 		userID: os.Getenv("AMQP_USER_ID"), exchange: envOrDefault("AMQP_EXCHANGE", "agent.intake"), resolver: newCachedResolver(resolver),
 		githubMeta: newGitHubMetaCache(&http.Client{Timeout: 10 * time.Second})}
 	// Only these peers may supply the client address in X-Forwarded-For.
-	pub.trustedProxies, err = parsePrefixes(strings.Split(os.Getenv("WEBHOOK_TRUSTED_PROXIES"), ","))
+	pub.trustedProxies, err = parsePrefixes(strings.Fields(os.Getenv("WEBHOOK_TRUSTED_PROXIES")))
 	if err != nil {
 		slog.Error("invalid WEBHOOK_TRUSTED_PROXIES", "err", err)
 		os.Exit(1)
