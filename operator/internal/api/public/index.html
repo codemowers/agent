@@ -1244,6 +1244,7 @@ function renderDetail(task) {
     body.append(window.renderAgentMarkdown(message.content));
     bubble.append(meta, body); history.append(bubble);
   }
+  const busy = taskBusy(task);
   if (busy === 'Working') {
     const typing = document.createElement('div'); typing.className = 'message agent typing';
     typing.setAttribute('role', 'status'); typing.setAttribute('aria-label', 'Agent is working');
