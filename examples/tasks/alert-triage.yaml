@@ -6,7 +6,7 @@ metadata:
   name: alert-triage
   namespace: agents
 spec:
-  agentRef: matmlazi
+  agentRef: krtek
   routingKeys:
     - http://am.ee-lte-1.codemowers.io
   objective: >-

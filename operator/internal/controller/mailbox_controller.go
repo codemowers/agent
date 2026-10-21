@@ -19,6 +19,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 type MailboxReconciler struct {
@@ -39,12 +41,13 @@ func mailboxPodName(mailbox *agentsv1alpha1.Mailbox) string {
 	return agentsv1alpha1.MailboxResourceName(mailbox.Name)
 }
 
-func mailboxConfigHash(mailbox *agentsv1alpha1.Mailbox, image, amqpURL string) string {
+func mailboxConfigHash(mailbox *agentsv1alpha1.Mailbox, image, amqpURL, caller string) string {
 	data, _ := json.Marshal(struct {
 		Spec    agentsv1alpha1.MailboxSpec
 		Image   string
 		AMQPURL string
-	}{mailbox.Spec, image, amqpURL})
+		Caller  string
+	}{mailbox.Spec, image, amqpURL, caller})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -97,8 +100,7 @@ func (r *MailboxReconciler) imapPod(mailbox *agentsv1alpha1.Mailbox) (*corev1.Po
 	uid := int64(1000)
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name: mailboxPodName(mailbox), Namespace: mailbox.Namespace,
-		Labels:      map[string]string{"app": "agent-mailbox", "codemowers.cloud/mailbox": mailbox.Name},
-		Annotations: map[string]string{"codemowers.cloud/mailbox-config-hash": mailboxConfigHash(mailbox, r.Image, r.AMQPURL)},
+		Labels: map[string]string{"app": "agent-mailbox", "codemowers.cloud/mailbox": mailbox.Name},
 	}, Spec: corev1.PodSpec{
 		AutomountServiceAccountToken: &no,
 		RestartPolicy:                corev1.RestartPolicyAlways,
@@ -159,8 +161,7 @@ func (r *MailboxReconciler) smtpPod(mailbox *agentsv1alpha1.Mailbox) (*corev1.Po
 	}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name: mailboxPodName(mailbox), Namespace: mailbox.Namespace,
-		Labels:      map[string]string{"app": "agent-mailbox", "codemowers.cloud/mailbox": mailbox.Name},
-		Annotations: map[string]string{"codemowers.cloud/mailbox-config-hash": mailboxConfigHash(mailbox, r.Image, r.AMQPURL)},
+		Labels: map[string]string{"app": "agent-mailbox", "codemowers.cloud/mailbox": mailbox.Name},
 	}, Spec: corev1.PodSpec{
 		AutomountServiceAccountToken: &no,
 		RestartPolicy:                corev1.RestartPolicyAlways, HostUsers: &no,
@@ -188,7 +189,25 @@ func (r *MailboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return r.ensurePod(ctx, &mailbox)
 }
 
-func (r *MailboxReconciler) mailboxPod(mailbox *agentsv1alpha1.Mailbox) (*corev1.Pod, error) {
+// mailboxCaller is the only ServiceAccount the mcp container accepts for a
+// Mailbox pinned with agentRef, or "" when RBAC alone decides. A missing Agent
+// yields a username no ServiceAccount has, so the Mailbox fails closed.
+func (r *MailboxReconciler) mailboxCaller(ctx context.Context, mailbox *agentsv1alpha1.Mailbox) (string, error) {
+	if mailbox.Spec.AgentRef == "" {
+		return "", nil
+	}
+	var agent agentsv1alpha1.Agent
+	err := r.Get(ctx, client.ObjectKey{Namespace: mailbox.Namespace, Name: mailbox.Spec.AgentRef}, &agent)
+	if apierrors.IsNotFound(err) {
+		return "-", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return agentsv1alpha1.ServiceAccountUser(mailbox.Namespace, agentsv1alpha1.WorkerServiceAccount(&agent)), nil
+}
+
+func (r *MailboxReconciler) mailboxPod(mailbox *agentsv1alpha1.Mailbox, caller string) (*corev1.Pod, error) {
 	var pod *corev1.Pod
 	if mailbox.Spec.IMAP != nil {
 		imap, err := r.imapPod(mailbox)
@@ -209,8 +228,9 @@ func (r *MailboxReconciler) mailboxPod(mailbox *agentsv1alpha1.Mailbox) (*corev1
 		}
 	}
 	if pod != nil {
+		pod.Annotations = map[string]string{"codemowers.cloud/mailbox-config-hash": mailboxConfigHash(mailbox, r.Image, r.AMQPURL, caller)}
 		pod.Spec.ServiceAccountName = MailboxServiceAccount
-		pod.Spec.Containers = append(pod.Spec.Containers, r.mcpContainer(mailbox))
+		pod.Spec.Containers = append(pod.Spec.Containers, r.mcpContainer(mailbox, caller))
 		// The token reaches only the mcp container, unlike automounting.
 		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "kube-api-access", VolumeSource: corev1.VolumeSource{
 			Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{
@@ -225,7 +245,7 @@ func (r *MailboxReconciler) mailboxPod(mailbox *agentsv1alpha1.Mailbox) (*corev1
 // mcpContainer serves the Mailbox MCP to workers. It forwards authorized
 // calls to the IMAP and SMTP containers over loopback and holds no mail
 // credential.
-func (r *MailboxReconciler) mcpContainer(mailbox *agentsv1alpha1.Mailbox) corev1.Container {
+func (r *MailboxReconciler) mcpContainer(mailbox *agentsv1alpha1.Mailbox, caller string) corev1.Container {
 	no := false
 	return corev1.Container{Name: "mcp", Image: r.Image, ImagePullPolicy: corev1.PullAlways,
 		Command: []string{"node", "/app/mailbox/mcp.js"},
@@ -235,6 +255,7 @@ func (r *MailboxReconciler) mcpContainer(mailbox *agentsv1alpha1.Mailbox) corev1
 			{Name: "MAILBOX_DISPLAY_NAME", Value: mailbox.Spec.DisplayName},
 			{Name: "MAILBOX_IMAP", Value: strconv.FormatBool(mailbox.Spec.IMAP != nil)},
 			{Name: "MAILBOX_SMTP", Value: strconv.FormatBool(mailbox.Spec.SMTP != nil)},
+			{Name: "MAILBOX_CALLER", Value: caller},
 		},
 		Ports:           []corev1.ContainerPort{{Name: "mcp", ContainerPort: 8080}},
 		VolumeMounts:    []corev1.VolumeMount{{Name: "kube-api-access", MountPath: "/var/run/secrets/kubernetes.io/serviceaccount", ReadOnly: true}},
@@ -274,7 +295,11 @@ func (r *MailboxReconciler) ensurePod(ctx context.Context, mailbox *agentsv1alph
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
-	desired, err := r.mailboxPod(mailbox)
+	caller, err := r.mailboxCaller(ctx, mailbox)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	desired, err := r.mailboxPod(mailbox, caller)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -297,5 +322,20 @@ func (r *MailboxReconciler) ensurePod(ctx context.Context, mailbox *agentsv1alph
 }
 
 func (r *MailboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&agentsv1alpha1.Mailbox{}).Owns(&corev1.Pod{}).Owns(&corev1.Service{}).Complete(r)
+	// A pinned Mailbox follows its Agent's worker ServiceAccount.
+	agentMailboxes := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var mailboxes agentsv1alpha1.MailboxList
+		if err := r.List(ctx, &mailboxes, client.InNamespace(obj.GetNamespace())); err != nil {
+			return nil
+		}
+		var requests []reconcile.Request
+		for _, mailbox := range mailboxes.Items {
+			if mailbox.Spec.AgentRef == obj.GetName() {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&mailbox)})
+			}
+		}
+		return requests
+	})
+	return ctrl.NewControllerManagedBy(mgr).For(&agentsv1alpha1.Mailbox{}).Owns(&corev1.Pod{}).Owns(&corev1.Service{}).
+		Watches(&agentsv1alpha1.Agent{}, agentMailboxes).Complete(r)
 }

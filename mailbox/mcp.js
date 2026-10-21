@@ -32,14 +32,16 @@ export function kubeClient({host = process.env.KUBERNETES_SERVICE_HOST, port = p
 }
 
 export function createMailboxMcpServer({namespace, mailbox, address = '', displayName = '', smtp = false, imap = false,
-  kube = kubeClient(), smtpURL = 'http://127.0.0.1:8083', listURL = 'http://127.0.0.1:8082'}) {
+  caller = '', kube = kubeClient(), smtpURL = 'http://127.0.0.1:8083', listURL = 'http://127.0.0.1:8082'}) {
   const authenticate = async header => {
     if (typeof header !== 'string' || !header.startsWith('Bearer ') || header.length < 8) return null;
     const review = await kube('/apis/authentication.k8s.io/v1/tokenreviews', {apiVersion: 'authentication.k8s.io/v1',
       kind: 'TokenReview', spec: {token: header.slice(7), audiences: [audience]}});
     const user = review?.status?.authenticated && !review.status.error ? review.status.user : null;
-    // Only ServiceAccounts of this Mailbox's namespace may call it.
-    return user?.username?.startsWith(`system:serviceaccount:${namespace}:`) ? user : null;
+    // Only ServiceAccounts of this Mailbox's namespace may call it, and only
+    // the pinned Agent's worker when the Mailbox has an agentRef.
+    if (!user?.username?.startsWith(`system:serviceaccount:${namespace}:`)) return null;
+    return !caller || user.username === caller ? user : null;
   };
   const allowed = async (user, verb) => {
     const review = await kube('/apis/authorization.k8s.io/v1/subjectaccessreviews', {apiVersion: 'authorization.k8s.io/v1',
@@ -158,6 +160,7 @@ export function createMailboxMcpServer({namespace, mailbox, address = '', displa
 if (process.argv[1]?.endsWith('/mailbox/mcp.js')) {
   const env = process.env;
   createMailboxMcpServer({namespace: env.AGENT_NAMESPACE, mailbox: env.MAILBOX_NAME, address: env.MAILBOX_ADDRESS || '',
-    displayName: env.MAILBOX_DISPLAY_NAME || '', smtp: env.MAILBOX_SMTP === 'true', imap: env.MAILBOX_IMAP === 'true'})
+    displayName: env.MAILBOX_DISPLAY_NAME || '', smtp: env.MAILBOX_SMTP === 'true', imap: env.MAILBOX_IMAP === 'true',
+    caller: env.MAILBOX_CALLER || ''})
     .listen(Number(env.MCP_PORT || 8080));
 }

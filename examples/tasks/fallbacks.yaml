@@ -4,20 +4,6 @@
 apiVersion: codemowers.cloud/v1alpha1
 kind: Task
 metadata:
-  name: alert-triage
-  namespace: agents
-spec:
-  agentRef: matmlazi
-  title: Alert triage
-  objective: >-
-    Review verified Alertmanager notifications for this cluster. Keep distinct
-    fingerprints and Slack threads separate until a human confirms a link.
-    Investigate using cluster read access and report the evidence before changes.
-  suspend: false
----
-apiVersion: codemowers.cloud/v1alpha1
-kind: Task
-metadata:
   name: communications
   namespace: agents
 spec:

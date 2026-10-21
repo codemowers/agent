@@ -994,15 +994,13 @@ function spinner() {
   return element;
 }
 
+// Idle shutdown and the retention policy matter only while the worker idles;
+// other worker states already show in the timeline and the Task list.
 function idleCountdownText(task, now = Date.now()) {
-  // Idle shutdown and the retention policy matter only while the worker idles.
   const retained = 'Task retained until deleted';
-  if (task.phase === 'Pending') return 'Worker pending';
-  if (task.phase !== 'Running' || !task.workerPod) return 'Worker stopped';
+  if (task.phase !== 'Running' || !task.workerPod || task.activity !== 'idle' || task.suspended) return '';
   const timeout = Number(task.idleSeconds);
-  if (task.activity === 'working') return 'Worker working';
-  if (task.activity !== 'idle') return 'Worker starting';
-  if (timeout === 0) return 'Worker stopping';
+  if (timeout === 0) return '';
   const completedAt = Date.parse(task.lastResultAt || '');
   if (!Number.isFinite(completedAt) || !Number.isFinite(timeout)) return `Worker idle · shutdown time unavailable · ${retained}`;
   const remaining = Math.max(0, Math.ceil((completedAt + timeout * 1000 - now) / 1000));
@@ -1046,8 +1044,7 @@ function renderDetail(task) {
   const heading = document.createElement('div'); heading.className = 'chat-heading';
   const title = document.createElement('h2'); title.textContent = task.title || task.name;
   const idle = document.createElement('div'); idle.className = 'task-idle';
-  const busy = taskBusy(task);
-  const updateIdle = () => { idle.replaceChildren(...busy ? [spinner()] : [], idleCountdownText(task)); };
+  const updateIdle = () => { idle.textContent = idleCountdownText(task); idle.hidden = !idle.textContent; };
   updateIdle();
   if (task.phase === 'Running' && task.activity === 'idle' && task.workerPod && task.lastResultAt && task.idleSeconds > 0) {
     const deadline = new Date(Date.parse(task.lastResultAt) + task.idleSeconds * 1000);

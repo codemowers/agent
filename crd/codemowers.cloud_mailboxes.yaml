@@ -38,6 +38,13 @@ spec:
                 - rule: '!has(self.smtp) || !has(self.smtp.sentCopy) || !self.smtp.sentCopy.enabled || has(self.imap)'
                   message: SMTP Sent copies require IMAP on the same Mailbox
               properties:
+                agentRef:
+                  description: >-
+                    Same-namespace Agent the Mailbox is pinned to. Only its workers get the
+                    Mailbox MCP, and only while RBAC grants send or read. Absent, RBAC alone
+                    decides, so several Agents can share the Mailbox.
+                  type: string
+                  maxLength: 253
                 address:
                   description: Public mailbox address, also the default SMTP From and Reply-To address.
                   type: string

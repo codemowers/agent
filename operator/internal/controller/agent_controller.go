@@ -570,7 +570,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 
 	podName := workerPodName(agentsv1alpha1.ResourcePrefix(agent), task.Name, randSuffix())
 	sa := agentsv1alpha1.WorkerServiceAccount(agent)
-	pod := r.buildWorkerPod(podName, task, agent, sa, r.authorizedMailboxes(ctx, task.Namespace, sa))
+	pod := r.buildWorkerPod(podName, task, agent, sa, r.authorizedMailboxes(ctx, agent, task.Namespace, sa))
 
 	if err := r.Create(ctx, pod); err != nil {
 		// Admission/quota errors are often transient or fixable by the user;
@@ -873,7 +873,7 @@ func workerExitDescription(pod *corev1.Pod) string {
 // authorizedMailboxes lists the namespace's Mailboxes on which the worker
 // ServiceAccount holds the send or read verb. RBAC is the only attachment
 // knob; an RBAC change reaches a worker with its next Pod.
-func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, namespace, sa string) []string {
+func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv1alpha1.Agent, namespace, sa string) []string {
 	var mailboxes agentsv1alpha1.MailboxList
 	if err := r.List(ctx, &mailboxes, client.InNamespace(namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "list Mailboxes for worker attachment")
@@ -881,6 +881,9 @@ func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, namespace, sa 
 	}
 	var names []string
 	for _, mailbox := range mailboxes.Items {
+		if mailbox.Spec.AgentRef != "" && mailbox.Spec.AgentRef != agent.Name {
+			continue
+		}
 		for _, verb := range []string{"send", "read"} {
 			review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
 				User:   "system:serviceaccount:" + namespace + ":" + sa,
@@ -942,6 +945,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		{Name: "AGENT_WORKER_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}},
 		{Name: "AGENT_NAME", Value: agent.Name},
 		{Name: "AGENT_RESOURCE_PREFIX", Value: agent.Spec.ResourcePrefix},
+		{Name: "AGENT_INSTRUCTIONS", Value: agent.Spec.Instructions},
 		{Name: "AGENT_MODE", Value: "task-worker"},
 		{Name: "AGENT_IDLE_SECONDS", Value: strconv.FormatInt(int64(taskIdleSeconds(task, agent)), 10)},
 		{Name: "AGENT_TASK_GENERATION", Value: strconv.FormatInt(task.Generation, 10)},

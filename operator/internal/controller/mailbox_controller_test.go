@@ -45,7 +45,7 @@ func TestMailboxPodKeepsCredentialsInSeparateContainers(t *testing.T) {
 		SMTP: &agentsv1alpha1.MailSMTP{Host: "smtp.example.test", CredentialsSecretRef: agentsv1alpha1.MailSecretRef{Name: "outbound", UsernameKey: "user", PasswordKey: "pass"}},
 	}}
 	r := &MailboxReconciler{Scheme: scheme, Image: "example.test/mailbox@sha256:abc", AMQPURL: "amqp://broker:5672/%2F"}
-	pod, err := r.mailboxPod(mailbox)
+	pod, err := r.mailboxPod(mailbox, "")
 	if err != nil {
 		t.Fatal(err)
 	}

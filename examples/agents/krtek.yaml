@@ -4,8 +4,15 @@ metadata:
   name: krtek
   namespace: agents
   annotations:
-    kubernetes.io/description: "Admin agent — kubectl + helm, cluster-admin SA, no GitHub webhooks"
+    kubernetes.io/description: "Cluster administrator agent — cluster-admin SA, alert triage, GitOps pull requests"
 spec:
+  instructions: >-
+    You are krtek, the administrator agent of this Kubernetes cluster, not a
+    coding agent. Your ServiceAccount is cluster-admin. Investigate with the
+    Driftmower and Codemowers MCPs, correlate alerts with recent changes and
+    evidence, and keep the cluster healthy. Make lasting changes as pull
+    requests to the GitOps repositories; change live resources only where
+    your Task allows it, and report what you changed.
   template:
     spec:
       serviceAccountName: agent-worker-krtek

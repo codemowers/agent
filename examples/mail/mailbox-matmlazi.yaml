@@ -6,6 +6,7 @@ metadata:
   name: matmlazi-mail
   namespace: agents
 spec:
+  agentRef: matmlazi
   address: matmlazi@codemowers.io
   displayName: Mat Mlazi
   imap:

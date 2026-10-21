@@ -189,7 +189,9 @@ requests and limits from `Agent.spec.resources` are also copied into new Tasks
 as `Task.spec.resources`; Task edits replace the Pod, while Agent edits affect
 new Tasks. A same-backend Task model ID change is sent over RabbitMQ and starts
 a new native session epoch; backend or credential changes replace the Pod.
-Task titles are short display names in `Task.spec.title`. The initial
+An optional `Agent.spec.instructions` describes the Agent's role, such as
+cluster administrator, and leads every worker turn's prompt; changes reach the
+next worker Pod. Task titles are short display names in `Task.spec.title`. The initial
 worker prompt asks the worker to summarize the objective and set its own title through the
 execution-bound Agent MCP; only the operator writes the Task spec. The Task
 metadata name remains the stable ID, and the UI updates on Task watch events.
@@ -392,10 +394,14 @@ checkout configuration or event routing. Fallback intake Tasks do not claim
 the thread reference.
 Unmatched mail goes to a configured intake Task unless a forge-verified
 TaskPolicy creates one; headers alone never create a Task. A MailBinding alone
-decides which Agent a Mailbox wakes. Kubernetes RBAC is the only mail access
-knob: when creating a worker Pod, the operator attaches each same-namespace
-Mailbox on which a SubjectAccessReview grants the worker ServiceAccount verb
-`send` or `read`. Attachment is excluded from the worker configuration hash,
+decides which Agent a Mailbox wakes. Kubernetes RBAC decides mail access: when
+creating a worker Pod, the operator attaches each same-namespace Mailbox on
+which a SubjectAccessReview grants the worker ServiceAccount verb `send` or
+`read`, so several Agents can share a Mailbox. An optional
+`Mailbox.spec.agentRef` pins it to one Agent: other Agents' workers are not
+attached even when RBAC, such as cluster-admin, would allow it, and the `mcp`
+container accepts only that Agent's worker ServiceAccount. A missing Agent
+leaves the pinned Mailbox accepting no worker. Attachment is excluded from the worker configuration hash,
 so RBAC changes reach a worker with its next Pod. Each attached Mailbox becomes
 the worker MCP endpoint `mailbox-<name>`, served by an `mcp` container in that Mailbox's Pod behind
 the operator-owned Service `agent-mailbox-<name>`. Workers present a projected

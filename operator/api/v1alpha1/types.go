@@ -48,6 +48,10 @@ type AgentSpec struct {
 	// +kubebuilder:validation:MaxLength=30
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$`
 	ResourcePrefix string `json:"resourcePrefix,omitempty"`
+	// Instructions describes the Agent's role to its workers and leads every
+	// turn's prompt; changes reach the next worker Pod.
+	// +kubebuilder:validation:MaxLength=4096
+	Instructions string `json:"instructions,omitempty"`
 	// Resources is copied to each new Task and controls the worker container's
 	// requests and limits. If absent, the worker template resources are used.
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`

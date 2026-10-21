@@ -19,6 +19,10 @@ type MailboxList struct {
 	Items           []Mailbox `json:"items"`
 }
 type MailboxSpec struct {
+	// AgentRef pins the Mailbox to one same-namespace Agent: only its workers
+	// get the Mailbox MCP, and only while RBAC also grants them send or read.
+	// Without it, RBAC alone decides, so several Agents can share a Mailbox.
+	AgentRef    string    `json:"agentRef,omitempty"`
 	Address     string    `json:"address"`
 	DisplayName string    `json:"displayName,omitempty"`
 	IMAP        *MailIMAP `json:"imap,omitempty"`

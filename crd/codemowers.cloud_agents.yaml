@@ -62,6 +62,10 @@ spec:
                 format: int32
                 minimum: 0
                 maximum: 86400
+              instructions:
+                description: Role description that leads every worker turn's prompt; changes reach the next worker Pod.
+                type: string
+                maxLength: 4096
               resourcePrefix:
                 description: >-
                   Resource name prefix the worker is confined to by admission, also starting
