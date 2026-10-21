@@ -27,7 +27,7 @@ Apply with the context and namespace from `skaffold.env`. Files under
    Creating a Task starts a worker turn.
 3. `webhooks/protocol-*.yaml`, then the `binding-*.yaml` and `policy-*.yaml`
    files you use. Set each protocol's `allowedKeyPrefixes` to your hosts.
-4. `mail/rbac.yaml`, then the Mailbox and MailBinding.
+4. `mail/rbac.yaml`, then the Mailboxes and MailBinding.
 5. `devices/blueos.yaml`.
 
 Steps outside these files:

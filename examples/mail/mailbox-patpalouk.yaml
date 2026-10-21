@@ -1,0 +1,29 @@
+# One account serves IMAP and SMTP through the patpalouk-mail Secret.
+apiVersion: codemowers.cloud/v1alpha1
+kind: Mailbox
+metadata:
+  name: patpalouk-mail
+  namespace: agents
+spec:
+  agentRef: patpalouk
+  address: patpalouk@codemowers.io
+  displayName: Pat Palouk
+  imap:
+    host: mail.codemowers.io
+    port: 993
+    tls: auto
+    folder: INBOX
+    credentialsSecretRef:
+      name: patpalouk-mail
+      usernameKey: username
+      passwordKey: password
+  smtp:
+    host: mail.codemowers.io
+    port: 465
+    tls: auto
+    sentCopy:
+      enabled: true
+    credentialsSecretRef:
+      name: patpalouk-mail
+      usernameKey: username
+      passwordKey: password
