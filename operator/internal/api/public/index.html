@@ -270,6 +270,8 @@ let lastAgents = '', lastTasks = '';
 let currentUser = null, drafts = [], chosenDraft = '';
 let discoveredModels = [], visibleModels = [], activeModelOption = -1;
 let idleCountdownTimer = null;
+// Streamed text of working turns, kept only in this page; the result stores it.
+const turnTexts = new Map();
 const wakePrompt = 'Review the Task objective and recent context, then continue with the next useful step.';
 const status = message => { document.getElementById('authStatus').textContent = message; };
 function taskFromURL() {
@@ -667,6 +669,10 @@ async function runEvents() {
         while ((boundary = pending.indexOf('\n\n')) !== -1) {
           const frame = pending.slice(0, boundary);
           pending = pending.slice(boundary + 2);
+          if (/^event: turn$/m.test(frame)) {
+            showTurnText(frame.match(/^data: (.*)$/m)?.[1]);
+            continue;
+          }
           const event = frame.match(/^event: (agents|tasks)$/m)?.[1];
           if (event) {
             const previousAgents = lastAgents;
@@ -686,6 +692,17 @@ async function runEvents() {
       retry = Math.min(retry * 2, 30000);
       await load(); // Reconcile changes missed while disconnected.
     }
+  }
+}
+
+function showTurnText(data) {
+  let text;
+  try { text = JSON.parse(data); } catch { return; }
+  if (typeof text?.namespace !== 'string' || typeof text.task !== 'string' || typeof text.content !== 'string') return;
+  const key = text.namespace + '/' + text.task;
+  turnTexts.set(key, {turn: text.turn, content: text.content});
+  if (selectedDetail && selectedDetail.namespace + '/' + selectedDetail.name === key && taskBusy(selectedDetail) === 'Working') {
+    renderDetail(selectedDetail);
   }
 }
 
@@ -1246,6 +1263,16 @@ function renderDetail(task) {
     bubble.append(meta, body); history.append(bubble);
   }
   const busy = taskBusy(task);
+  if (busy !== 'Working') turnTexts.delete(currentKey);
+  const live = turnTexts.get(currentKey);
+  if (busy === 'Working' && live) {
+    const bubble = document.createElement('article'); bubble.className = 'message agent';
+    const meta = document.createElement('div'); meta.className = 'message-meta';
+    const author = document.createElement('span'); author.className = 'message-author'; author.textContent = task.agentName;
+    const body = document.createElement('div'); body.className = 'message-body';
+    body.append(window.renderAgentMarkdown(live.content));
+    meta.append(author, document.createTextNode(' · working')); bubble.append(meta, body); history.append(bubble);
+  }
   if (busy === 'Working') {
     const typing = document.createElement('div'); typing.className = 'message agent typing';
     typing.setAttribute('role', 'status'); typing.setAttribute('aria-label', 'Agent is working');

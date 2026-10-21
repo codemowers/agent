@@ -3,15 +3,19 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	"github.com/codemowers/agent/operator/internal/rabbitmq"
 	amqp "github.com/rabbitmq/amqp091-go"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -19,11 +23,15 @@ import (
 type coalesceBroker struct {
 	messages []rabbitmq.PromptMessage
 	queues   []string
+	deleted  []string
 }
 
 func (*coalesceBroker) DeclareQueue(string) error      { return nil }
 func (*coalesceBroker) QueueDepth(string) (int, error) { return 0, nil }
-func (*coalesceBroker) DeleteQueue(string) error       { return nil }
+func (b *coalesceBroker) DeleteQueue(queue string) error {
+	b.deleted = append(b.deleted, queue)
+	return nil
+}
 func (b *coalesceBroker) Publish(_ context.Context, queue string, msg rabbitmq.PromptMessage) error {
 	b.messages = append(b.messages, msg)
 	b.queues = append(b.queues, queue)
@@ -212,5 +220,68 @@ func TestTaskDeliveryReceiptSurvivesInterleavedEvents(t *testing.T) {
 	}
 	if taskHasDelivery(task, "delivery-4") {
 		t.Fatal("new delivery mistaken for duplicate")
+	}
+}
+
+func TestRetryEventBoundsFailuresButWaitsOutOutages(t *testing.T) {
+	noSleep := func(context.Context, time.Duration) bool { return true }
+	calls := 0
+	handled, err := retryEvent(context.Background(), func(context.Context) error {
+		calls++
+		return errors.New("invalid binding")
+	}, noSleep)
+	if handled || err == nil || calls != maxEventFailures {
+		t.Fatalf("permanent failure: handled=%v err=%v calls=%d", handled, err, calls)
+	}
+	calls = 0
+	unavailable := apierrors.NewServiceUnavailable("down")
+	handled, err = retryEvent(context.Background(), func(context.Context) error {
+		if calls++; calls < maxEventFailures*3 {
+			return fmt.Errorf("get Task: %w", unavailable)
+		}
+		return nil
+	}, noSleep)
+	if !handled || err != nil {
+		t.Fatalf("outage dropped the event: handled=%v err=%v calls=%d", handled, err, calls)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if handled, _ := retryEvent(ctx, func(context.Context) error { return unavailable },
+		func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil }); handled {
+		t.Fatal("cancelled retry reported success")
+	}
+}
+
+func TestTaskQueueFollowsTaskDeletion(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(task).Build()
+	broker := &coalesceBroker{}
+	r := &TaskReconciler{Client: k8s, AMQP: broker}
+	ctx := context.Background()
+	if err := r.trackTaskQueue(ctx, task, "old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.trackTaskQueue(ctx, task, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	var deleting agentsv1alpha1.Task
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), &deleting); err != nil {
+		t.Fatalf("finalizer did not hold the Task: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(task)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(broker.deleted) != 2 || broker.deleted[0] != "old" || broker.deleted[1] != "new" {
+		t.Fatalf("queues not deleted: %v", broker.deleted)
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), &deleting); !apierrors.IsNotFound(err) {
+		t.Fatalf("Task kept after its queue was deleted: %v", err)
 	}
 }

@@ -53,6 +53,27 @@ spec:
             type: object
           spec:
             properties:
+              access:
+                description: >-
+                  When set, alone decides which dashboard users may read this Agent's
+                  Tasks, create them and prompt or control them; an empty access admits
+                  nobody. Absent leaves the decision to Kubernetes RBAC get on the Agent.
+                type: object
+                properties:
+                  users:
+                    description: OIDC subject (sub) claims of the operator's issuer.
+                    type: array
+                    maxItems: 256
+                    x-kubernetes-list-type: set
+                    items:
+                      type: string
+                  groups:
+                    description: OIDC groups claim values.
+                    type: array
+                    maxItems: 256
+                    x-kubernetes-list-type: set
+                    items:
+                      type: string
               suspended:
                 description: Suspended makes newly created Tasks start suspended. Existing Tasks keep their own suspend state.
                 type: boolean

@@ -4,12 +4,15 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -125,19 +128,70 @@ func (c *EventConsumer) consume(ctx context.Context, ch *amqp.Channel) error {
 			if !ok {
 				return fmt.Errorf("delivery channel closed")
 			}
-			if err := c.handle(ctx, d); err != nil {
-				logger.Error(err, "handle message", "routingKey", d.RoutingKey, "messageId", d.MessageId)
-				// API or broker failures are transient. Preserve the event for a retry.
-				d.Nack(false, true)
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-time.After(time.Second):
+			handled, err := retryEvent(ctx, func(ctx context.Context) error {
+				err := c.handle(ctx, d)
+				if err != nil {
+					logger.Error(err, "handle message", "routingKey", d.RoutingKey, "messageId", d.MessageId)
 				}
+				return err
+			}, sleepContext)
+			if ctx.Err() != nil {
+				return nil // The broker redelivers the unacknowledged event.
+			}
+			if !handled {
+				// The intake queue's policy dead-letters it to agent.intake.dead.
+				logger.Error(err, "dead-lettering event", "routingKey", d.RoutingKey, "messageId", d.MessageId)
+				d.Nack(false, false)
 				continue
 			}
 			d.Ack(false)
 		}
+	}
+}
+
+// maxEventFailures bounds attempts at an event that fails for a reason other
+// than an unavailable API server or broker, so it cannot block the shared
+// intake queue.
+const maxEventFailures = 6
+
+// retryEvent handles an event in place with backoff. Outages retry until they
+// end, preserving order; other failures give up after maxEventFailures.
+func retryEvent(ctx context.Context, handle func(context.Context) error, sleep func(context.Context, time.Duration) bool) (bool, error) {
+	backoff, failures := time.Second, 0
+	for {
+		err := handle(ctx)
+		if err == nil {
+			return true, nil
+		}
+		if !transientEventError(err) {
+			if failures++; failures >= maxEventFailures {
+				return false, err
+			}
+		}
+		if !sleep(ctx, backoff) {
+			return false, ctx.Err()
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func transientEventError(err error) bool {
+	var netErr net.Error
+	var amqpErr *amqp.Error
+	return apierrors.IsServerTimeout(err) || apierrors.IsTimeout(err) || apierrors.IsTooManyRequests(err) ||
+		apierrors.IsServiceUnavailable(err) || apierrors.IsInternalError(err) || apierrors.IsUnexpectedServerError(err) ||
+		apierrors.IsConflict(err) || errors.As(err, &netErr) || errors.As(err, &amqpErr) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, amqp.ErrClosed)
+}
+
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 

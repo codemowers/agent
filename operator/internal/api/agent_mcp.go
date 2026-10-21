@@ -165,6 +165,8 @@ func agentTools() []map[string]any {
 			"title": map[string]any{"type": "string", "maxLength": 120}}, "title"),
 		mcpTool("report_progress", "Record a bounded progress note on this worker Pod's own Task.", map[string]any{
 			"id": map[string]string{"type": "string"}, "content": map[string]string{"type": "string"}}, "id", "content"),
+		mcpTool("report_turn_progress", "Stream the current worker Pod's working turn text to open views of its own Task.", map[string]any{
+			"id": map[string]string{"type": "string"}, "content": map[string]string{"type": "string"}}, "id", "content"),
 		mcpTool("report_turn_result", "Report the current worker Pod's completed turn to its own Task.", map[string]any{
 			"id": map[string]string{"type": "string"}, "summary": map[string]string{"type": "string"},
 			"completedAt": map[string]string{"type": "string"}, "backend": map[string]string{"type": "string"},
@@ -396,6 +398,19 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			return nil, err
 		}
 		return mcpText(map[string]any{"recorded": true})
+	case "report_turn_progress":
+		// Streamed text goes only to open browsers; the conversation stores the
+		// turn's full text once its result arrives.
+		var arg struct{ ID, Content string }
+		if decodeToolArgs(raw, &arg) != nil || arg.ID == "" || len(arg.ID) > 160 || strings.TrimSpace(arg.Content) == "" || len(arg.Content) > 8000 {
+			return nil, errors.New("invalid turn progress")
+		}
+		if scope.Task.Status.Activity == "working" && h.Events != nil {
+			if topic := taskAgentTopic(&scope.Task); topic != "" {
+				h.Events.publishTurn(topic, turnText{Namespace: scope.Task.Namespace, Task: scope.Task.Name, Turn: arg.ID, Content: arg.Content})
+			}
+		}
+		return mcpText(map[string]any{"streamed": true})
 	case "report_turn_result":
 		var arg struct {
 			ID, Summary, CompletedAt, Backend, Model string

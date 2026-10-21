@@ -17,7 +17,8 @@ import (
 )
 
 // Events forwards Kubernetes cache changes as invalidation hints. API reads
-// remain authoritative, and no CR content is sent through this stream.
+// remain authoritative, and no CR content is sent through this stream. The
+// one exception is a working turn's streamed text, which exists only here.
 type Events struct {
 	Cache ctrlcache.Cache
 	mu    sync.Mutex
@@ -28,6 +29,16 @@ type Events struct {
 type eventSubscriber struct {
 	agents map[string]bool
 	ch     chan string
+	turns  chan turnText
+}
+
+// turnText carries a working turn's whole text so far, so a dropped frame
+// costs nothing once a later one arrives.
+type turnText struct {
+	Namespace string `json:"namespace"`
+	Task      string `json:"task"`
+	Turn      string `json:"turn"`
+	Content   string `json:"content"`
 }
 
 func NewEvents(cache ctrlcache.Cache) *Events {
@@ -36,14 +47,14 @@ func NewEvents(cache ctrlcache.Cache) *Events {
 
 func agentTopic(namespace, name string) string { return namespace + "/" + name }
 
-func (e *Events) subscribe(agents map[string]bool) (<-chan string, func()) {
+func (e *Events) subscribe(agents map[string]bool) (<-chan string, <-chan turnText, func()) {
 	e.mu.Lock()
 	e.next++
 	id := e.next
-	sub := &eventSubscriber{agents: agents, ch: make(chan string, 2)}
+	sub := &eventSubscriber{agents: agents, ch: make(chan string, 2), turns: make(chan turnText, 8)}
 	e.subs[id] = sub
 	e.mu.Unlock()
-	return sub.ch, func() {
+	return sub.ch, sub.turns, func() {
 		e.mu.Lock()
 		delete(e.subs, id)
 		e.mu.Unlock()
@@ -63,6 +74,23 @@ func (e *Events) publish(kind, topic string) {
 		}
 	}
 }
+
+func (e *Events) publishTurn(topic string, text turnText) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, sub := range e.subs {
+		if !sub.agents[topic] {
+			continue
+		}
+		select {
+		case sub.turns <- text:
+		default: // A slow browser catches up with the next frame.
+		}
+	}
+}
+
+// NeedLeaderElection keeps the stream serving browsers on every replica.
+func (e *Events) NeedLeaderElection() bool { return false }
 
 func (e *Events) Start(ctx context.Context) error {
 	agents, err := e.Cache.GetInformer(ctx, &agentsv1alpha1.Agent{})
@@ -242,7 +270,7 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, fmt.Errorf("streaming unavailable"), http.StatusServiceUnavailable)
 		return
 	}
-	updates, unsubscribe := h.Events.subscribe(topics)
+	updates, turns, unsubscribe := h.Events.subscribe(topics)
 	defer unsubscribe()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
@@ -265,6 +293,9 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, ": heartbeat\n\n") //nolint:errcheck
 		case kind := <-updates:
 			fmt.Fprintf(w, "event: %s\ndata: {}\n\n", kind) //nolint:errcheck
+		case text := <-turns:
+			data, _ := json.Marshal(text)
+			fmt.Fprintf(w, "event: turn\ndata: %s\n\n", data) //nolint:errcheck
 		}
 		flusher.Flush()
 	}

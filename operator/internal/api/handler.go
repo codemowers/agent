@@ -60,6 +60,9 @@ func (h *Handler) taskQueue(ctx context.Context, task *agentsv1alpha1.Task) (str
 	return agentsv1alpha1.TaskQueue(task, &agent), nil
 }
 
+// NeedLeaderElection serves the UI and worker MCP on every replica.
+func (h *Handler) NeedLeaderElection() bool { return false }
+
 func (h *Handler) Start(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithName("api")
 	srv := &http.Server{Addr: h.Addr, Handler: h.routes()}
@@ -216,6 +219,9 @@ func (h *Handler) authenticatedCaller(w http.ResponseWriter, r *http.Request) (c
 }
 
 func (h *Handler) canAccessAgent(r *http.Request, identity caller, agent *agentsv1alpha1.Agent) (bool, error) {
+	if agent.Spec.Access != nil {
+		return agent.Spec.Access.Admits(identity.subject, identity.groups), nil
+	}
 	if h.Reviewer == nil {
 		return false, fmt.Errorf("Kubernetes authorization unavailable")
 	}

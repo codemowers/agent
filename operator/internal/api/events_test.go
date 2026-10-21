@@ -26,7 +26,7 @@ func (w *flushingRecorder) Flush() {
 
 func TestEventTopicsOnlyWakeSubscribedAgent(t *testing.T) {
 	events := NewEvents(nil)
-	updates, unsubscribe := events.subscribe(map[string]bool{"team/developer": true})
+	updates, turns, unsubscribe := events.subscribe(map[string]bool{"team/developer": true})
 	defer unsubscribe()
 	events.publish("tasks", "team/support")
 	select {
@@ -41,6 +41,16 @@ func TestEventTopicsOnlyWakeSubscribedAgent(t *testing.T) {
 	events.publish("agents", "")
 	if event := <-updates; event != "agents" {
 		t.Fatalf("expected Agent invalidation, got %q", event)
+	}
+	events.publishTurn("team/support", turnText{Task: "other", Content: "hidden"})
+	events.publishTurn("team/developer", turnText{Task: "own", Content: "Reading"})
+	if text := <-turns; text.Task != "own" || text.Content != "Reading" {
+		t.Fatalf("expected own turn text, got %+v", text)
+	}
+	select {
+	case text := <-turns:
+		t.Fatalf("unsubscribed Agent streamed %+v", text)
+	default:
 	}
 }
 

@@ -6,6 +6,9 @@ metadata:
   annotations:
     kubernetes.io/description: "Agent for laurivosandi; no Kubernetes API access"
 spec:
+  # Only these dashboard users may read and prompt this Agent's Tasks.
+  access:
+    users: [laurivosandi]
   idleSeconds: 3600
   resources:
     requests:
@@ -23,22 +26,11 @@ spec:
           allowPrivilegeEscalation: false
           runAsNonRoot: true
           runAsUser: 1000
-        env:
-          - name: PATH
-            value: /opt/tools/kubectl/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
         volumeMounts:
           - name: workspace
             mountPath: /workspace
           - name: cache
             mountPath: /home/user/.cache
-          - name: kubectl
-            mountPath: /opt/tools/kubectl
-            readOnly: true
-      volumes:
-        - name: kubectl
-          image:
-            reference: registry.k8s.io/kubectl:v1.36.3
-            pullPolicy: IfNotPresent
   volumeClaimTemplates:
     - metadata:
         name: workspace

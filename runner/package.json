@@ -3,7 +3,7 @@
   "private": true,
   "description": "Coding CLIs preinstalled in the worker image",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.304",
+    "@anthropic-ai/claude-code": "2.1.306",
     "@openai/codex": "0.163.0"
   }
 }

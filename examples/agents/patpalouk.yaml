@@ -6,6 +6,9 @@ metadata:
   annotations:
     kubernetes.io/description: "Customer support agent — no cluster access, read-only root, no PVC"
 spec:
+  # Only these dashboard users may read and prompt this Agent's Tasks.
+  access:
+    users: [laurivosandi]
   template:
     spec:
       serviceAccountName: agent-worker-patpalouk

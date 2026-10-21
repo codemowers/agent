@@ -24,7 +24,7 @@ type fakeVerifier struct{}
 
 func (fakeVerifier) Verify(_ context.Context, token string) (caller, error) {
 	if token == "valid" {
-		return caller{user: "https://issuer/#alice", groups: []string{"system:authenticated"}}, nil
+		return caller{user: "https://issuer/#alice", subject: "alice", groups: []string{"system:authenticated"}}, nil
 	}
 	return caller{}, fmt.Errorf("invalid token")
 }
@@ -161,6 +161,31 @@ func TestTaskAPIRequiresIdentityAndAgentAccess(t *testing.T) {
 	}
 	if task.Spec.Model == nil || task.Spec.Model.Name != "claude-selected" || task.Spec.Model.Backend != "claude" {
 		t.Fatalf("Task did not copy selected model with Agent backend: %+v", task.Spec.Model)
+	}
+}
+
+func TestAgentAccessOverridesRBAC(t *testing.T) {
+	h := &Handler{Reviewer: fakeReviewer{}}
+	alice := caller{user: "https://issuer/#alice", subject: "alice", groups: []string{"system:authenticated", "admins"}}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	for _, tc := range []struct {
+		name   string
+		agent  string
+		access *agentsv1alpha1.AgentAccess
+		want   bool
+	}{
+		{"RBAC without ACL", "developer", nil, true},
+		{"no RBAC without ACL", "support", nil, false},
+		{"ACL user without RBAC", "support", &agentsv1alpha1.AgentAccess{Users: []string{"alice"}}, true},
+		{"ACL group without RBAC", "support", &agentsv1alpha1.AgentAccess{Groups: []string{"admins"}}, true},
+		{"ACL excludes despite RBAC", "developer", &agentsv1alpha1.AgentAccess{Users: []string{"bob"}}, false},
+		{"empty ACL admits nobody", "developer", &agentsv1alpha1.AgentAccess{}, false},
+		{"issuer identity is not a subject", "support", &agentsv1alpha1.AgentAccess{Users: []string{"https://issuer/#alice"}}, false},
+	} {
+		agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: tc.agent, Namespace: "team"}, Spec: agentsv1alpha1.AgentSpec{Access: tc.access}}
+		if got, err := h.canAccessAgent(r, alice, agent); err != nil || got != tc.want {
+			t.Errorf("%s: got %v, %v", tc.name, got, err)
+		}
 	}
 }
 

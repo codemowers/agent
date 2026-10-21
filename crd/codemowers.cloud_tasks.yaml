@@ -415,6 +415,9 @@ spec:
                 type: integer
               workerPodName:
                 type: string
+              queue:
+                description: Declared RabbitMQ Task queue, deleted with the Task even after its Agent is gone.
+                type: string
               workerPodUID:
                 type: string
               workspacePVCs:

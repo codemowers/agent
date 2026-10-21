@@ -36,6 +36,9 @@ or prevent abuse of credentials and data available to an agent.
 - Keep CSS organized by component, shared defaults and one block per responsive
   breakpoint. Remove superseded rules and unused selectors. Preserve desktop,
   mobile drawer, composer, dialog and read-only layouts.
+- Bump the Go `WorkerPodVersion` with any change to the runner image, worker
+  code or operator/worker contract, so active worker Pods are replaced on the
+  next operator rollout instead of running the old image until idle shutdown.
 - Run focused verification appropriate to the change. Do not add redundant tests
   or repeat broad checks after relevant checks pass without a new concern.
 - Product drafts describe requirements, application design and acceptance criteria.
@@ -166,7 +169,15 @@ than their Agent's, so that a hosted tenant's worker memory counts against a
 quota outside its sandbox, is not implemented yet. Their hosts are `dashboard` and `webhook`. The chart owns
 the `agent-events` RabbitmqCluster (`rabbitmq.name`) and its intake topology;
 the intake Queue uses `deletionPolicy: retain` so queued events survive its
-removal.
+removal. The operator retries an event in place, waiting out API server and
+broker outages; after six other failures it rejects the event, which a Policy
+dead-letters to the retained `agent.intake.dead` queue so the shared intake
+queue keeps flowing. Controllers and the event consumer run only on the holder
+of the `agent-operator.codemowers.cloud` Lease; the API and Agent MCP serve on
+every replica, though streamed turn text reaches only browsers connected to the
+replica the worker calls. A Task records its queue in `Task.status.queue`
+under the `codemowers.cloud/task-queue` finalizer, which deletes the queue
+with the Task even after its Agent is gone.
 The Device bridge is a separate Go Deployment and image named `agent-devices`.
 The existing operator Ingress routes `/devices/` to its Service, while workers
 call its `/mcp` endpoint in the harness namespace. A namespaced Device CR
@@ -225,7 +236,11 @@ internal port 8083. The operator verifies a rotating audience-bound Pod token,
 live Pod UID and current Task/Agent ownership. Result writes update only the
 owning Task's status, including the backend, configured model ID, turn duration
 and available input, output and cache token counts on its conversation bubble;
-there is no live worker log polling. A terminal Pod's
+there is no live worker log polling. During a turn the worker sends the main
+agent's text so far, bounded to its last 8000 bytes, through `report_turn_progress`;
+the operator forwards it only to authorized open event streams as a live agent
+bubble and writes no status. The turn result stores that full text. Claude turns run with background tasks disabled because
+a headless turn's exit would kill background subagents and lose their results. A terminal Pod's
 termination message remains a fallback summary. The Task view links structured
 GitHub and Gitea references. Prometheus Task gauges are rebuilt from Task
 status at scrape time with namespace, phase and activity labels.
@@ -441,13 +456,15 @@ Signed pings are acknowledged without routing; the operator records bounded
 per-Task delivery receipts. Anyone holding a receiver's secret can forge its
 deliveries, and GitHub and Gitea sign neither headers nor a timestamp, so keep
 secrets with the receiver owner. The operator UI uses its native OIDCClient owner
-Secret and bearer tokens, then SubjectAccessReview for Agent `get` rights.
+Secret and bearer tokens. When an Agent sets `spec.access`, its `users` (OIDC
+`sub` claims) and `groups` alone decide who may read, create, prompt and control
+its Tasks, and an empty `access` admits nobody; otherwise SubjectAccessReview
+for Agent `get` rights decides.
 Its API streams Agent and Task cache invalidations to the browser over an
 authenticated HTTP event stream. Task subscriptions are scoped to Agent names
-and checked with SubjectAccessReview; the browser fetches changed state from
+and checked the same way; the browser fetches changed state from
 the access-controlled API. RabbitMQ is not exposed to browsers.
-`spec.access` remains in the CRD but is ignored; the operator removes its old
-owned access RoleBindings. Grant read access through Kubernetes RBAC.
+The operator removes the RoleBindings it once owned for Agent access.
 Helm has no organization source or group allowlist configuration.
 The Gitea protocol copies the original issue or pull request title and body,
 when present, into each bounded normalized event before appending comment text.
@@ -538,7 +555,7 @@ tar, unzip, ripgrep, jq, curl, gh 2.102.0, tea 0.16.0, Helm 3.22.1, Python with
 venv/pip, make and C++ build tools. The forge CLIs and Helm are verified upstream
 static binaries copied into the runner image; their versions do not come from
 Helm values or Agent specs. Do not mount Alpine/musl tool images onto PATH. Preinstall
-both npm CLIs pinned in `runner/package.json`: Claude Code 2.1.304 and Codex 0.163.0. Install Skaffold
+both npm CLIs pinned in `runner/package.json`: Claude Code 2.1.306 and Codex 0.163.0. Install Skaffold
 v2.25.0 from its binary release. Workers do not apt-install tools at startup.
 
 Kubectl and Go come from OCI image volumes. Kubectl uses upstream
@@ -612,7 +629,7 @@ native Claude/Codex and Kubernetes API requests retain their own user agents.
 | `set_task_title` | Short display title for the worker's own Task |
 | `report_progress` | Bounded semantic progress/question, not completion |
 | `list_tasks`, `get_task`, `create_task`, `complete_task` | Same-Agent Task discovery, deduplicated creation and audited completion |
-| `report_turn_start`, `report_turn_result`, `report_mcp_probe` | Worker runtime reporting; not for model use |
+| `report_turn_start`, `report_turn_progress`, `report_turn_result`, `report_mcp_probe` | Worker runtime reporting; not for model use |
 
 Each `mailbox-<name>` MCP provides `send_email` (verb `send`) and
 `list_mail_folders`, `list_mailbox_messages` and `read_mail_message`

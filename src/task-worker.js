@@ -56,6 +56,13 @@ async function callAgentOperator(name, args = {}) {
   }
 }
 
+// Keep the end of a turn's text within the operator's 8000-byte message bound.
+export function boundedTail(text, limit = 8000) {
+  const bytes = Buffer.from(text);
+  if (bytes.length <= limit) return text;
+  return `…${bytes.subarray(bytes.length - limit + 3).toString('utf8').replace(/^\uFFFD+/, '')}`;
+}
+
 const reportTurnResult = result => callAgentOperator('report_turn_result',
   {id: result.id, summary: result.summary, completedAt: result.completedAt,
     backend: result.backend, model: result.model, metrics: result.metrics});
@@ -289,12 +296,28 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
     args.push(prompt);
   }
   const cliEnv = {...process.env, HOME: join(root, 'home')};
+  // A headless turn ends at the CLI's result; background agents would die with it.
+  if (backend === 'claude') cliEnv.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1';
   if (backend === 'codex') cliEnv.CODEX_API_KEY = process.env.OPENAI_API_KEY;
   const child = spawn(backend, args, {cwd: repo, env: cliEnv, detached: true, stdio: ['ignore', 'pipe', 'pipe']});
   const interrupt = () => { if (child.exitCode === null) signalChild(child, 'SIGTERM'); };
   signal.addEventListener('abort', interrupt, {once: true});
   let summary = '', reportedSession = sessionId, nativeFailure = false, usage, apiDurationMs;
   let stderr = '';
+  // Stream the turn's text so far to open Task views; a send in flight
+  // coalesces later text, and failures only cost the live view. The result
+  // stores the same full text in the conversation.
+  let streamed = '', streaming = Promise.resolve(), streamQueued = false;
+  const stream = text => {
+    if (!text.trim()) return;
+    streamed = boundedTail(streamed ? `${streamed}\n\n${text}` : text);
+    if (streamQueued) return;
+    streamQueued = true;
+    streaming = streaming.then(() => {
+      streamQueued = false;
+      return callAgentOperator('report_turn_progress', {id, content: streamed});
+    }).catch(() => {});
+  };
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
   const exited = new Promise((resolve, reject) => {
     child.on('error', reject);
@@ -310,6 +333,9 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
           reportedSession = event.session_id;
           await recordSession(reportedSession);
         }
+        if (event.type === 'assistant' && !event.parent_tool_use_id) {
+          stream((event.message?.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n'));
+        }
         if (event.type === 'result') {
           summary = event.result || '';
           nativeFailure = Boolean(event.is_error);
@@ -321,15 +347,19 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
           reportedSession = event.thread_id;
           await recordSession(reportedSession);
         }
-        if (event.type === 'item.completed' && event.item?.type === 'agent_message') summary = event.item.text || '';
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
+          summary = event.item.text || '';
+          stream(summary);
+        }
         if (event.type === 'turn.completed') usage = event.usage;
         if (event.type === 'turn.failed') nativeFailure = true;
       }
     }
     const exitCode = await exited;
+    await streaming;
     const result = {id, messageId: message.messageId, startedAt, completedAt: new Date().toISOString(), backend, model: model || '', exitCode: exitCode || (nativeFailure ? 1 : 0),
       metrics: turnMetrics(Math.round(performance.now() - turnStarted), usage, apiDurationMs),
-      sessionId: reportedSession, summary: summary.slice(0, 8000) || (stderr ? 'CLI failed; see private worker stderr.' : 'No final report')};
+      sessionId: reportedSession, summary: (nativeFailure && summary ? boundedTail(summary) : streamed || boundedTail(summary)) || (stderr ? 'CLI failed; see private worker stderr.' : 'No final report')};
     await writeFile(join(root, 'executions', `${id}.result.json`), JSON.stringify(result), {mode: 0o600});
     return result;
   } finally {

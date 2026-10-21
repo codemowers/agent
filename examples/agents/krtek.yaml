@@ -6,6 +6,9 @@ metadata:
   annotations:
     kubernetes.io/description: "Cluster administrator agent — cluster-admin SA, alert triage, GitOps pull requests"
 spec:
+  # Only these dashboard users may read and prompt this Agent's Tasks.
+  access:
+    users: [laurivosandi]
   instructions: >-
     You are krtek, the administrator agent of this Kubernetes cluster, not a
     coding agent. Your ServiceAccount is cluster-admin. Investigate with the

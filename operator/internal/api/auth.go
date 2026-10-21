@@ -22,6 +22,7 @@ import (
 
 type caller struct {
 	user     string
+	subject  string
 	groups   []string
 	name     string
 	username string
@@ -192,5 +193,5 @@ func (v *oidcVerifier) Verify(ctx context.Context, raw string) (caller, error) {
 	if username == "" {
 		username = sub
 	}
-	return caller{user: v.issuer + "#" + sub, groups: groups, name: name, username: username}, nil
+	return caller{user: v.issuer + "#" + sub, subject: sub, groups: groups, name: name, username: username}, nil
 }

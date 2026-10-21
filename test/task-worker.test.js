@@ -4,7 +4,15 @@ import {mkdtemp, mkdir, readFile, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {EventEmitter} from 'node:events';
-import {seedTaskContext, nativeSessionExists, brokerConnect} from '../src/task-worker.js';
+import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail} from '../src/task-worker.js';
+
+test('Turn text keeps its end within the byte bound', () => {
+  assert.equal(boundedTail('short'), 'short');
+  const text = 'ä'.repeat(5000) + 'conclusion';
+  const tail = boundedTail(text);
+  assert.ok(Buffer.byteLength(tail) <= 8000);
+  assert.ok(tail.startsWith('…ä') && tail.endsWith('conclusion'));
+});
 
 test('Task context preserves edits and native session recovery sees retained state', async () => {
   const root = await mkdtemp(join(tmpdir(), 'agent-task-worker-'));

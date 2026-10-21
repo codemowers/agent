@@ -90,6 +90,12 @@ func main() {
 			BindAddress: metricsAddr,
 		},
 		HealthProbeBindAddress: probeAddr,
+		// Controllers and the event consumer run only on the Lease holder, so a
+		// rollout never runs two reconcilers; the API serves on every replica.
+		LeaderElection:                true,
+		LeaderElectionID:              "agent-operator.codemowers.cloud",
+		LeaderElectionNamespace:       os.Getenv("POD_NAMESPACE"),
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")

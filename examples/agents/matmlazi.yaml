@@ -6,6 +6,9 @@ metadata:
   annotations:
     kubernetes.io/description: "Developer agent — full toolchain, Kube RBAC, topic branches"
 spec:
+  # Only these dashboard users may read and prompt this Agent's Tasks.
+  access:
+    users: [laurivosandi]
   idleSeconds: 3600
   resources:
     requests:

@@ -75,6 +75,9 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 		out.MCPEndpoints = make([]MCPEndpoint, len(in.MCPEndpoints))
 		copy(out.MCPEndpoints, in.MCPEndpoints)
 	}
+	if in.Access != nil {
+		out.Access = &AgentAccess{Users: append([]string(nil), in.Access.Users...), Groups: append([]string(nil), in.Access.Groups...)}
+	}
 }
 
 func copyStringMap(in map[string]string) map[string]string {

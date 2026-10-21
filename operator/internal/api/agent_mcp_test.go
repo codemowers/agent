@@ -99,6 +99,16 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	if response := call("valid", "report_progress", `{"id":"progress-1","content":"Reading files"}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
 		t.Fatalf("own progress rejected: %s", response.Body.String())
 	}
+	if response := call("valid", "report_turn_progress", `{"id":"turn-1","content":"Reading the operator"}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatalf("turn progress rejected: %s", response.Body.String())
+	}
+	var streamed agentsv1alpha1.Task
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &streamed); err != nil {
+		t.Fatal(err)
+	}
+	if streamed.Status.Progress.Summary == "Reading the operator" || len(streamed.Status.Conversation) != 1 {
+		t.Fatalf("turn progress written to Task status: %+v", streamed.Status)
+	}
 	var foreignAfterProgress agentsv1alpha1.Task
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(foreign), &foreignAfterProgress); err != nil {
 		t.Fatal(err)

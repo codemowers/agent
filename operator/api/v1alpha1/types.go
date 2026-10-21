@@ -4,6 +4,7 @@ package v1alpha1
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,6 +82,36 @@ type AgentSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	MCPEndpoints []MCPEndpoint `json:"mcpEndpoints,omitempty"`
+
+	// Access, when set, alone decides which dashboard users may read this
+	// Agent's Tasks, create them and prompt or control them; an empty Access
+	// admits nobody. Without it, Kubernetes RBAC get on the Agent decides.
+	Access *AgentAccess `json:"access,omitempty"`
+}
+
+// AgentAccess names dashboard users by the operator's OIDC issuer identity.
+type AgentAccess struct {
+	// Users are OIDC subject (sub) claims.
+	// +kubebuilder:validation:MaxItems=256
+	// +listType=set
+	Users []string `json:"users,omitempty"`
+	// Groups are OIDC groups claim values.
+	// +kubebuilder:validation:MaxItems=256
+	// +listType=set
+	Groups []string `json:"groups,omitempty"`
+}
+
+// Admits reports whether Access names the subject or one of its groups.
+func (a *AgentAccess) Admits(subject string, groups []string) bool {
+	if subject != "" && slices.Contains(a.Users, subject) {
+		return true
+	}
+	for _, group := range groups {
+		if slices.Contains(a.Groups, group) {
+			return true
+		}
+	}
+	return false
 }
 
 // VolumeClaimTemplate follows StatefulSet's metadata/spec claim shape.
@@ -330,9 +361,12 @@ type TaskStatus struct {
 	WorkspacePVCs  map[string]string `json:"workspacePVCs,omitempty"`
 	SessionEpoch   int               `json:"sessionEpoch,omitempty"`
 	QueueMessageID string            `json:"queueMessageId,omitempty"`
-	Progress       *TaskProgress     `json:"progress,omitempty"`
-	MCPProbe       *MCPProbeStatus   `json:"mcpProbe,omitempty"`
-	Conversation   []TaskMessage     `json:"conversation,omitempty"`
+	// Queue is the declared RabbitMQ Task queue, deleted with the Task even
+	// after its Agent is gone.
+	Queue        string          `json:"queue,omitempty"`
+	Progress     *TaskProgress   `json:"progress,omitempty"`
+	MCPProbe     *MCPProbeStatus `json:"mcpProbe,omitempty"`
+	Conversation []TaskMessage   `json:"conversation,omitempty"`
 	// LastMessageAt survives bounded conversation history and changes only for
 	// user, external, and agent messages, never lifecycle status entries.
 	LastMessageAt *metav1.Time `json:"lastMessageAt,omitempty"`

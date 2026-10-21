@@ -23,6 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -127,6 +128,9 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		}
 		return ctrl.Result{}, err
 	}
+	if !task.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.finalizeTaskQueue(ctx, &task)
+	}
 
 	// Resolve owning Agent.
 	agent, err := r.ownerAgent(ctx, &task)
@@ -178,6 +182,51 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	return result, err
 }
 
+const taskQueueFinalizer = "codemowers.cloud/task-queue"
+
+// trackTaskQueue records a Task queue before it is declared, so deleting the
+// Task deletes the queue too.
+func (r *TaskReconciler) trackTaskQueue(ctx context.Context, task *agentsv1alpha1.Task, queue string) error {
+	if !controllerutil.ContainsFinalizer(task, taskQueueFinalizer) {
+		patch := client.MergeFrom(task.DeepCopy())
+		controllerutil.AddFinalizer(task, taskQueueFinalizer)
+		if err := r.Patch(ctx, task, patch); err != nil {
+			return fmt.Errorf("add Task queue finalizer: %w", err)
+		}
+	}
+	if task.Status.Queue == queue {
+		return nil
+	}
+	patch := client.MergeFrom(task.DeepCopy())
+	previous := task.Status.Queue
+	task.Status.Queue = queue
+	if err := r.Status().Patch(ctx, task, patch); err != nil {
+		return fmt.Errorf("record Task queue: %w", err)
+	}
+	if previous != "" && r.AMQP != nil {
+		// A changed worker ServiceAccount renames the queue.
+		return r.AMQP.DeleteQueue(previous)
+	}
+	return nil
+}
+
+func (r *TaskReconciler) finalizeTaskQueue(ctx context.Context, task *agentsv1alpha1.Task) error {
+	if !controllerutil.ContainsFinalizer(task, taskQueueFinalizer) {
+		return nil
+	}
+	if task.Status.Queue != "" {
+		if r.AMQP == nil {
+			return fmt.Errorf("RabbitMQ unavailable to delete Task queue")
+		}
+		if err := r.AMQP.DeleteQueue(task.Status.Queue); err != nil {
+			return fmt.Errorf("delete Task queue: %w", err)
+		}
+	}
+	patch := client.MergeFrom(task.DeepCopy())
+	controllerutil.RemoveFinalizer(task, taskQueueFinalizer)
+	return r.Patch(ctx, task, patch)
+}
+
 // flushCoalescedWake sends one follow-up prompt after a burst of authenticated
 // events. The Task annotations are durable, so a restart does not lose the
 // deadline or the need for a trailing wake.
@@ -203,6 +252,9 @@ func (r *TaskReconciler) flushCoalescedWake(ctx context.Context, task *agentsv1a
 			return 0, err
 		}
 		queue := agentsv1alpha1.TaskQueue(task, agent)
+		if err := r.trackTaskQueue(ctx, task, queue); err != nil {
+			return 0, err
+		}
 		if err := r.AMQP.DeclareQueue(queue); err != nil {
 			return 0, err
 		}
@@ -536,6 +588,9 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 	// operator restart.
 	if r.AMQP != nil {
 		queue := agentsv1alpha1.TaskQueue(task, agent)
+		if err := r.trackTaskQueue(ctx, task, queue); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.AMQP.DeclareQueue(queue); err != nil {
 			return ctrl.Result{}, fmt.Errorf("declare task queue: %w", err)
 		}
@@ -765,7 +820,7 @@ const (
 	runtimePublishedGenerationAnnotation = "codemowers.cloud/runtime-published-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "7"
+	WorkerPodVersion = "8"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {

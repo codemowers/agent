@@ -86,3 +86,39 @@ spec:
   rabbitmqClusterReference:
     name: {{ include "agent.rabbitmq" . }}
     namespace: {{ .Release.Namespace }}
+---
+# Events the operator gives up on after bounded retries, kept for inspection
+# instead of blocking the intake queue.
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: {{ include "agent.rabbitmqPrefix" . }}-intake-dead-queue
+  labels:
+    skaffold.dev/keep: 'true'
+spec:
+  name: agent.intake.dead
+  durable: true
+  type: quorum
+  deletionPolicy: retain
+  vhost: /
+  rabbitmqClusterReference:
+    name: {{ include "agent.rabbitmq" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Policy
+metadata:
+  name: {{ include "agent.rabbitmqPrefix" . }}-intake-dead-letter
+  labels:
+    skaffold.dev/keep: 'true'
+spec:
+  name: agent-intake-dead-letter
+  pattern: '^agent\.intake$'
+  applyTo: queues
+  definition:
+    dead-letter-exchange: ''
+    dead-letter-routing-key: agent.intake.dead
+  vhost: /
+  rabbitmqClusterReference:
+    name: {{ include "agent.rabbitmq" . }}
+    namespace: {{ .Release.Namespace }}
