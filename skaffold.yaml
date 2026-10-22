@@ -38,6 +38,8 @@ manifests:
     releases:
       - name: agent-operator
         chartPath: chart
+        # The chart has no dependencies, and dep build rejects --kube-version.
+        skipBuildDependencies: true
         setValues:
           operator.host: dashboard
           webhook.host: webhook
