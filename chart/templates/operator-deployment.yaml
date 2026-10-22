@@ -167,6 +167,8 @@ spec:
               containerPort: 8080
             - name: agent-mcp
               containerPort: 8083
+            - name: wake
+              containerPort: 8084
             - name: metrics
               containerPort: 8081
             - name: healthz
@@ -186,6 +188,8 @@ spec:
                   fieldPath: metadata.namespace
             - name: AGENT_DEVICES_ENABLED
               value: {{ .Values.deviceBridge.enabled | quote }}
+            - name: AGENT_FEEDS_ENABLED
+              value: {{ .Values.feeds.enabled | quote }}
             - name: AGENT_WEBHOOK_ENABLED
               value: {{ .Values.webhook.enabled | quote }}
             {{- if .Values.webhook.enabled }}
@@ -249,6 +253,9 @@ spec:
     - name: agent-mcp
       port: 8083
       targetPort: agent-mcp
+    - name: wake
+      port: 8084
+      targetPort: wake
     - name: metrics
       port: 8081
       targetPort: metrics

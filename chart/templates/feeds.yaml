@@ -1,0 +1,140 @@
+{{- if .Values.feeds.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-feeds
+---
+{{- if .Values.bootstrapRbac }}
+# The crawler reads Feeds and FeedBindings of every namespace and may wake any
+# Task; FeedBindings, written by namespace administrators, name Tasks of their
+# own namespace only. TokenReview authenticates workers on its MCP.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-agent-feeds
+rules:
+  - apiGroups: [codemowers.cloud]
+    resources: [feeds, feedbindings]
+    verbs: [get, list, watch]
+  - apiGroups: [codemowers.cloud]
+    resources: [feeds/status]
+    verbs: [update]
+  - apiGroups: [codemowers.cloud]
+    resources: [tasks]
+    verbs: [wake]
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-agent-feeds
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-agent-feeds
+subjects:
+  - kind: ServiceAccount
+    name: agent-feeds
+    namespace: {{ .Release.Namespace }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-feeds
+  labels:
+    skaffold.dev/keep: "true"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: agent-feeds
+  template:
+    metadata:
+      labels:
+        app: agent-feeds
+    spec:
+      serviceAccountName: agent-feeds
+      hostUsers: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: crawler
+          image: {{ include "agent.image" (list . "agent-feeds") }}
+          imagePullPolicy: Always
+          env:
+            - name: AGENT_WAKE_URL
+              value: {{ printf "http://%s.%s.svc.cluster.local:8084" .Release.Name .Release.Namespace | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: probes
+              containerPort: 8081
+          resources: {{ toYaml .Values.feeds.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+          volumeMounts:
+            - name: wake-token
+              mountPath: /var/run/agent-wake
+              readOnly: true
+      volumes:
+        - name: wake-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: agent-operator-wake
+                  expirationSeconds: 3600
+                  path: token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-feeds
+spec:
+  selector:
+    app: agent-feeds
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-feeds
+spec:
+  podSelector:
+    matchLabels:
+      app: agent-feeds
+  policyTypes: [Ingress]
+  ingress:
+    # Workers of every Agent namespace.
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchExpressions:
+              - key: codemowers.cloud/task
+                operator: Exists
+              - key: codemowers.cloud/agent
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}

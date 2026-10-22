@@ -26,6 +26,10 @@ build:
       context: operator
       kaniko:
         dockerfile: devicebridge/Dockerfile
+    - image: agent-feeds
+      context: operator
+      kaniko:
+        dockerfile: feeds/Dockerfile
     - image: agent-mailbox
       context: .
       kaniko:
@@ -39,6 +43,7 @@ manifests:
           operator.host: dashboard
           webhook.host: webhook
           rabbitmq.name: agent-events
+          feeds.enabled: true
           imageRepository: ""
         setValueTemplates:
           operator.apiResource: "{{.AGENT_OPERATOR_API_RESOURCE}}"

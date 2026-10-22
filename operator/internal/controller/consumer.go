@@ -234,7 +234,15 @@ func (c *EventConsumer) recordArrival(ctx context.Context, task *agentsv1alpha1.
 	open, inWindow := task.Status.Events.Windows[a.Key]
 	inWindow = inWindow && now.Before(open.Until.Time)
 	if a.Wake && !inWindow && c.AMQP != nil {
-		if err := c.AMQP.Publish(ctx, agentsv1alpha1.TaskQueue(task, agent), rabbitmq.PromptMessage{
+		// A Task that never ran a worker has no queue yet.
+		queue := agentsv1alpha1.TaskQueue(task, agent)
+		if err := trackTaskQueue(ctx, c.Client, c.AMQP, task, queue); err != nil {
+			return err
+		}
+		if err := c.AMQP.DeclareQueue(queue); err != nil {
+			return err
+		}
+		if err := c.AMQP.Publish(ctx, queue, rabbitmq.PromptMessage{
 			Type: "event", Body: a.Text, RoutingKey: a.Key, MessageID: a.Receipt, ReceivedAt: now.UnixMilli(),
 		}); err != nil {
 			return err
@@ -249,8 +257,8 @@ func (c *EventConsumer) recordArrival(ctx context.Context, task *agentsv1alpha1.
 			return nil
 		}
 		transport := "webhook/" + a.Source
-		if a.Source == "imap" {
-			transport = "imap"
+		if a.Source == "imap" || a.Source == "wake" {
+			transport = a.Source
 		}
 		at := metav1.NewTime(now)
 		current.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: "event-" + a.Receipt, Role: "external", Source: transport,

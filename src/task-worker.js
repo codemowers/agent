@@ -158,6 +158,45 @@ export function codexMcpArgs(mcpServers) {
     ['-c', `mcp_servers.${name}.url=${JSON.stringify(server.url)}`]);
 }
 
+const secretArgument = /token|secret|password|passwd|credential|authorization|api[-_]?key|private[-_]?key/i;
+
+// toolArguments renders a call's arguments for open Task views: compact,
+// bounded, with secret-looking values masked.
+export function toolArguments(input) {
+  const masked = JSON.stringify(input ?? {}, (key, value) => key && secretArgument.test(key) ? '***' : value);
+  return masked.length > 500 ? masked.slice(0, 499) + '…' : masked;
+}
+
+// mcpToolCalls tracks the main agent's MCP calls from CLI events. Claude names
+// them mcp__<server>__<tool>; Codex reports mcp_tool_call items.
+export function mcpToolCalls(backend) {
+  const calls = new Map();
+  const update = event => {
+    let changed = false;
+    if (backend === 'claude' && !event.parent_tool_use_id) {
+      for (const block of event.message?.content || []) {
+        if (event.type === 'assistant' && block.type === 'tool_use' && block.name?.startsWith('mcp__')) {
+          const [server, ...tool] = block.name.slice('mcp__'.length).split('__');
+          calls.set(block.id, {server, tool: tool.join('__'), args: toolArguments(block.input), status: 'running'});
+          changed = true;
+        }
+        if (event.type === 'user' && block.type === 'tool_result' && calls.has(block.tool_use_id)) {
+          calls.get(block.tool_use_id).status = block.is_error ? 'failed' : 'done';
+          changed = true;
+        }
+      }
+    }
+    if (backend === 'codex' && (event.type === 'item.started' || event.type === 'item.completed') && event.item?.type === 'mcp_tool_call') {
+      const item = event.item;
+      calls.set(item.id, {server: item.server, tool: item.tool, args: toolArguments(item.arguments),
+        status: item.status === 'completed' && !item.error ? 'done' : item.status === 'failed' || item.error ? 'failed' : 'running'});
+      changed = true;
+    }
+    return changed;
+  };
+  return {update, list: () => [...calls.values()].slice(-30)};
+}
+
 export function disabledMcpNames(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 32 || !value.every(name => typeof name === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(name))) {
@@ -313,16 +352,21 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
   // Stream the turn's text so far to open Task views; a send in flight
   // coalesces later text, and failures only cost the live view. The result
   // stores the same full text in the conversation.
+  // MCP calls with their arguments travel the same way and are never stored.
   let streamed = '', streaming = Promise.resolve(), streamQueued = false;
-  const stream = text => {
-    if (!text.trim()) return;
-    streamed = boundedTail(streamed ? `${streamed}\n\n${text}` : text);
+  const tools = mcpToolCalls(backend);
+  const send = () => {
     if (streamQueued) return;
     streamQueued = true;
     streaming = streaming.then(() => {
       streamQueued = false;
-      return callAgentOperator('report_turn_progress', {id, content: streamed});
+      return callAgentOperator('report_turn_progress', {id, content: streamed, tools: tools.list()});
     }).catch(() => {});
+  };
+  const stream = text => {
+    if (!text.trim()) return;
+    streamed = boundedTail(streamed ? `${streamed}\n\n${text}` : text);
+    send();
   };
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
   const exited = new Promise((resolve, reject) => {
@@ -334,6 +378,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
       await appendFile(logPath, line + '\n', {mode: 0o600});
       let event;
       try { event = JSON.parse(line); } catch { continue; }
+      if (tools.update(event)) send();
       if (backend === 'claude') {
         if (event.session_id && event.session_id !== reportedSession) {
           reportedSession = event.session_id;

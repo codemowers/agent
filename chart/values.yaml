@@ -20,6 +20,18 @@ deviceBridge:
 # bootstrapRbac: apply Roles, ClusterRoles and bindings (ServiceAccounts always exist).
 # Requires cluster-admin or namespace-admin. Set false when deploying from
 # a worker pod that lacks RBAC write permissions; apply RBAC separately first.
+# Feed crawler: polls public Feeds and wakes the Tasks of their FeedBindings
+# through the operator's wake endpoint.
+feeds:
+  enabled: false
+  resources:
+    requests:
+      memory: 32Mi
+      cpu: 10m
+    limits:
+      memory: 128Mi
+      cpu: 200m
+
 bootstrapRbac: true
 
 webhook:

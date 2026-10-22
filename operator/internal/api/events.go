@@ -39,6 +39,28 @@ type turnText struct {
 	Task      string `json:"task"`
 	Turn      string `json:"turn"`
 	Content   string `json:"content"`
+	// Tools are the turn's MCP calls with bounded, masked arguments.
+	Tools []turnTool `json:"tools,omitempty"`
+}
+
+type turnTool struct {
+	Server string `json:"server"`
+	Tool   string `json:"tool"`
+	Args   string `json:"args,omitempty"`
+	Status string `json:"status"`
+}
+
+func validTurnTools(tools []turnTool) bool {
+	if len(tools) > 30 {
+		return false
+	}
+	for _, tool := range tools {
+		if !mcpNamePattern.MatchString(tool.Server) || tool.Tool == "" || len(tool.Tool) > 128 || len(tool.Args) > 600 ||
+			tool.Status != "running" && tool.Status != "done" && tool.Status != "failed" {
+			return false
+		}
+	}
+	return true
 }
 
 func NewEvents(cache ctrlcache.Cache) *Events {

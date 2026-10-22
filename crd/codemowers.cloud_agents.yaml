@@ -168,8 +168,8 @@ spec:
                   - url
                   type: object
                   x-kubernetes-validations:
-                  - rule: "!(self.name in ['agent_operator', 'devices']) && !self.name.startsWith('mailbox-')"
-                    message: agent_operator, devices and mailbox-* are provided by the operator
+                  - rule: "!(self.name in ['agent_operator', 'devices', 'feeds']) && !self.name.startsWith('mailbox-')"
+                    message: agent_operator, devices, feeds and mailbox-* are provided by the operator
                 type: array
                 x-kubernetes-list-type: map
                 x-kubernetes-list-map-keys:

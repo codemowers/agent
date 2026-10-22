@@ -1,0 +1,72 @@
+# Wakes krtek-platform-watch weekly. The ServiceAccount holds only the custom
+# verb "wake" on that Task; the operator checks it per request.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-watch-schedule
+  namespace: agents
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-watch-schedule
+  namespace: agents
+rules:
+  - apiGroups: [codemowers.cloud]
+    resources: [tasks]
+    resourceNames: [krtek-platform-watch]
+    verbs: [wake]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-watch-schedule
+  namespace: agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: platform-watch-schedule
+subjects:
+  - kind: ServiceAccount
+    name: platform-watch-schedule
+    namespace: agents
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-watch-schedule
+  namespace: agents
+spec:
+  schedule: "0 6 * * 1"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: platform-watch-schedule
+          restartPolicy: OnFailure
+          containers:
+            - name: wake
+              image: docker.io/curlimages/curl:8.22.0
+              command:
+                - sh
+                - -ec
+                - |
+                  # Retries within the same week reuse the key and wake once.
+                  week=$(date -u +%G-W%V)
+                  curl -sSf \
+                    -H "Authorization: Bearer $(cat /run/token)" \
+                    -H "Idempotency-Key: platform-watch-$week" \
+                    -d "{\"text\":\"Weekly platform watch ($week)\"}" \
+                    http://agent-operator.codemowers-agent-system.svc.cluster.local:8084/internal/v1/namespaces/agents/tasks/krtek-platform-watch/wake
+              volumeMounts:
+                - name: wake-token
+                  mountPath: /run
+          volumes:
+            - name: wake-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      audience: agent-operator-wake
+                      path: token

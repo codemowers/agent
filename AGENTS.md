@@ -91,6 +91,7 @@ routing authority to an LLM.
 | `agent-operator` | Go Task API, reconciliation, status, routing and Agent MCP |
 | `agent-operator-webhook` | Signed and restricted internal event intake |
 | `agent-mailbox` | Namespaced IMAP/SMTP Pod with protocol-scoped Secret projections and its own MCP |
+| `agent-feeds` | Optional public feed crawler that wakes bound Tasks through the operator |
 | `codemowers/agent` | Ubuntu coding runner, native CLIs, workspace/session adapter and project tools |
 | Task PVC | Git checkout, edits, artifacts, caches, progress notes and native CLI session files |
 | Existing platform | Namespace ordering, tenancy, quotas, isolation, workload admission, storage and registry |
@@ -244,7 +245,10 @@ and available input, output and cache token counts on its conversation bubble;
 there is no live worker log polling. During a turn the worker sends the main
 agent's text so far, bounded to its last 8000 bytes, through `report_turn_progress`;
 the operator forwards it only to authorized open event streams as a live agent
-bubble and writes no status. The turn result stores that full text. Claude turns run with background tasks disabled because
+bubble and writes no status. The same call carries the main agent's last 30
+MCP calls: server, tool, running/done/failed and arguments as compact JSON of
+at most 500 characters with secret-looking keys masked. The live bubble lists
+them while the turn runs; call results are never streamed or stored. The turn result stores that full text. Claude turns run with background tasks disabled because
 a headless turn's exit would kill background subagents and lose their results. A terminal Pod's
 termination message remains a fallback summary. The Task view links structured
 GitHub and Gitea references. Prometheus Task gauges are rebuilt from Task
@@ -306,6 +310,34 @@ event HMAC key. Only the operator uses the default broker user. The broker
 fetches the ServiceAccount issuer's JWKS from `rabbitmq.jwksURI`: the API
 server on k3s, which must allow anonymous discovery, or the public issuer on
 EKS.
+In-cluster callers wake a Task directly through the operator's wake endpoint,
+`POST /internal/v1/namespaces/<namespace>/tasks/<task>/wake` on internal port
+8084, which every replica serves and the Ingress never routes. The caller
+presents a projected ServiceAccount token for audience `agent-operator-wake`;
+the operator checks it with TokenReview and requires a SubjectAccessReview for
+the custom verb `wake` on that Task, which nobody holds by default. The JSON
+body carries optional `text` (4 KiB, the conversation line and prompt) and
+`url`. An `Idempotency-Key` header records repeats of the same caller and key
+once. The arrival is attributed to the caller's ServiceAccount with source
+`wake`, coalesces per caller like a binding, and is only recorded on a
+completed Task. A CronJob calling it gives a Task a schedule.
+Namespaced `Feed` resources name a public `https` RSS, Atom or JSON Feed and an
+interval (default one hour). The optional `agent-feeds` crawler
+(`feeds.enabled`), a single Recreate replica without leader election, polls
+each Feed with conditional requests through a client that reaches only public
+addresses, and keeps the validators and the 100 most recently seen items (ID,
+title, link, published time and the time it first saw them) in `Feed.status`;
+items outlive the feed's own window. A Feed's first recorded items are seeded
+silently. Each later poll that finds new items wakes the Task named by every
+same-namespace `FeedBinding` once, with the new items' titles, links and their
+first-seen time, under an idempotency key derived from them. Status advances
+only after every wake succeeded. The crawler's ServiceAccount holds `wake` on
+Tasks cluster-wide, so namespace administrators decide through FeedBindings
+which of their Tasks a Feed wakes. With the crawler enabled, every worker gets
+its `feeds` MCP endpoint and a projected token for audience `agent-feeds-mcp`;
+`list_feeds` and `list_feed_items` (by feed, `since` a first-seen time, limit)
+cover the Feeds of the worker's own namespace, and the worker reads linked
+pages it finds relevant.
 Alertmanager notifications posted to Slack by a bot and human replies in that
 thread are separate arrivals. Ignore bot echoes, preserve a human reply's
 Slack source and receipt, and never merge by similar text, labels, or channel.
@@ -528,13 +560,13 @@ The chart names its images `<imageRepository>/<name>:latest` by default, with
 `imageRepository` defaulting to `ghcr.io/codemowers`. Skaffold sets it empty
 and replaces the bare names with its builds, including the `image` key of the
 `agent-worker-image` and `agent-mailbox-image` ConfigMaps the operator reads.
-Release charts set `imageDigests` for all five harness images to the final
+Release charts set `imageDigests` for all six harness images to the final
 multi-architecture manifest digests, so the packaged references are immutable.
 GitHub Actions builds images and the chart on main/master and publishes both
 images and `oci://ghcr.io/<owner>/charts/agent` only for `v*` tags. There is
 no separate cluster values file. Operator, worker and RabbitMQ defaults live
 in the chart. Published images carry OCI source, revision and version labels.
-Release packaging replaces the chart's empty `imageDigests` map with the five
+Release packaging replaces the chart's empty `imageDigests` map with the six
 final multi-architecture manifest digests and verifies every rendered image
 reference before pushing the chart.
 
@@ -662,6 +694,9 @@ native Claude/Codex and Kubernetes API requests retain their own user agents.
 | `report_progress` | Bounded semantic progress/question, not completion |
 | `list_tasks`, `get_task`, `create_task`, `complete_task` | Same-Agent Task discovery, deduplicated creation and audited completion |
 | `report_turn_start`, `report_turn_progress`, `report_turn_result`, `report_mcp_probe` | Worker runtime reporting; not for model use |
+
+The `feeds` MCP provides `list_feeds` and `list_feed_items` for the Feeds of
+the worker's own namespace when the crawler is enabled.
 
 Each `mailbox-<name>` MCP provides `send_email` (verb `send`) and
 `list_mail_folders`, `list_mailbox_messages` and `read_mail_message`

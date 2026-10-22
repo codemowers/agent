@@ -23,6 +23,8 @@ func init() {
 	SchemeBuilder.Register(&Mailbox{}, &MailboxList{})
 	SchemeBuilder.Register(&MailBinding{}, &MailBindingList{})
 	SchemeBuilder.Register(&Device{}, &DeviceList{})
+	SchemeBuilder.Register(&Feed{}, &FeedList{})
+	SchemeBuilder.Register(&FeedBinding{}, &FeedBindingList{})
 }
 
 // --- Agent ---

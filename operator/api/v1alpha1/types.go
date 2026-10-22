@@ -166,35 +166,46 @@ func MailboxResourceName(mailbox string) string {
 
 type MCPEndpoint struct {
 	// Name identifies the server in CLI tool names, probe results and
-	// Task.spec.disabledMCPs. agent_operator and devices are reserved.
+	// Task.spec.disabledMCPs. agent_operator, devices and feeds are reserved.
 	Name      string `json:"name"`
 	URL       string `json:"url"`
 	TokenFile string `json:"tokenFile,omitempty"`
 	SiteURL   string `json:"siteURL,omitempty"`
 }
 
+// HarnessServices are the optional harness components workers reach over MCP.
+type HarnessServices struct {
+	Devices, Feeds bool
+}
+
 // WorkerMCPEndpoints returns the Agent's endpoints followed by the
-// operator-provided agent_operator and devices endpoints. Agent entries with
-// a reserved name are ignored.
+// operator-provided agent_operator, devices and feeds endpoints. Agent
+// entries with a reserved name are ignored.
 //
 // mailboxes names the Mailboxes the worker ServiceAccount may send or read.
-// The operator and Device bridge run in the harness namespace; Mailboxes run
-// in the Task's namespace.
-func WorkerMCPEndpoints(agent *Agent, harnessNamespace, namespace string, mailboxes []string, devicesEnabled bool) []MCPEndpoint {
-	endpoints := make([]MCPEndpoint, 0, len(agent.Spec.MCPEndpoints)+2)
+// The operator, Device bridge and feed crawler run in the harness namespace;
+// Mailboxes run in the Task's namespace.
+func WorkerMCPEndpoints(agent *Agent, harnessNamespace, namespace string, mailboxes []string, services HarnessServices) []MCPEndpoint {
+	endpoints := make([]MCPEndpoint, 0, len(agent.Spec.MCPEndpoints)+3)
 	for _, endpoint := range agent.Spec.MCPEndpoints {
-		if endpoint.Name != "agent_operator" && endpoint.Name != "devices" {
+		if endpoint.Name != "agent_operator" && endpoint.Name != "devices" && endpoint.Name != "feeds" {
 			endpoints = append(endpoints, endpoint)
 		}
 	}
 	endpoints = append(endpoints, MCPEndpoint{Name: "agent_operator",
 		URL:       OperatorMCPURL(harnessNamespace),
 		TokenFile: "/var/run/agent-operator-mcp/token"})
-	if devicesEnabled {
+	if services.Devices {
 		// Kubernetes RBAC on each Device decides access; the bridge checks it per call.
 		endpoints = append(endpoints, MCPEndpoint{Name: "devices",
 			URL:       "http://agent-devices." + harnessNamespace + ".svc.cluster.local:8080/mcp",
 			TokenFile: "/var/run/agent-devices/token"})
+	}
+	if services.Feeds {
+		// Public feeds of the worker's own namespace; the token names it.
+		endpoints = append(endpoints, MCPEndpoint{Name: "feeds",
+			URL:       "http://agent-feeds." + harnessNamespace + ".svc.cluster.local:8080/mcp",
+			TokenFile: "/var/run/agent-feeds/token"})
 	}
 	// Each Mailbox Pod serves its own MCP and still checks RBAC per call.
 	for _, mailbox := range mailboxes {

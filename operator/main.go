@@ -75,10 +75,12 @@ func main() {
 	var probeAddr string
 	var apiAddr string
 	var mcpAddr string
+	var wakeAddr string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081", "Address for the metrics endpoint.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8082", "Address for health probes.")
 	flag.StringVar(&apiAddr, "api-bind-address", ":8080", "Address for the OIDC web UI and task API.")
 	flag.StringVar(&mcpAddr, "mcp-bind-address", ":8083", "Address for the internal Agent MCP server.")
+	flag.StringVar(&wakeAddr, "wake-bind-address", ":8084", "Address for the internal Task wake endpoint.")
 	opts := zap.Options{Development: os.Getenv("DEBUG") == "true"}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -161,6 +163,7 @@ func main() {
 		AMQPURL:        workerAMQPURL(amqpURL),
 		WorkerImage:    os.Getenv("AGENT_WORKER_IMAGE"),
 		DisableDevices: os.Getenv("AGENT_DEVICES_ENABLED") == "false",
+		EnableFeeds:    os.Getenv("AGENT_FEEDS_ENABLED") == "true",
 		KubectlTag:     kubectlTag,
 		// Only the Pod's metadata.namespace fieldRef supplies this.
 		HarnessNamespace: os.Getenv("POD_NAMESPACE"),
@@ -176,6 +179,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The consumer routes broker events on the leader; any replica can record
+	// wake requests through it.
+	consumer := &controller.EventConsumer{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		AMQPURL:   amqpURL,
+		Queue:     envOrDefault("AMQP_QUEUE", "agent.intake"),
+		Exchange:  envOrDefault("AMQP_EXCHANGE", "agent.intake"),
+		// The webhook receiver publishes as its ServiceAccount; RabbitMQ
+		// verifies the user_id it stamps on each event.
+		WebhookPublisher: os.Getenv("AGENT_WEBHOOK_PUBLISHER"),
+	}
+
+	if amqpMgr != nil {
+		consumer.AMQP = amqpMgr
+	}
+
 	events := api.NewEvents(mgr.GetCache())
 	if err := mgr.Add(events); err != nil {
 		ctrl.Log.Error(err, "unable to add API event stream")
@@ -188,6 +208,9 @@ func main() {
 		AMQP:           amqpMgr,
 		Addr:           apiAddr,
 		MCPAddr:        mcpAddr,
+		WakeAddr:       wakeAddr,
+		Waker:          consumer,
+		AccessReviews:  clientset,
 		Verifier:       verifier,
 		Reviewer:       api.NewSubjectAccessReviewer(clientset),
 		TokenReviews:   authenticationclient.NewForConfigOrDie(mgr.GetConfig()),
@@ -204,17 +227,6 @@ func main() {
 	}
 
 	if amqpURL != "" {
-		consumer := &controller.EventConsumer{
-			Client:    mgr.GetClient(),
-			APIReader: mgr.GetAPIReader(),
-			AMQPURL:   amqpURL,
-			Queue:     envOrDefault("AMQP_QUEUE", "agent.intake"),
-			Exchange:  envOrDefault("AMQP_EXCHANGE", "agent.intake"),
-			AMQP:      amqpMgr,
-			// The webhook receiver publishes as its ServiceAccount; RabbitMQ
-			// verifies the user_id it stamps on each event.
-			WebhookPublisher: os.Getenv("AGENT_WEBHOOK_PUBLISHER"),
-		}
 		if err := mgr.Add(consumer); err != nil {
 			ctrl.Log.Error(err, "unable to add event consumer")
 			os.Exit(1)

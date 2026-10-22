@@ -23,7 +23,10 @@ Files under `*/optional/` are templates with placeholder IDs and URLs.
 
 1. CRDs with `kubectl apply --server-side -f ../crd/`, then `rbac.yaml` and
    `agents/`.
-2. `tasks/fallbacks.yaml`, and optionally `tasks/krtek-capacity-review.yaml`.
+2. `tasks/fallbacks.yaml`, and optionally `tasks/krtek-capacity-review.yaml`
+   and `tasks/krtek-platform-watch.yaml` with its weekly wake,
+   `tasks/krtek-platform-watch-schedule.yaml`, and its feeds,
+   `feeds/platform-watch.yaml`, with the chart's `feeds.enabled`.
    Creating a Task starts a worker turn.
 3. `webhooks/protocol-*.yaml`, the receivers you use, then their bindings and
    policies. Set each protocol's `allowedKeyPrefixes` to your hosts and point

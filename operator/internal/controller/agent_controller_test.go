@@ -535,3 +535,26 @@ func TestUntaggedKubectlImagesFollowServerVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestFeedsCrawlerAddsWorkerEndpointAndToken(t *testing.T) {
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
+	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "worker"}},
+	}}}}
+	r := &TaskReconciler{EnableFeeds: true, HarnessNamespace: "harness"}
+	pod := r.buildWorkerPod("worker", task, agent, "worker", nil)
+	var token bool
+	for _, volume := range pod.Spec.Volumes {
+		token = token || volume.Name == "agent-feeds-token" && volume.Projected.Sources[0].ServiceAccountToken.Audience == "agent-feeds-mcp"
+	}
+	var endpoint bool
+	for _, env := range pod.Spec.Containers[0].Env {
+		endpoint = endpoint || env.Name == "AGENT_MCP_ENDPOINTS" && strings.Contains(env.Value, `"name":"feeds","url":"http://agent-feeds.harness.svc.cluster.local:8080/mcp"`)
+	}
+	if !token || !endpoint {
+		t.Fatalf("feeds MCP not attached: token=%v endpoint=%v", token, endpoint)
+	}
+	if r.workerConfigHash(task, agent) == (&TaskReconciler{}).workerConfigHash(task, agent) {
+		t.Fatal("enabling feeds did not change the worker configuration hash")
+	}
+}

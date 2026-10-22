@@ -33,3 +33,9 @@ spec:
       ports:
         - protocol: TCP
           port: 8083
+    # Any Pod may ask to wake a Task; the endpoint authorizes each request.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8084

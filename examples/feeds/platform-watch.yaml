@@ -1,0 +1,106 @@
+# Public feeds for the platform watch Task. Enable the crawler with the
+# chart's feeds.enabled; each FeedBinding wakes krtek-platform-watch once per
+# poll that finds new items, with their titles and links.
+apiVersion: codemowers.cloud/v1alpha1
+kind: Feed
+metadata:
+  name: lwkd
+  namespace: agents
+spec:
+  url: https://lwkd.info/feed.xml
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: FeedBinding
+metadata:
+  name: lwkd-platform-watch
+  namespace: agents
+spec:
+  feedRef: lwkd
+  taskRef: krtek-platform-watch
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: Feed
+metadata:
+  name: kubernetes-blog
+  namespace: agents
+spec:
+  url: https://kubernetes.io/feed.xml
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: FeedBinding
+metadata:
+  name: kubernetes-blog-platform-watch
+  namespace: agents
+spec:
+  feedRef: kubernetes-blog
+  taskRef: krtek-platform-watch
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: Feed
+metadata:
+  name: kubernetes-cves
+  namespace: agents
+spec:
+  url: https://kubernetes.io/docs/reference/issues-security/official-cve-feed/feed.xml
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: FeedBinding
+metadata:
+  name: kubernetes-cves-platform-watch
+  namespace: agents
+spec:
+  feedRef: kubernetes-cves
+  taskRef: krtek-platform-watch
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: Feed
+metadata:
+  name: kubernetes-releases
+  namespace: agents
+spec:
+  url: https://github.com/kubernetes/kubernetes/releases.atom
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: FeedBinding
+metadata:
+  name: kubernetes-releases-platform-watch
+  namespace: agents
+spec:
+  feedRef: kubernetes-releases
+  taskRef: krtek-platform-watch
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: Feed
+metadata:
+  name: kubernetes-enhancements
+  namespace: agents
+spec:
+  url: https://github.com/kubernetes/enhancements/commits/master.atom
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: FeedBinding
+metadata:
+  name: kubernetes-enhancements-platform-watch
+  namespace: agents
+spec:
+  feedRef: kubernetes-enhancements
+  taskRef: krtek-platform-watch
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: Feed
+metadata:
+  name: ubuntu-security-notices
+  namespace: agents
+spec:
+  url: https://ubuntu.com/security/notices/rss.xml
+  # Keeps only its latest 10 notices, about a day.
+  interval: 15m
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: FeedBinding
+metadata:
+  name: ubuntu-security-notices-platform-watch
+  namespace: agents
+spec:
+  feedRef: ubuntu-security-notices
+  taskRef: krtek-platform-watch

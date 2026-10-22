@@ -118,6 +118,7 @@ type TaskReconciler struct {
 	AMQPURL        string      // injected into worker pods as AMQP_URL
 	WorkerImage    string      // approved runner image injected by deployment/Skaffold
 	DisableDevices bool        // omit Device MCP and token when the bridge is disabled
+	EnableFeeds    bool        // add the feeds MCP and token when the crawler runs
 	// KubectlTag is the API server version, read at startup, that untagged
 	// kubectl image volumes are pinned to.
 	KubectlTag string
@@ -201,10 +202,14 @@ const taskQueueFinalizer = "codemowers.cloud/task-queue"
 // trackTaskQueue records a Task queue before it is declared, so deleting the
 // Task deletes the queue too.
 func (r *TaskReconciler) trackTaskQueue(ctx context.Context, task *agentsv1alpha1.Task, queue string) error {
+	return trackTaskQueue(ctx, r.Client, r.AMQP, task, queue)
+}
+
+func trackTaskQueue(ctx context.Context, c client.Client, amqp AMQPManager, task *agentsv1alpha1.Task, queue string) error {
 	if !controllerutil.ContainsFinalizer(task, taskQueueFinalizer) {
 		patch := client.MergeFrom(task.DeepCopy())
 		controllerutil.AddFinalizer(task, taskQueueFinalizer)
-		if err := r.Patch(ctx, task, patch); err != nil {
+		if err := c.Patch(ctx, task, patch); err != nil {
 			return fmt.Errorf("add Task queue finalizer: %w", err)
 		}
 	}
@@ -214,12 +219,12 @@ func (r *TaskReconciler) trackTaskQueue(ctx context.Context, task *agentsv1alpha
 	patch := client.MergeFrom(task.DeepCopy())
 	previous := task.Status.Queue
 	task.Status.Queue = queue
-	if err := r.Status().Patch(ctx, task, patch); err != nil {
+	if err := c.Status().Patch(ctx, task, patch); err != nil {
 		return fmt.Errorf("record Task queue: %w", err)
 	}
-	if previous != "" && r.AMQP != nil {
+	if previous != "" && amqp != nil {
 		// A changed worker ServiceAccount renames the queue.
-		return r.AMQP.DeleteQueue(previous)
+		return amqp.DeleteQueue(previous)
 	}
 	return nil
 }
@@ -823,7 +828,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.cloud/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "12"
+	WorkerPodVersion = "14"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -838,14 +843,18 @@ func workerConfigHash(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) st
 }
 
 func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, version string) string {
-	return workerConfigHashWithDevices(task, agent, version, true)
+	return workerConfigHashWithServices(task, agent, version, agentsv1alpha1.HarnessServices{Devices: true})
 }
 
 func (r *TaskReconciler) workerConfigHash(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) string {
-	return workerConfigHashWithDevices(task, agent, WorkerPodVersion, !r.DisableDevices)
+	return workerConfigHashWithServices(task, agent, WorkerPodVersion, r.services())
 }
 
-func workerConfigHashWithDevices(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, version string, devicesEnabled bool) string {
+func (r *TaskReconciler) services() agentsv1alpha1.HarnessServices {
+	return agentsv1alpha1.HarnessServices{Devices: !r.DisableDevices, Feeds: r.EnableFeeds}
+}
+
+func workerConfigHashWithServices(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, version string, services agentsv1alpha1.HarnessServices) string {
 	model := agent.Spec.Model
 	if task.Spec.Model != nil {
 		model = *task.Spec.Model
@@ -859,7 +868,7 @@ func workerConfigHashWithDevices(task *agentsv1alpha1.Task, agent *agentsv1alpha
 		CredentialKeyRef string                       `json:"credentialKeyRef"`
 		Template         corev1.PodTemplateSpec       `json:"template"`
 		MCPEndpoints     []agentsv1alpha1.MCPEndpoint `json:"mcpEndpoints"`
-	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, agent.Spec.Template, agentsv1alpha1.WorkerMCPEndpoints(agent, "", task.Namespace, nil, devicesEnabled)})
+	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, agent.Spec.Template, agentsv1alpha1.WorkerMCPEndpoints(agent, "", task.Namespace, nil, services)})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -1047,7 +1056,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	} else if task.Status.Progress != nil && !task.Status.Progress.UpdatedAt.IsZero() {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_LAST_RESULT_AT", Value: task.Status.Progress.UpdatedAt.Time.Format(time.RFC3339Nano)})
 	}
-	endpointsJSON, _ := json.Marshal(agentsv1alpha1.WorkerMCPEndpoints(agent, r.HarnessNamespace, task.Namespace, mailboxes, !r.DisableDevices))
+	endpointsJSON, _ := json.Marshal(agentsv1alpha1.WorkerMCPEndpoints(agent, r.HarnessNamespace, task.Namespace, mailboxes, r.services()))
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MCP_ENDPOINTS", Value: string(endpointsJSON)})
 	disabledJSON, _ := json.Marshal(append([]string{}, task.Spec.DisabledMCPs...))
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_DISABLED_MCPS", Value: string(disabledJSON)})
@@ -1092,6 +1101,10 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 				ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
 					Name: "agent-devices-token", MountPath: "/var/run/agent-devices", ReadOnly: true})
 			}
+			if r.EnableFeeds {
+				ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
+					Name: "agent-feeds-token", MountPath: "/var/run/agent-feeds", ReadOnly: true})
+			}
 			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
 				Name: "agent-rabbitmq-token", MountPath: "/var/run/agent-rabbitmq", ReadOnly: true})
 			if len(mailboxes) > 0 {
@@ -1131,6 +1144,11 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-devices-token", VolumeSource: corev1.VolumeSource{
 			Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 				Audience: "agent-devices-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
+	}
+	if r.EnableFeeds {
+		ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-feeds-token", VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+				Audience: "agent-feeds-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
 	}
 	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-rabbitmq-token", VolumeSource: corev1.VolumeSource{
 		Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{

@@ -167,6 +167,12 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
 .message.agent .message-body { background: #20372b; border-color: #4a7858; }
 /* The agent avatar sits beside the bubble, in the space the right-aligned bubble leaves. */
 .message.agent.typing { width: auto; }
+.tool-calls { list-style: none; margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid #4a7858; font-size: 12px; white-space: normal; }
+.tool-call { margin: 2px 0; overflow-wrap: anywhere; }
+.tool-call::before { content: "✓ "; color: var(--accent); }
+.tool-call.running::before { content: "… "; color: var(--muted); }
+.tool-call.failed::before { content: "✗ "; color: #f3b5b5; }
+.tool-args { color: var(--muted); font-family: ui-monospace, monospace; }
 .message.typing .message-body { display: flex; gap: 5px; padding: 14px 16px; }
 .message.typing .message-body span { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: typing 1.2s ease-in-out infinite; }
 .message.typing .message-body span:nth-child(2) { animation-delay: .15s; }
@@ -700,7 +706,7 @@ function showTurnText(data) {
   try { text = JSON.parse(data); } catch { return; }
   if (typeof text?.namespace !== 'string' || typeof text.task !== 'string' || typeof text.content !== 'string') return;
   const key = text.namespace + '/' + text.task;
-  turnTexts.set(key, {turn: text.turn, content: text.content});
+  turnTexts.set(key, {turn: text.turn, content: text.content, tools: Array.isArray(text.tools) ? text.tools : []});
   if (selectedDetail && selectedDetail.namespace + '/' + selectedDetail.name === key && taskBusy(selectedDetail) === 'Working') {
     renderDetail(selectedDetail);
   }
@@ -1253,7 +1259,7 @@ function renderDetail(task) {
       if (webhookSource) sourceLabel = ` via ${webhookName || webhookSource} webhook notification`;
       else if (message.source === 'imap' || message.source === 'mail' || message.source?.startsWith('mail/')) {
         sourceLabel = ' via mail notification';
-      }
+      } else if (message.source === 'wake') sourceLabel = ' via wake request';
     }
     const modelLabel = message.role === 'agent' && message.backend
       ? ' · ' + (message.backend === 'claude' ? 'Claude' : message.backend === 'codex' ? 'Codex' : message.backend)
@@ -1297,7 +1303,22 @@ function renderDetail(task) {
     const meta = document.createElement('div'); meta.className = 'message-meta';
     const author = document.createElement('span'); author.className = 'message-author'; author.textContent = task.agentName;
     const body = document.createElement('div'); body.className = 'message-body';
-    body.append(window.renderAgentMarkdown(live.content));
+    if (live.content.trim()) body.append(window.renderAgentMarkdown(live.content));
+    // MCP calls of this turn, shown only while it runs: server · tool and arguments.
+    if (live.tools.length) {
+      const calls = document.createElement('ul'); calls.className = 'tool-calls';
+      for (const call of live.tools) {
+        const item = document.createElement('li'); item.className = 'tool-call ' + call.status;
+        const name = document.createElement('code'); name.textContent = `${call.server} · ${call.tool}`;
+        item.append(name);
+        if (call.args && call.args !== '{}') {
+          const args = document.createElement('span'); args.className = 'tool-args'; args.textContent = call.args;
+          item.append(' ', args);
+        }
+        calls.append(item);
+      }
+      body.append(calls);
+    }
     meta.append(author, document.createTextNode(' · working')); bubble.append(meta, body); history.append(bubble);
   }
   if (busy === 'Working') {

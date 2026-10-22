@@ -165,8 +165,11 @@ func agentTools() []map[string]any {
 			"title": map[string]any{"type": "string", "maxLength": 120}}, "title"),
 		mcpTool("report_progress", "Record a bounded progress note on this worker Pod's own Task.", map[string]any{
 			"id": map[string]string{"type": "string"}, "content": map[string]string{"type": "string"}}, "id", "content"),
-		mcpTool("report_turn_progress", "Stream the current worker Pod's working turn text to open views of its own Task.", map[string]any{
-			"id": map[string]string{"type": "string"}, "content": map[string]string{"type": "string"}}, "id", "content"),
+		mcpTool("report_turn_progress", "Stream the current worker Pod's working turn text and MCP calls to open views of its own Task.", map[string]any{
+			"id": map[string]string{"type": "string"}, "content": map[string]string{"type": "string"},
+			"tools": map[string]any{"type": "array", "maxItems": 30, "items": map[string]any{"type": "object", "properties": map[string]any{
+				"server": map[string]string{"type": "string"}, "tool": map[string]string{"type": "string"},
+				"args": map[string]string{"type": "string"}, "status": map[string]any{"type": "string", "enum": []string{"running", "done", "failed"}}}}}}, "id"),
 		mcpTool("report_turn_result", "Report the current worker Pod's completed turn to its own Task.", map[string]any{
 			"id": map[string]string{"type": "string"}, "summary": map[string]string{"type": "string"},
 			"completedAt": map[string]string{"type": "string"}, "backend": map[string]string{"type": "string"},
@@ -401,13 +404,18 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 	case "report_turn_progress":
 		// Streamed text goes only to open browsers; the conversation stores the
 		// turn's full text once its result arrives.
-		var arg struct{ ID, Content string }
-		if decodeToolArgs(raw, &arg) != nil || arg.ID == "" || len(arg.ID) > 160 || strings.TrimSpace(arg.Content) == "" || len(arg.Content) > 8000 {
+		var arg struct {
+			ID, Content string
+			Tools       []turnTool
+		}
+		if decodeToolArgs(raw, &arg) != nil || arg.ID == "" || len(arg.ID) > 160 || len(arg.Content) > 8000 ||
+			strings.TrimSpace(arg.Content) == "" && len(arg.Tools) == 0 || !validTurnTools(arg.Tools) {
 			return nil, errors.New("invalid turn progress")
 		}
 		if scope.Task.Status.Activity == "working" && h.Events != nil {
 			if topic := taskAgentTopic(&scope.Task); topic != "" {
-				h.Events.publishTurn(topic, turnText{Namespace: scope.Task.Namespace, Task: scope.Task.Name, Turn: arg.ID, Content: arg.Content})
+				h.Events.publishTurn(topic, turnText{Namespace: scope.Task.Namespace, Task: scope.Task.Name, Turn: arg.ID,
+					Content: arg.Content, Tools: arg.Tools})
 			}
 		}
 		return mcpText(map[string]any{"streamed": true})

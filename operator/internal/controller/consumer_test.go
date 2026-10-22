@@ -346,3 +346,42 @@ func TestOtherBindingNotificationAndForgeCloseDoNotPrompt(t *testing.T) {
 		t.Fatalf("close was not recorded as completion: %+v", task.Status)
 	}
 }
+
+func TestWakeTaskDeduplicatesKeysAndSkipsCompletedTasks(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team"}}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "watch", Namespace: "team", UID: "task-uid"},
+		Spec: agentsv1alpha1.TaskSpec{AgentRef: agent.Name}}
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(agent, task).Build()
+	broker := &coalesceBroker{}
+	consumer := &EventConsumer{Client: k8s, APIReader: k8s, AMQP: broker}
+	ctx := context.Background()
+	const actor = "system:serviceaccount:team:schedule"
+	for range 2 {
+		if err := consumer.WakeTask(ctx, "team", "watch", actor, "2026-W43", "Weekly watch", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), task); err != nil {
+		t.Fatal(err)
+	}
+	if len(broker.messages) != 1 || len(task.Status.Conversation) != 1 || task.Status.Conversation[0].Source != "wake" || task.Status.Conversation[0].Actor != actor {
+		t.Fatalf("repeated key was not recorded once: messages=%d conversation=%+v", len(broker.messages), task.Status.Conversation)
+	}
+	task.Status.Completion = &agentsv1alpha1.TaskCompletion{CompletedAt: &metav1.Time{Time: time.Now()}}
+	if err := k8s.Status().Update(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumer.WakeTask(ctx, "team", "watch", actor, "2026-W44", "Weekly watch", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(broker.messages) != 1 {
+		t.Fatalf("completed Task was woken: %+v", broker.messages)
+	}
+	if err := consumer.WakeTask(ctx, "team", "missing", actor, "", "", ""); !apierrors.IsNotFound(err) {
+		t.Fatalf("missing Task: %v", err)
+	}
+}

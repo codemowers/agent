@@ -42,6 +42,7 @@ jobs:
           - {name: agent-mailbox, context: ., file: Dockerfile, target: mailbox}
           - {name: agent-operator, context: operator, file: operator/Dockerfile}
           - {name: agent-devices, context: operator, file: operator/devicebridge/Dockerfile}
+          - {name: agent-feeds, context: operator, file: operator/feeds/Dockerfile}
           - {name: agent-webhook, context: webhook, file: webhook/Dockerfile}
         arch: [amd64, arm64]
         include:
@@ -111,7 +112,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [agent-worker, agent-mailbox, agent-operator, agent-devices, agent-webhook]
+        image: [agent-worker, agent-mailbox, agent-operator, agent-devices, agent-feeds, agent-webhook]
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -176,7 +177,7 @@ jobs:
           grep -Fxq 'imageDigests: {}' "$RUNNER_TEMP/chart/values.yaml"
           sed -i "s|^imageRepository:.*|imageRepository: ghcr.io/$owner|" "$RUNNER_TEMP/chart/values.yaml"
           sed -i 's/^imageDigests: {}$/imageDigests:/' "$RUNNER_TEMP/chart/values.yaml"
-          for image in agent-worker agent-mailbox agent-operator agent-devices agent-webhook; do
+          for image in agent-worker agent-mailbox agent-operator agent-devices agent-feeds agent-webhook; do
             digest="$(cat "release-digests/$image")"
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             sed -i "/^imageDigests:$/a\\  $image: $digest" "$RUNNER_TEMP/chart/values.yaml"
@@ -184,7 +185,7 @@ jobs:
           helm lint "$RUNNER_TEMP/chart" --set operator.apiResource=https://example.test/api
           helm template agent-ci "$RUNNER_TEMP/chart" \
             --set operator.apiResource=https://example.test/api > "$RUNNER_TEMP/rendered.yaml"
-          for image in agent-worker agent-mailbox agent-operator agent-devices agent-webhook; do
+          for image in agent-worker agent-mailbox agent-operator agent-devices agent-feeds agent-webhook; do
             digest="$(cat "release-digests/$image")"
             grep -Fq "ghcr.io/$owner/$image@$digest" "$RUNNER_TEMP/rendered.yaml"
           done

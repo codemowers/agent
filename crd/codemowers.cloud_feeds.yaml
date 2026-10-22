@@ -1,0 +1,92 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: feeds.codemowers.cloud
+spec:
+  group: codemowers.cloud
+  scope: Namespaced
+  names:
+    plural: feeds
+    singular: feed
+    kind: Feed
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: URL
+          type: string
+          jsonPath: .spec.url
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Polled
+          type: date
+          jsonPath: .status.lastPolledAt
+        - name: Changed
+          type: date
+          jsonPath: .status.lastChangedAt
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - url
+              properties:
+                url:
+                  description: Public RSS, Atom or JSON Feed URL.
+                  type: string
+                  pattern: ^https://
+                  maxLength: 2048
+                interval:
+                  description: Time between polls, at least one minute; absent means one hour.
+                  type: string
+            status:
+              description: Crawl state and recent items written by the feed crawler.
+              type: object
+              properties:
+                etag:
+                  type: string
+                lastModified:
+                  type: string
+                items:
+                  description: Most recently seen items, newest first by firstSeen. Fetched items absent from them are new.
+                  type: array
+                  maxItems: 200
+                  items:
+                    type: object
+                    required: [id, firstSeen]
+                    properties:
+                      id: {type: string, maxLength: 1024}
+                      title: {type: string, maxLength: 512}
+                      link: {type: string, maxLength: 2048}
+                      published: {type: string, format: date-time}
+                      firstSeen:
+                        description: When the crawler first fetched the item; a cursor that only moves forward.
+                        type: string
+                        format: date-time
+                lastPolledAt:
+                  type: string
+                  format: date-time
+                lastChangedAt:
+                  description: Last poll that found new items.
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status, lastTransitionTime, reason, message]
+                    properties:
+                      type: {type: string}
+                      status: {type: string}
+                      observedGeneration: {type: integer, format: int64}
+                      lastTransitionTime: {type: string, format: date-time}
+                      reason: {type: string}
+                      message: {type: string}

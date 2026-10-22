@@ -4,7 +4,7 @@ import {mkdtemp, mkdir, readFile, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {EventEmitter} from 'node:events';
-import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs} from '../src/task-worker.js';
+import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs, mcpToolCalls, toolArguments} from '../src/task-worker.js';
 
 test('Turn text keeps its end within the byte bound', () => {
   assert.equal(boundedTail('short'), 'short');
@@ -67,4 +67,19 @@ test('Worker logs in to RabbitMQ with its rotating ServiceAccount token', async 
 test('Codex MCP overrides use bare server names', () => {
   assert.deepEqual(codexMcpArgs({agent_operator: {url: 'http://127.0.0.1:1234/mcp'}}),
     ['-c', 'mcp_servers.agent_operator.url="http://127.0.0.1:1234/mcp"']);
+});
+
+test('MCP calls are tracked from both CLIs with masked, bounded arguments', () => {
+  const claude = mcpToolCalls('claude');
+  assert.equal(claude.update({type: 'assistant', message: {content: [
+    {type: 'tool_use', id: 't1', name: 'mcp__driftmower__query_logs', input: {namespace: 'agents', token: 'x'}},
+    {type: 'tool_use', id: 't2', name: 'Bash', input: {command: 'ls'}}]}}), true);
+  claude.update({type: 'assistant', parent_tool_use_id: 't9', message: {content: [{type: 'tool_use', id: 't3', name: 'mcp__devices__device_shell', input: {}}]}});
+  claude.update({type: 'user', message: {content: [{type: 'tool_result', tool_use_id: 't1', is_error: true}]}});
+  assert.deepEqual(claude.list(), [{server: 'driftmower', tool: 'query_logs', args: '{"namespace":"agents","token":"***"}', status: 'failed'}]);
+  const codex = mcpToolCalls('codex');
+  codex.update({type: 'item.started', item: {id: 'i1', type: 'mcp_tool_call', server: 'agent_operator', tool: 'set_task_title', arguments: {title: 'Watch'}, status: 'in_progress'}});
+  codex.update({type: 'item.completed', item: {id: 'i1', type: 'mcp_tool_call', server: 'agent_operator', tool: 'set_task_title', arguments: {title: 'Watch'}, status: 'completed'}});
+  assert.deepEqual(codex.list(), [{server: 'agent_operator', tool: 'set_task_title', args: '{"title":"Watch"}', status: 'done'}]);
+  assert.equal(toolArguments({text: 'x'.repeat(600)}).length, 500);
 });

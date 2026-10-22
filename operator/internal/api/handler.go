@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	authenticationclient "k8s.io/client-go/kubernetes/typed/authentication/v1"
+	authclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -34,12 +35,16 @@ type Publisher interface {
 
 // Handler serves the web UI and REST API for Task management.
 type Handler struct {
-	Client          client.Client
-	APIReader       client.Reader
-	Events          *Events
-	AMQP            Publisher // nil if RabbitMQ not configured
-	Addr            string
-	MCPAddr         string
+	Client    client.Client
+	APIReader client.Reader
+	Events    *Events
+	AMQP      Publisher // nil if RabbitMQ not configured
+	Addr      string
+	MCPAddr   string
+	// WakeAddr serves the wake endpoint to in-cluster callers.
+	WakeAddr        string
+	Waker           TaskWaker
+	AccessReviews   authclient.AuthorizationV1Interface
 	Verifier        tokenVerifier
 	Reviewer        accessReviewer
 	Issuer          string
@@ -71,6 +76,9 @@ func (h *Handler) Start(ctx context.Context) error {
 	mcpMux := http.NewServeMux()
 	mcpMux.HandleFunc("POST /mcp", h.agentMCP)
 	mcpSrv := &http.Server{Addr: h.MCPAddr, Handler: mcpMux}
+	wakeMux := http.NewServeMux()
+	wakeMux.HandleFunc("POST /internal/v1/namespaces/{namespace}/tasks/{name}/wake", h.wakeTask)
+	wakeSrv := &http.Server{Addr: h.WakeAddr, Handler: wakeMux}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -81,15 +89,21 @@ func (h *Handler) Start(ctx context.Context) error {
 		if mcpSrv.Shutdown(shutdownCtx) != nil {
 			mcpSrv.Close() //nolint:errcheck
 		}
+		if wakeSrv.Shutdown(shutdownCtx) != nil {
+			wakeSrv.Close() //nolint:errcheck
+		}
 	}()
 	logger.Info("API server listening", "addr", h.Addr)
 	logger.Info("Agent MCP server listening", "addr", h.MCPAddr)
-	errors := make(chan error, 2)
+	logger.Info("wake server listening", "addr", h.WakeAddr)
+	errors := make(chan error, 3)
 	go func() { errors <- srv.ListenAndServe() }()
 	go func() { errors <- mcpSrv.ListenAndServe() }()
+	go func() { errors <- wakeSrv.ListenAndServe() }()
 	if err := <-errors; err != http.ErrServerClosed {
 		_ = srv.Close()
 		_ = mcpSrv.Close()
+		_ = wakeSrv.Close()
 		return err
 	}
 	return nil
