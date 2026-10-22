@@ -25,7 +25,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const secretName = "agent-device-keys"
 const audience = "agent-devices-mcp"
 
 var deviceKeyPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -108,11 +107,12 @@ func (b *bridge) devices(ctx context.Context, namespace string) ([]devicesv1.Dev
 }
 
 func (b *bridge) keyFor(ctx context.Context, d *devicesv1.Device) (string, error) {
-	if d.Spec.ConnectionSecretRef.Name != secretName {
-		return "", errors.New("invalid secret reference")
+	name := d.Spec.ConnectionSecretRef.Name
+	if name == "" {
+		return "", errors.New("missing secret reference")
 	}
 	var secret corev1.Secret
-	if err := b.objects.Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: secretName}, &secret); err != nil {
+	if err := b.objects.Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: name}, &secret); err != nil {
 		return "", err
 	}
 	key := string(secret.Data[d.Spec.ConnectionSecretRef.Key])

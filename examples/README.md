@@ -1,8 +1,8 @@
 # Examples
 
 The Agents implement the README's segmentation example. Agents, their workers,
-Tasks, bindings and Mailbox share the namespace `agents`; the harness and the
-`blueos` Device stay in `codemowers-agent-system`. `matmlazi` deploys into the
+Tasks, bindings, Mailbox and the `hifiberry` Device share the namespace `agents`;
+the harness stays in `codemowers-agent-system`. `matmlazi` deploys into the
 workload namespace `demo`:
 
 | Agent | Profile | Worker access in `rbac.yaml` |
@@ -30,7 +30,7 @@ Apply with the context and namespace from `skaffold.env`. Files under
    Set each protocol's `allowedKeyPrefixes` to your hosts, and point each
    forge hook at its receiver's path.
 4. `mail/rbac.yaml`, then the Mailboxes and MailBinding.
-5. `devices/blueos.yaml`.
+5. `devices/hifiberry.yaml`.
 
 Steps outside these files:
 

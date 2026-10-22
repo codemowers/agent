@@ -1,46 +1,46 @@
 apiVersion: secretgenerator.mittwald.de/v1alpha1
 kind: StringSecret
 metadata:
-  name: agent-device-keys
-  namespace: codemowers-agent-system
+  name: agent-device-hifiberry
+  namespace: agents
 spec:
   forceRegenerate: false
   fields:
-    - fieldName: blueos
+    - fieldName: hifiberry
       encoding: hex
       length: "32"
 ---
 apiVersion: codemowers.cloud/v1alpha1
 kind: Device
 metadata:
-  name: blueos
-  namespace: codemowers-agent-system
+  name: hifiberry
+  namespace: agents
 spec:
-  displayName: BlueOS
+  displayName: HiFiBerry
   connectionSecretRef:
-    name: agent-device-keys
-    key: blueos
+    name: agent-device-hifiberry
+    key: hifiberry
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: agent-device-blueos
-  namespace: codemowers-agent-system
+  name: agent-device-hifiberry
+  namespace: agents
 rules:
   - apiGroups: [codemowers.cloud]
     resources: [devices]
-    resourceNames: [blueos]
+    resourceNames: [hifiberry]
     verbs: [exec, read, write]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: agent-device-blueos
-  namespace: codemowers-agent-system
+  name: agent-device-hifiberry
+  namespace: agents
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: agent-device-blueos
+  name: agent-device-hifiberry
 subjects:
   - kind: ServiceAccount
     name: agent-worker-matmlazi

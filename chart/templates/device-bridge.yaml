@@ -4,8 +4,9 @@ metadata:
   name: agent-devices
 ---
 {{- if .Values.bootstrapRbac }}
-# Devices live in Agent namespaces; each namespace holds its own
-# agent-device-keys Secret.
+{{- if eq (len .Values.deviceBridge.secretNames) 0 }}{{ fail "deviceBridge.secretNames must list at least one Secret" }}{{- end }}
+# Devices live in Agent namespaces. The bridge can read only the Secret names
+# explicitly allowed here, in each namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -19,7 +20,7 @@ rules:
     verbs: [get, update, patch]
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [agent-device-keys]
+    resourceNames: {{ .Values.deviceBridge.secretNames | toJson }}
     verbs: [get]
   - apiGroups: [authentication.k8s.io]
     resources: [tokenreviews]

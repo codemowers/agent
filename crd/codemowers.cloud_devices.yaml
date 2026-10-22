@@ -36,13 +36,14 @@ spec:
                   type: string
                   maxLength: 100
                 connectionSecretRef:
-                  description: One key in the namespace's fixed agent-device-keys Secret. Its value is a 32-character lowercase hex bearer key used by device-agent in the WebSocket URL.
+                  description: One key in a Secret in the Device's namespace. The bridge's RBAC must allow the Secret name. Its value is a 32-character lowercase hex bearer key used by device-agent in the WebSocket URL.
                   type: object
                   required: [name, key]
                   properties:
                     name:
                       type: string
-                      enum: [agent-device-keys]
+                      maxLength: 253
+                      pattern: '^agent-device-[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                     key:
                       type: string
                       minLength: 1

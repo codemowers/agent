@@ -181,8 +181,9 @@ with the Task even after its Agent is gone.
 The Device bridge is a separate Go Deployment and image named `agent-devices`.
 The existing operator Ingress routes `/devices/` to its Service, while workers
 call its `/mcp` endpoint in the harness namespace. A namespaced Device CR
-references one key in its namespace's fixed `agent-device-keys` Secret; the
-bridge reads Devices and that Secret in every namespace. A worker sees each
+references one key in a Secret in its namespace. The bridge reads Devices and
+only Secrets with names allowed by `deviceBridge.secretNames` in chart RBAC.
+The example Hifiberry uses its own `agent-device-hifiberry` Secret. A worker sees each
 Device on which it holds a verb, named bare in its own namespace and as
 `namespace/name` elsewhere. The bridge owns device-agent
 WebSockets and updates Device connection status. Every worker receives the

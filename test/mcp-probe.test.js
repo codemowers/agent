@@ -22,9 +22,9 @@ test('MCP probe reports a bounded failure without exposing response content', as
 
 test('probe context keeps bounded title, instructions and tool names', () => {
   const context = mcpProbeContext(
-    {serverInfo: {name: 'agent-devices', title: ' Devices '}, instructions: 'Authorized remote devices:\n blueos (connected).'},
+    {serverInfo: {name: 'agent-devices', title: ' Devices '}, instructions: 'Authorized remote devices:\n hifiberry (connected).'},
     {tools: [{name: 'list_devices'}, {name: 'bad name'}, {name: 'device_shell'}]});
-  assert.deepEqual(context, {serverTitle: 'Devices', instructions: 'Authorized remote devices: blueos (connected).',
+  assert.deepEqual(context, {serverTitle: 'Devices', instructions: 'Authorized remote devices: hifiberry (connected).',
     tools: ['list_devices', 'device_shell']});
   assert.equal([...mcpProbeContext({instructions: 'x'.repeat(900)}, {}).instructions].length, 500);
   assert.deepEqual(mcpProbeContext({}, {}), {});

@@ -3,6 +3,7 @@
 imageRepository: ghcr.io/codemowers
 
 deviceBridge:
+  secretNames: [agent-device-hifiberry]
   resources:
     requests:
       memory: 32Mi

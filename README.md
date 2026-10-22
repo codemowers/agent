@@ -213,7 +213,7 @@ Driftmower's in-cluster audience.
 | --- | --- |
 | `agent-operator` | Reads Agents, Mailboxes and policies; manages Tasks, worker Pods, PVCs and Mailbox Services; writes Agent, Task and Mailbox status; reads `agent-operator-provider-tokens` by name; creates TokenReviews and SubjectAccessReviews. |
 | `agent-operator-webhook` | Reads protocols, receivers and bindings, and the Secret each receiver names; creates TokenReviews for ServiceAccount-token senders. |
-| `agent-devices` | Reads Devices and `agent-device-keys`; writes Device status; creates TokenReviews and SubjectAccessReviews. |
+| `agent-devices` | Reads Devices and the Secret names allowed by `deviceBridge.secretNames`; writes Device status; creates TokenReviews and SubjectAccessReviews. |
 | `agent-mailbox` | Creates TokenReviews and SubjectAccessReviews. Only the Mailbox Pod's MCP container receives its token. |
 | `agent-worker-<agent>` | Whatever the namespace administrator grants; see [examples/](examples/README.md) for the three profiles below. |
 
@@ -344,14 +344,14 @@ token reads only its own ServiceAccount's queues and cannot publish.
 ## Credentials
 
 Keep credential values out of `skaffold.env`, manifests, images, chat and shell
-history. Each namespace holds fixed Secrets whose individual keys are selected by
-reference:
+history. Credentials stay in namespaced Secrets whose individual keys are
+selected by reference:
 
 | Secret | Holds | Selected by |
 | --- | --- | --- |
 | `agent-operator-provider-tokens` | Model API keys and Git provider tokens | `credentialKeyRef` in Agent model and Git provider entries |
 | Any, conventionally `agent-operator-webhook-keys` | Webhook signing keys | `senders.secretKeyRef` in receivers |
-| `agent-device-keys` | Device connection keys | `connectionSecretRef` in Devices |
+| `agent-device-hifiberry` or another RBAC-allowed name | Device connection keys; each Device can use its own Secret | `connectionSecretRef` in Devices |
 
 Mailbox credentials stay in Secrets named by each Mailbox's
 `credentialsSecretRef`. A worker whose selected model key is missing records a
@@ -388,7 +388,7 @@ project. The operator, its CRDs and the UI stay here.
 | --- | --- | --- | --- |
 | Mail MCP | `mailbox/` | `mcp.js` authenticates with TokenReview and SubjectAccessReview; the IMAP reader publishes to the intake exchange with a projected token | IMAP/SMTP MCP server, for example under Docker Compose, with a pluggable bearer-token check and an optional event publisher |
 | Webhook intake | `webhook/` | Reads protocol, receiver and binding CRs and receivers' key Secrets through the API | Signed webhook to AMQP gateway with CEL-defined protocols loaded from files |
-| Device bridge | `operator/devicebridge/` | Device CRD, `agent-device-keys` and Kubernetes RBAC verbs per Device | Remote machine shell and file MCP for `device-agent` |
+| Device bridge | `operator/devicebridge/` | Device CRD, RBAC-limited Device Secrets and Kubernetes verbs per Device | Remote machine shell and file MCP for `device-agent` |
 | Coding runner | `runner/`, `src/` | Reports to the Agent MCP and reads its Task queue | Container image wrapping the Claude and Codex CLIs with session persistence |
 
 ## Roadmap

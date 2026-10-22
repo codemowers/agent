@@ -5,8 +5,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// Device is one outbound device-agent connection. The bridge reads only the
-// referenced key in the namespace's fixed agent-device-keys Secret.
+// Device is one outbound device-agent connection. The bridge reads its
+// referenced Secret only when RBAC grants access to that name.
 type Device struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
