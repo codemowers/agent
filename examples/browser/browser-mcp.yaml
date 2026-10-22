@@ -47,7 +47,8 @@ spec:
           image: mcr.microsoft.com/playwright/mcp@sha256:690763cbb437ee7233f538a953bb5390bf03791eb5c965b471e59d17a6132fcb
           # The image entrypoint adds --headless --browser chromium --no-sandbox.
           args:
-            - --host=0.0.0.0
+            # :: accepts IPv4 and IPv6; 0.0.0.0 misses an IPv6-first Pod IP.
+            - '--host=::'
             - --port=8931
             - --isolated
             # Only the Service name is accepted as Host, so a page in this
