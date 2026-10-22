@@ -1,0 +1,20 @@
+# Scrapes the worker Pods of every Agent in this namespace. Prometheus takes
+# the agent and task labels from the Pod labels the operator sets, not from
+# the worker's own output.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: agent-workers
+  namespace: agents
+spec:
+  selector:
+    matchExpressions:
+      - key: codemowers.cloud/task
+        operator: Exists
+  podMetricsEndpoints:
+    - port: metrics
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_codemowers_cloud_agent]
+          targetLabel: agent
+        - sourceLabels: [__meta_kubernetes_pod_label_codemowers_cloud_task]
+          targetLabel: task

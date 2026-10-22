@@ -257,7 +257,14 @@ status at scrape time with namespace, phase and activity labels. Each replica
 also records `agent_operator_` histograms of the requests it serves: MCP check
 round trips and Agent MCP tool calls. The chart's PodMonitor scrapes them, and
 the operator NetworkPolicy admits Prometheus from
-`operator.prometheusNamespace`.
+`operator.prometheusNamespace`. Workers serve `/metrics` and `/readyz` on port
+9464: `agent_worker_` token counters and turn durations by backend, model and
+outcome, MCP request durations through the token bridge by server, and idle
+seconds computed at scrape time. A PodMonitor in each Agent namespace takes
+`agent` and `task` from the operator's Pod labels, so a worker cannot claim
+another Task's series. `/readyz` succeeds once the workspace and broker are
+ready; the readiness probe then moves a `starting` Task to `idle` until the
+worker reports a turn.
 `Task.spec.routingKeys` holds exact canonical resource URIs, scoped by the
 Task's namespace and Agent; webhook and mail events share them. Forge issues
 and pull requests use `https://<forge>/<owner>/<repo>/issues/<number>` with

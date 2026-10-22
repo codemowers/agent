@@ -159,6 +159,13 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 	}
 	pod := (&TaskReconciler{AMQPURL: "amqp://broker", WorkerImage: "registry/agent:build"}).buildWorkerPod("worker-pod", task, agent, "agent-worker", nil,
 		mcpServer{"driftmower", "http://driftmower-mcp/mcp", "driftmower-mcp.driftmower"})
+	if probe := pod.Spec.Containers[0].ReadinessProbe; probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/readyz" ||
+		len(pod.Spec.Containers[0].Ports) != 1 || pod.Spec.Containers[0].Ports[0].ContainerPort != agentsv1alpha1.WorkerMetricsPort {
+		t.Fatal("worker lacks its metrics port and readiness probe")
+	}
+	if len(pod.Spec.Containers[1].Ports) != 0 || pod.Spec.Containers[1].ReadinessProbe != nil {
+		t.Fatal("readiness probe added to another container")
+	}
 	if pod.Spec.Containers[0].Image != "registry/agent:build" {
 		t.Fatal("worker did not use the configured runner image")
 	}
@@ -537,4 +544,38 @@ func workerTokens(pod *corev1.Pod) map[string]string {
 		}
 	}
 	return tokens
+}
+
+func TestReadyWorkerIsIdleUntilItReportsATurn(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"},
+		Status: agentsv1alpha1.TaskStatus{Phase: agentsv1alpha1.TaskPhaseRunning, Activity: "starting"}}
+	store := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(task).WithObjects(task).Build()
+	r := &TaskReconciler{Client: store}
+	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	activity := func() string {
+		var current agentsv1alpha1.Task
+		if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &current); err != nil {
+			t.Fatal(err)
+		}
+		*task = current
+		return current.Status.Activity
+	}
+	if _, err := r.syncPhaseFromPod(context.Background(), task, pod); err != nil || activity() != "starting" {
+		t.Fatalf("unready worker left starting: %v %s", err, task.Status.Activity)
+	}
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	if _, err := r.syncPhaseFromPod(context.Background(), task, pod); err != nil || activity() != "idle" {
+		t.Fatalf("ready worker not idle: %v %s", err, task.Status.Activity)
+	}
+	task.Status.Activity = "working"
+	if err := store.Status().Update(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.syncPhaseFromPod(context.Background(), task, pod); err != nil || activity() != "working" {
+		t.Fatalf("readiness overwrote a reported turn: %v %s", err, task.Status.Activity)
+	}
 }

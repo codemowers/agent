@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -693,6 +694,15 @@ func (r *TaskReconciler) publishRuntimeConfig(ctx context.Context, task *agentsv
 	return true, nil
 }
 
+func podReady(pod *corev1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
 func (r *TaskReconciler) syncPhaseFromPod(ctx context.Context, task *agentsv1alpha1.Task, pod *corev1.Pod) (ctrl.Result, error) {
 	var phase agentsv1alpha1.TaskPhase
 	var reason string
@@ -702,6 +712,15 @@ func (r *TaskReconciler) syncPhaseFromPod(ctx context.Context, task *agentsv1alp
 		phase, reason = agentsv1alpha1.TaskPhasePending, "WorkerPending"
 	case corev1.PodRunning:
 		phase, reason = agentsv1alpha1.TaskPhaseRunning, "WorkerActive"
+		// A ready worker that has not reported a turn yet waits for work.
+		if task.Status.Activity == "starting" && podReady(pod) {
+			// The lock keeps a stale cache from overwriting a reported turn.
+			patch := client.MergeFromWithOptions(task.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			task.Status.Activity = "idle"
+			if err := r.Status().Patch(ctx, task, patch); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 	case corev1.PodSucceeded:
 		phase, reason = agentsv1alpha1.TaskPhaseWaiting, "WorkerCompleted"
 	case corev1.PodFailed:
@@ -827,7 +846,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.cloud/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "16"
+	WorkerPodVersion = "18"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -1159,6 +1178,12 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 			ps.Containers[i].Env = append(ps.Containers[i].Env, opEnv...)
 			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
 				Name: "agent-tokens", MountPath: agentsv1alpha1.WorkerTokenDir, ReadOnly: true})
+			// The worker serves /metrics and, once its workspace and broker are
+			// ready to take work, /readyz.
+			ps.Containers[i].Ports = append(ps.Containers[i].Ports, corev1.ContainerPort{
+				Name: "metrics", ContainerPort: agentsv1alpha1.WorkerMetricsPort, Protocol: corev1.ProtocolTCP})
+			ps.Containers[i].ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/readyz", Port: intstr.FromString("metrics")}}, PeriodSeconds: 2, FailureThreshold: 1}
 		}
 	}
 	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-tokens", VolumeSource: corev1.VolumeSource{

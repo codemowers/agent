@@ -8,6 +8,7 @@ import {agentIdentity} from './identity.js';
 import {signalChild} from './child-signals.js';
 import {workerMcpConfig, mcpRequest} from './mcp-auth.js';
 import {prepareKubeEnv, pushSecret} from './kube-env.js';
+import {serveMetrics, setReady, idle, tokens, turnDuration} from './metrics.js';
 
 const required = name => {
   const value = process.env[name];
@@ -149,6 +150,16 @@ export function turnMetrics(durationMs, usage = {}, apiDurationMs) {
     inputTokens: count(usage?.input_tokens), outputTokens: count(usage?.output_tokens),
     cacheReadTokens: count(usage?.cache_read_input_tokens ?? usage?.cached_input_tokens),
     cacheWriteTokens: count(usage?.cache_creation_input_tokens)}).filter(([, value]) => value !== undefined));
+}
+
+const tokenKinds = {inputTokens: 'input', outputTokens: 'output', cacheReadTokens: 'cache_read', cacheWriteTokens: 'cache_write'};
+
+// Records a finished turn's duration and token use.
+export function recordTurn(backend, model, outcome, metrics = {}, histogram = turnDuration, counter = tokens) {
+  if (metrics.durationMs !== undefined) histogram.observe({backend, model, outcome}, metrics.durationMs / 1000);
+  for (const [field, kind] of Object.entries(tokenKinds)) {
+    if (metrics[field] !== undefined) counter.inc({backend, model, kind}, metrics[field]);
+  }
 }
 
 // Codex splits -c keys on dots without TOML quoting, so a quoted name would
@@ -434,6 +445,7 @@ export async function taskWorker() {
   let runtimeGeneration = Number(process.env.AGENT_TASK_GENERATION || '0');
   if (!Number.isSafeInteger(runtimeGeneration) || runtimeGeneration < 0) throw new Error('Invalid AGENT_TASK_GENERATION');
   const root = process.env.AGENT_STATE_DIR || '/workspace';
+  serveMetrics();
   process.env.HOME = join(root, 'home');
   await prepareKubeEnv(process.env.HOME);
   const repo = await workspace(root, required('TASK_NAME'));
@@ -462,6 +474,8 @@ export async function taskWorker() {
   const stopTurn = requestedAt => { if (turn && requestedAt >= turn.startedAt) turn.controller.abort(); };
   const probeController = new AbortController();
   const probeLoop = serveControl(connection, queue, required('AGENT_WORKER_POD_UID'), probeController.signal, stopTurn).catch(() => {});
+  setReady(true);
+  idle.start();
   let finished = false;
   let skippedCompletedReceipt = false;
   let lastResultAt = Date.parse(process.env.AGENT_LAST_RESULT_AT || '');
@@ -528,9 +542,11 @@ export async function taskWorker() {
       turn = {startedAt: Date.now(), controller: new AbortController()};
       const stopped = turn.controller.signal;
       let result;
+      idle.stop();
       try {
         result = await runPrompt(message, state, root, repo, backend, model, disabledMcps, AbortSignal.any([controller.signal, stopped]));
-      } finally { turn = null; }
+      } finally { turn = null; idle.start(); }
+      recordTurn(backend, model, stopped.aborted ? 'stopped' : result.exitCode === 0 ? 'completed' : 'failed', result.metrics);
       if (controller.signal.aborted) break;
       if (stopped.aborted) {
         // Keep the native session and resident Pod; the next prompt resumes it.
@@ -569,6 +585,7 @@ export async function taskWorker() {
         completedAt: result.completedAt, exitCode: result.exitCode})).catch(() => {});
     }
   } finally {
+    setReady(false);
     probeController.abort();
     await probeLoop;
     await channel.close().catch(() => {});

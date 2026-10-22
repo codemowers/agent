@@ -220,6 +220,9 @@ func ServiceAudience(url string) string {
 	return host
 }
 
+// WorkerMetricsPort serves a worker's /metrics and /readyz.
+const WorkerMetricsPort = 9464
+
 // WorkerTokenDir holds one projected token file per audience a worker uses.
 const WorkerTokenDir = "/var/run/agent-tokens"
 

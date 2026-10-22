@@ -3,6 +3,7 @@ import http from 'node:http';
 import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import {agentFetch} from './http.js';
+import {mcpRequestDuration} from './metrics.js';
 
 export async function mcpRequest(server, options = {}, request = agentFetch) {
   const headers = {...server.headers, ...options.headers};
@@ -22,6 +23,10 @@ export async function workerMcpConfig(config) {
       const remote = definition;
       if (!remote.tokenFile) { mcpServers[name] = remote; continue; }
       const server = http.createServer(async (req, res) => {
+        // POST carries each MCP request and its full result; GET is a
+        // long-lived event stream, so only POST is timed.
+        const started = performance.now();
+        let outcome = 'error';
         try {
           if (req.url !== '/mcp' || !['GET', 'POST', 'DELETE'].includes(req.method)) { res.writeHead(404); res.end(); return; }
           const chunks = []; let size = 0;
@@ -40,7 +45,11 @@ export async function workerMcpConfig(config) {
           }
           res.writeHead(response.status, outputHeaders);
           if (response.body) await pipeline(Readable.fromWeb(response.body), res); else res.end();
+          outcome = `${Math.floor(response.status / 100)}xx`;
         } catch { if (!res.headersSent) res.writeHead(502); res.end('MCP connection unavailable'); }
+        finally {
+          if (req.method === 'POST') mcpRequestDuration.observe({server: name, outcome}, (performance.now() - started) / 1000);
+        }
       });
       await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
       server.unref(); bridges.push(server);
