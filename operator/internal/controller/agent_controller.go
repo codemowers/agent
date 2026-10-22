@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -117,6 +118,9 @@ type TaskReconciler struct {
 	AMQPURL        string      // injected into worker pods as AMQP_URL
 	WorkerImage    string      // approved runner image injected by deployment/Skaffold
 	DisableDevices bool        // omit Device MCP and token when the bridge is disabled
+	// KubectlTag is the API server version, read at startup, that untagged
+	// kubectl image volumes are pinned to.
+	KubectlTag string
 	// HarnessNamespace hosts the operator and Device bridge Services that
 	// workers of every Agent namespace call.
 	HarnessNamespace string
@@ -629,6 +633,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 	podName := workerPodName(agentsv1alpha1.ResourcePrefix(agent), task.Name, randSuffix())
 	sa := agentsv1alpha1.WorkerServiceAccount(agent)
 	pod := r.buildWorkerPod(podName, task, agent, sa, r.authorizedMailboxes(ctx, agent, task.Namespace, sa))
+	r.pinKubectlImages(pod)
 
 	if err := r.Create(ctx, pod); err != nil {
 		// Admission/quota errors are often transient or fixable by the user;
@@ -818,7 +823,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.cloud/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "10"
+	WorkerPodVersion = "11"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -963,6 +968,27 @@ func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv
 		}
 	}
 	return names
+}
+
+// KubectlTag returns the release part of an API server version, such as
+// v1.36.5 for v1.36.5+k3s1, since image tags cannot carry build metadata.
+func KubectlTag(gitVersion string) (string, error) {
+	tag := regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+`).FindString(gitVersion)
+	if tag == "" {
+		return "", fmt.Errorf("unrecognized API server version %q", gitVersion)
+	}
+	return tag, nil
+}
+
+// pinKubectlImages tags image volumes such as registry.k8s.io/kubectl, given
+// without a tag or digest, with the API server's version, so workers get a
+// kubectl matching the cluster they run in.
+func (r *TaskReconciler) pinKubectlImages(pod *corev1.Pod) {
+	for i := range pod.Spec.Volumes {
+		if image := pod.Spec.Volumes[i].Image; image != nil && strings.HasSuffix(image.Reference, "/kubectl") {
+			image.Reference += ":" + r.KubectlTag
+		}
+	}
 }
 
 func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, sa string, mailboxes []string) *corev1.Pod {

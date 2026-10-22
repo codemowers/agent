@@ -514,3 +514,24 @@ func TestFailedWorkerIsRetainedAndOOMRecordedOnce(t *testing.T) {
 		t.Fatalf("failed pod deleted: %v", err)
 	}
 }
+
+func TestUntaggedKubectlImagesFollowServerVersion(t *testing.T) {
+	tag, err := KubectlTag("v1.36.5+k3s1")
+	if err != nil || tag != "v1.36.5" {
+		t.Fatalf("tag=%q err=%v", tag, err)
+	}
+	if _, err := KubectlTag("unknown"); err == nil {
+		t.Fatal("accepted an unrecognized server version")
+	}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{
+		{Name: "kubectl", VolumeSource: corev1.VolumeSource{Image: &corev1.ImageVolumeSource{Reference: "registry.k8s.io/kubectl"}}},
+		{Name: "pinned", VolumeSource: corev1.VolumeSource{Image: &corev1.ImageVolumeSource{Reference: "registry.k8s.io/kubectl:v1.35.0"}}},
+		{Name: "go", VolumeSource: corev1.VolumeSource{Image: &corev1.ImageVolumeSource{Reference: "docker.io/library/golang"}}},
+	}}}
+	(&TaskReconciler{KubectlTag: tag}).pinKubectlImages(pod)
+	for i, want := range []string{"registry.k8s.io/kubectl:v1.36.5", "registry.k8s.io/kubectl:v1.35.0", "docker.io/library/golang"} {
+		if got := pod.Spec.Volumes[i].Image.Reference; got != want {
+			t.Fatalf("volume %d: %s, want %s", i, got, want)
+		}
+	}
+}

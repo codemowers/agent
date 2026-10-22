@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	authenticationclient "k8s.io/client-go/kubernetes/typed/authentication/v1"
 	authclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
@@ -143,6 +144,16 @@ func main() {
 		ctrl.Log.Info("RabbitMQ configured")
 	}
 
+	serverVersion, err := discovery.NewDiscoveryClientForConfigOrDie(mgr.GetConfig()).ServerVersion()
+	if err != nil {
+		ctrl.Log.Error(err, "read API server version")
+		os.Exit(1)
+	}
+	kubectlTag, err := controller.KubectlTag(serverVersion.GitVersion)
+	if err != nil {
+		ctrl.Log.Error(err, "derive kubectl image tag")
+		os.Exit(1)
+	}
 	if err := (&controller.TaskReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
@@ -150,6 +161,7 @@ func main() {
 		AMQPURL:        workerAMQPURL(amqpURL),
 		WorkerImage:    os.Getenv("AGENT_WORKER_IMAGE"),
 		DisableDevices: os.Getenv("AGENT_DEVICES_ENABLED") == "false",
+		KubectlTag:     kubectlTag,
 		// Only the Pod's metadata.namespace fieldRef supplies this.
 		HarnessNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {

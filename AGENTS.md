@@ -589,8 +589,10 @@ both npm CLIs pinned in `runner/package.json`: Claude Code 2.1.306 and Codex 0.1
 v2.25.0 from its binary release. Workers do not apt-install tools at startup.
 
 Kubectl and Go come from OCI image volumes. Kubectl uses upstream
-`registry.k8s.io/kubectl:v<server-version>`. Immediately before creating a worker Pod, query the Kubernetes API server version
-and select the matching upstream kubectl image, preserving additional tool images.
+`registry.k8s.io/kubectl:v<server-version>`. The operator reads the API server
+version at startup; an Agent image volume whose reference ends in `/kubectl`
+without a tag gets that version's release tag, such as `v1.36.5` for
+`v1.36.5+k3s1`, while tagged and other tool images stay as written.
 Mount its whole `bin` directory and prepend `/opt/tools/kubectl/bin` to PATH in
 both Pod types; image subpaths must be directories. Neither image embeds kubectl.
 Workers also mount the official Go image's `/usr/local/go` tree at `/opt/tools/go`;
