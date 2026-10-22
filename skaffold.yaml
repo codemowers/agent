@@ -32,14 +32,9 @@ build:
         target: mailbox
 manifests:
   helm:
-    flags:
-      global:
-        - --kube-version=1.36.3
     releases:
       - name: agent-operator
         chartPath: chart
-        # The chart has no dependencies, and dep build rejects --kube-version.
-        skipBuildDependencies: true
         setValues:
           operator.host: dashboard
           webhook.host: webhook
