@@ -30,6 +30,8 @@ Files under `*/optional/` are templates with placeholder IDs and URLs.
    each forge hook at its receiver's path.
 4. `mail/rbac.yaml`, then the Mailboxes and MailBinding.
 5. `devices/hifiberry.yaml`.
+6. Optionally `browser/browser-mcp.yaml` in `demo`; see
+   [browser/README.md](browser/README.md).
 
 Outside these files:
 

@@ -1,0 +1,159 @@
+# Shared headless Chromium for the matmlazi Agent's Tasks, deployed as an
+# ordinary workload in its development namespace `demo`.
+#
+# Playwright MCP with --isolated over HTTP runs one Chromium process and
+# gives each MCP session its own in-memory BrowserContext, closed when the
+# session ends. Cookies and storage do not cross sessions, but every session
+# shares the browser process. The image runs Chromium with --no-sandbox, so a
+# renderer exploit reaches every context and this Pod's network position.
+# Share one Deployment per Agent at most, never across Agents or namespaces.
+#
+# There is no bearer authentication: the NetworkPolicy admits only matmlazi
+# worker Pods. TokenReview and SubjectAccessReview would need a
+# system:auth-delegator ClusterRoleBinding that a namespace developer cannot
+# create.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: browser-mcp
+  namespace: demo
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: browser-mcp
+  namespace: demo
+spec:
+  # Streamable HTTP sessions live in process memory. Scaling out relies on the
+  # Service's ClientIP affinity to keep a worker Pod on one replica.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: browser-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: browser-mcp
+    spec:
+      serviceAccountName: browser-mcp
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      containers:
+        - name: browser
+          # v0.0.83; the multi-architecture index digest pins the image.
+          image: mcr.microsoft.com/playwright/mcp@sha256:690763cbb437ee7233f538a953bb5390bf03791eb5c965b471e59d17a6132fcb
+          # The image entrypoint adds --headless --browser chromium --no-sandbox.
+          args:
+            - --host=0.0.0.0
+            - --port=8931
+            - --isolated
+            # Only the Service name is accepted as Host, so a page in this
+            # browser cannot drive the server through localhost.
+            - --allowed-hosts=browser-mcp.demo.svc.cluster.local:8931,browser-mcp.demo.svc:8931
+            - --output-dir=/home/node/output
+          ports:
+            - name: mcp
+              containerPort: 8931
+          securityContext:
+            # The image's USER is the name `node`; runAsNonRoot needs its UID.
+            runAsUser: 1000
+            runAsGroup: 1000
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          readinessProbe:
+            tcpSocket:
+              port: mcp
+          volumeMounts:
+            - name: home
+              mountPath: /home/node
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: browser-mcp
+  namespace: demo
+spec:
+  selector:
+    app.kubernetes.io/name: browser-mcp
+  sessionAffinity: ClientIP
+  ports:
+    - name: mcp
+      port: 8931
+      targetPort: mcp
+---
+# Only matmlazi worker Pods, labelled by the operator, may open MCP sessions.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: browser-mcp-ingress
+  namespace: demo
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: browser-mcp
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agents
+          podSelector:
+            matchLabels:
+              codemowers.cloud/agent: matmlazi
+      ports:
+        - port: mcp
+---
+# The browser reaches development workloads in `demo` and public sites. It
+# cannot reach the harness, the Kubernetes API or other in-cluster services,
+# so a worker cannot use it as a proxy into the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: browser-mcp-egress
+  namespace: demo
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: browser-mcp
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector: {}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.168.0.0/16
