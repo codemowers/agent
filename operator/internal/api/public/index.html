@@ -23,8 +23,8 @@ header { min-height: 68px; display: flex; align-items: center; gap: 14px; paddin
 .brand { min-width: 0; color: var(--bright); font-size: 19px; font-weight: 750; letter-spacing: -.7px; line-height: 1.2; }
 .brand-name { white-space: nowrap; }
 .brand span { color: var(--accent); }
-.brand-details { max-width: min(62vw, 720px); line-height: 1.35; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.brand-details small { font-size: 11px; font-weight: 400; letter-spacing: 0; color: var(--muted); }
+.brand-details { max-width: min(62vw, 720px); font-size: 11px; font-weight: 400; letter-spacing: 0; line-height: 1.35; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.brand-details small { font-size: inherit; color: inherit; }
 .brand-details .tagline::before { content: '·' / ''; padding: 0 5px; }
 .active-agent { flex: 0 1 260px; min-width: 130px; margin-left: auto; }
 .active-agent select { width: 100%; padding: 7px 10px; font-size: 12px; }
