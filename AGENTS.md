@@ -358,7 +358,8 @@ projected volume at `/var/run/agent-tokens` holds every worker token:
 `mcp/mailbox-<name>` per Mailbox. Attachment stays out of the worker
 configuration hash, like Mailboxes, so RBAC changes reach the next worker Pod.
 Wildcard RBAC such as cluster-admin uses every server. The servers still
-authorize each call.
+authorize each call; granting `use` asserts that a server's own authority
+does not exceed the grantee's (see `docs/security-model.md`).
 Alertmanager notifications posted to Slack by a bot and human replies in that
 thread are separate arrivals. Ignore bot echoes, preserve a human reply's
 Slack source and receipt, and never merge by similar text, labels, or channel.
