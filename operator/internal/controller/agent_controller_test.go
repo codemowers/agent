@@ -298,6 +298,33 @@ func TestWorkersReceiveScopedDeviceToken(t *testing.T) {
 	}
 }
 
+func TestDisabledDeviceBridgeOmitsWorkerAccess(t *testing.T) {
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
+	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "worker"}},
+	}}}}
+	r := &TaskReconciler{DisableDevices: true}
+	pod := r.buildWorkerPod("worker", task, agent, "worker", nil)
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Name == "agent-devices-token" {
+			t.Fatal("disabled bridge projected a Device token")
+		}
+	}
+	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+		if mount.Name == "agent-devices-token" {
+			t.Fatal("disabled bridge mounted a Device token")
+		}
+	}
+	for _, env := range pod.Spec.Containers[0].Env {
+		if env.Name == "AGENT_MCP_ENDPOINTS" && strings.Contains(env.Value, `"name":"devices"`) {
+			t.Fatal("disabled bridge exposed the Devices MCP endpoint")
+		}
+	}
+	if r.workerConfigHash(task, agent) == workerConfigHash(task, agent) {
+		t.Fatal("bridge setting did not change worker configuration hash")
+	}
+}
+
 func TestWorkersAttachOnlyAuthorizedMailboxes(t *testing.T) {
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "support"}, Spec: agentsv1alpha1.AgentSpec{

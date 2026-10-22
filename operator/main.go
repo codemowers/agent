@@ -144,11 +144,12 @@ func main() {
 	}
 
 	if err := (&controller.TaskReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		AMQP:        amqpMgr,
-		AMQPURL:     workerAMQPURL(amqpURL),
-		WorkerImage: os.Getenv("AGENT_WORKER_IMAGE"),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		AMQP:           amqpMgr,
+		AMQPURL:        workerAMQPURL(amqpURL),
+		WorkerImage:    os.Getenv("AGENT_WORKER_IMAGE"),
+		DisableDevices: os.Getenv("AGENT_DEVICES_ENABLED") == "false",
 		// Only the Pod's metadata.namespace fieldRef supplies this.
 		HarnessNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
@@ -169,20 +170,22 @@ func main() {
 		os.Exit(1)
 	}
 	if err := mgr.Add(&api.Handler{
-		Client:        mgr.GetClient(),
-		APIReader:     mgr.GetAPIReader(),
-		Events:        events,
-		AMQP:          amqpMgr,
-		Addr:          apiAddr,
-		MCPAddr:       mcpAddr,
-		Verifier:      verifier,
-		Reviewer:      api.NewSubjectAccessReviewer(clientset),
-		TokenReviews:  authenticationclient.NewForConfigOrDie(mgr.GetConfig()),
-		WebhookOrigin: os.Getenv("AGENT_WEBHOOK_ORIGIN"),
-		Issuer:        issuer,
-		ClientID:      clientID,
-		Origin:        origin,
-		RedirectURI:   redirectURI[0],
+		Client:         mgr.GetClient(),
+		APIReader:      mgr.GetAPIReader(),
+		Events:         events,
+		AMQP:           amqpMgr,
+		Addr:           apiAddr,
+		MCPAddr:        mcpAddr,
+		Verifier:       verifier,
+		Reviewer:       api.NewSubjectAccessReviewer(clientset),
+		TokenReviews:   authenticationclient.NewForConfigOrDie(mgr.GetConfig()),
+		WebhookOrigin:  os.Getenv("AGENT_WEBHOOK_ORIGIN"),
+		WebhookEnabled: os.Getenv("AGENT_WEBHOOK_ENABLED") != "false",
+		DevicesEnabled: os.Getenv("AGENT_DEVICES_ENABLED") != "false",
+		Issuer:         issuer,
+		ClientID:       clientID,
+		Origin:         origin,
+		RedirectURI:    redirectURI[0],
 	}); err != nil {
 		ctrl.Log.Error(err, "unable to add API server")
 		os.Exit(1)

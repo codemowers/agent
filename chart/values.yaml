@@ -7,6 +7,7 @@ imageRepository: ghcr.io/codemowers
 imageDigests: {}
 
 deviceBridge:
+  enabled: true
   secretNames: [agent-device-hifiberry]
   resources:
     requests:
@@ -22,6 +23,7 @@ deviceBridge:
 bootstrapRbac: true
 
 webhook:
+  enabled: true
   # Full public origin displayed in the UI's webhook setup instructions.
   publicOrigin: ""
   # Space-separated CIDRs of the ingress proxies whose X-Forwarded-For is

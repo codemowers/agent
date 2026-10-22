@@ -49,6 +49,8 @@ type Handler struct {
 	ModelHTTPClient *http.Client
 	TokenReviews    authenticationclient.AuthenticationV1Interface
 	WebhookOrigin   string
+	WebhookEnabled  bool
+	DevicesEnabled  bool
 }
 
 // taskQueue resolves the Task's queue through its Agent's worker ServiceAccount.
@@ -195,9 +197,10 @@ type suspendReq struct {
 }
 
 func (h *Handler) config(w http.ResponseWriter, r *http.Request) {
-	jsonOK(w, map[string]string{"issuer": h.Issuer, "clientId": h.ClientID, "origin": h.Origin,
+	jsonOK(w, map[string]any{"issuer": h.Issuer, "clientId": h.ClientID, "origin": h.Origin,
 		"redirectURI": h.RedirectURI, "audience": strings.TrimRight(h.Origin, "/") + "/api",
-		"webhookOrigin": h.WebhookOrigin})
+		"webhookOrigin": h.WebhookOrigin, "webhookEnabled": h.WebhookEnabled,
+		"devicesEnabled": h.DevicesEnabled})
 }
 
 func (h *Handler) authenticatedCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {

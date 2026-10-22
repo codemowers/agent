@@ -179,6 +179,10 @@ replica the worker calls. A Task records its queue in `Task.status.queue`
 under the `codemowers.cloud/task-queue` finalizer, which deletes the queue
 with the Task even after its Agent is gone.
 The Device bridge is a separate Go Deployment and image named `agent-devices`.
+The chart enables the webhook receiver and Device bridge by default; set
+`webhook.enabled=false` or `deviceBridge.enabled=false` to omit their workloads
+and related routing. When the bridge is disabled, workers receive neither its
+MCP endpoint nor its projected token.
 The existing operator Ingress routes `/devices/` to its Service, while workers
 call its `/mcp` endpoint in the harness namespace. A namespaced Device CR
 references one key in a Secret in its namespace. The bridge reads Devices and
@@ -186,7 +190,7 @@ only Secrets with names allowed by `deviceBridge.secretNames` in chart RBAC.
 The example Hifiberry uses its own `agent-device-hifiberry` Secret. A worker sees each
 Device on which it holds a verb, named bare in its own namespace and as
 `namespace/name` elsewhere. The bridge owns device-agent
-WebSockets and updates Device connection status. Every worker receives the
+WebSockets and updates Device connection status. With the bridge enabled, every worker receives the
 `devices` MCP endpoint and a projected ServiceAccount token for audience
 `agent-devices-mcp`, never a Device key; Device RBAC alone decides access.
 Pat's separate unprivileged ServiceAccount has no RBAC and its default API

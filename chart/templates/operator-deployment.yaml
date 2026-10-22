@@ -184,8 +184,14 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: AGENT_DEVICES_ENABLED
+              value: {{ .Values.deviceBridge.enabled | quote }}
+            - name: AGENT_WEBHOOK_ENABLED
+              value: {{ .Values.webhook.enabled | quote }}
+            {{- if .Values.webhook.enabled }}
             - name: AGENT_WEBHOOK_ORIGIN
               value: {{ .Values.webhook.publicOrigin | quote }}
+            {{- end }}
             {{- range $env, $configMap := dict "AGENT_WORKER_IMAGE" "agent-worker-image" "AGENT_MAILBOX_IMAGE" "agent-mailbox-image" }}
             - name: {{ $env }}
               valueFrom:
@@ -202,8 +208,10 @@ spec:
             {{- end }}
             # Only events whose broker-verified user_id is the webhook
             # receiver's ServiceAccount are routed.
+            {{- if .Values.webhook.enabled }}
             - name: AGENT_WEBHOOK_PUBLISHER
               value: system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-webhook
+            {{- end }}
             - name: AMQP_HOST
               valueFrom:
                 secretKeyRef:
@@ -300,6 +308,7 @@ spec:
                 name: {{ .Release.Name }}
                 port:
                   name: api
+          {{- if .Values.deviceBridge.enabled }}
           - path: /devices/
             pathType: Prefix
             backend:
@@ -307,6 +316,7 @@ spec:
                 name: agent-devices
                 port:
                   name: http
+          {{- end }}
 ---
 # The operator reads the images it starts from these ConfigMaps; their `image`
 # key lets Skaffold rewrite them like container images.

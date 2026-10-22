@@ -112,10 +112,11 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // TaskReconciler reconciles Task CRs: manages worker Pod and workspace PVC lifecycle.
 type TaskReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	AMQP        AMQPManager // nil when RabbitMQ is not configured
-	AMQPURL     string      // injected into worker pods as AMQP_URL
-	WorkerImage string      // approved runner image injected by deployment/Skaffold
+	Scheme         *runtime.Scheme
+	AMQP           AMQPManager // nil when RabbitMQ is not configured
+	AMQPURL        string      // injected into worker pods as AMQP_URL
+	WorkerImage    string      // approved runner image injected by deployment/Skaffold
+	DisableDevices bool        // omit Device MCP and token when the bridge is disabled
 	// HarnessNamespace hosts the operator and Device bridge Services that
 	// workers of every Agent namespace call.
 	HarnessNamespace string
@@ -468,7 +469,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 			}
 			if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed &&
-				pod.Annotations[workerConfigHashAnnotation] != workerConfigHash(task, agent) {
+				pod.Annotations[workerConfigHashAnnotation] != r.workerConfigHash(task, agent) {
 				if !task.Status.RetryWorker {
 					patch := client.MergeFrom(task.DeepCopy())
 					task.Status.RetryWorker = true
@@ -817,7 +818,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.cloud/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "9"
+	WorkerPodVersion = "10"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -832,6 +833,14 @@ func workerConfigHash(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) st
 }
 
 func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, version string) string {
+	return workerConfigHashWithDevices(task, agent, version, true)
+}
+
+func (r *TaskReconciler) workerConfigHash(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) string {
+	return workerConfigHashWithDevices(task, agent, WorkerPodVersion, !r.DisableDevices)
+}
+
+func workerConfigHashWithDevices(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, version string, devicesEnabled bool) string {
 	model := agent.Spec.Model
 	if task.Spec.Model != nil {
 		model = *task.Spec.Model
@@ -845,7 +854,7 @@ func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha
 		CredentialKeyRef string                       `json:"credentialKeyRef"`
 		Template         corev1.PodTemplateSpec       `json:"template"`
 		MCPEndpoints     []agentsv1alpha1.MCPEndpoint `json:"mcpEndpoints"`
-	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, agent.Spec.Template, agentsv1alpha1.WorkerMCPEndpoints(agent, "", task.Namespace, nil)})
+	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, agent.Spec.Template, agentsv1alpha1.WorkerMCPEndpoints(agent, "", task.Namespace, nil, devicesEnabled)})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -1012,7 +1021,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	} else if task.Status.Progress != nil && !task.Status.Progress.UpdatedAt.IsZero() {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_LAST_RESULT_AT", Value: task.Status.Progress.UpdatedAt.Time.Format(time.RFC3339Nano)})
 	}
-	endpointsJSON, _ := json.Marshal(agentsv1alpha1.WorkerMCPEndpoints(agent, r.HarnessNamespace, task.Namespace, mailboxes))
+	endpointsJSON, _ := json.Marshal(agentsv1alpha1.WorkerMCPEndpoints(agent, r.HarnessNamespace, task.Namespace, mailboxes, !r.DisableDevices))
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MCP_ENDPOINTS", Value: string(endpointsJSON)})
 	disabledJSON, _ := json.Marshal(append([]string{}, task.Spec.DisabledMCPs...))
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_DISABLED_MCPS", Value: string(disabledJSON)})
@@ -1053,8 +1062,10 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 			ps.Containers[i].Env = append(ps.Containers[i].Env, opEnv...)
 			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
 				Name: "agent-operator-mcp-token", MountPath: "/var/run/agent-operator-mcp", ReadOnly: true})
-			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
-				Name: "agent-devices-token", MountPath: "/var/run/agent-devices", ReadOnly: true})
+			if !r.DisableDevices {
+				ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
+					Name: "agent-devices-token", MountPath: "/var/run/agent-devices", ReadOnly: true})
+			}
 			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
 				Name: "agent-rabbitmq-token", MountPath: "/var/run/agent-rabbitmq", ReadOnly: true})
 			if len(mailboxes) > 0 {
@@ -1090,9 +1101,11 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-operator-mcp-token", VolumeSource: corev1.VolumeSource{
 		Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 			Audience: "agent-operator-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
-	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-devices-token", VolumeSource: corev1.VolumeSource{
-		Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-			Audience: "agent-devices-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
+	if !r.DisableDevices {
+		ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-devices-token", VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+				Audience: "agent-devices-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
+	}
 	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-rabbitmq-token", VolumeSource: corev1.VolumeSource{
 		Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 			Audience: agentsv1alpha1.RabbitMQAudience, ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
@@ -1106,7 +1119,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	for key, value := range agent.Spec.Template.ObjectMeta.Annotations {
 		annotations[key] = value
 	}
-	annotations[workerConfigHashAnnotation] = workerConfigHash(task, agent)
+	annotations[workerConfigHashAnnotation] = r.workerConfigHash(task, agent)
 	annotations[workerVersionAnnotation] = WorkerPodVersion
 	annotations[workerRuntimeGenerationAnnotation] = strconv.FormatInt(task.Generation, 10)
 	return &corev1.Pod{

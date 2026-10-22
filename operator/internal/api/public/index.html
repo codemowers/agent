@@ -787,7 +787,9 @@ function renderAgentWebhookSetup() {
   const host = document.getElementById('agentWebhookSetup'); host.replaceChildren();
   const [name, namespace] = document.getElementById('activeAgentSelect').value.split('|');
   const agent = agents.find(item => item.name === name && item.namespace === namespace);
-  if (agent) host.append(giteaWebhookSetup(agent), deviceAgentSetup(agent.namespace));
+  if (!agent) return;
+  if (oidc?.webhookEnabled !== false) host.append(giteaWebhookSetup(agent));
+  if (oidc?.devicesEnabled !== false) host.append(deviceAgentSetup(agent.namespace));
 }
 
 function deviceAgentSetup(namespace) {
