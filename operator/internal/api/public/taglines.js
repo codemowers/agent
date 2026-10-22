@@ -12,7 +12,8 @@ const taglines = [
   'Someone is typing. It\'s your replacement.',
   'See kids, this is the f***in\' future.',
   'The future is now, old man.',
-  'Hello fellow humans. I too enjoy manual deployments.'
+  'Hello fellow humans. I too enjoy manual deployments.',
+  'Screw backward compatibility. We\'re forward compatible with whatever comes next.'
 ];
 
 // Desktop truncates a long tagline with an ellipsis; the tooltip has it in full.
