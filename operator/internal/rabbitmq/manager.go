@@ -23,7 +23,8 @@ type PromptMessage struct {
 	Generation  int64  `json:"generation,omitempty"`
 	IdleSeconds *int32 `json:"idleSeconds,omitempty"`
 	Model       string `json:"model"`
-	// DisabledMCPs is sent with every runtime configuration message.
+	// DisabledMCPs is the Task's complete list on every runtime configuration
+	// message; omitted when empty, which the worker reads as none disabled.
 	DisabledMCPs []string `json:"disabledMcps,omitempty"`
 }
 

@@ -165,8 +165,9 @@ export function runtimeConfig(message, currentGeneration) {
       typeof message.model !== 'string' || message.model.length > 200) {
     throw new Error('Invalid runtime configuration');
   }
-  disabledMcpNames(message.disabledMcps);
-  return message.generation > currentGeneration ? message : null;
+  // The operator omits an empty list, so absence re-enables every MCP.
+  const disabledMcps = disabledMcpNames(message.disabledMcps);
+  return message.generation > currentGeneration ? {...message, disabledMcps} : null;
 }
 
 function run(command, args, options = {}) {
@@ -442,7 +443,7 @@ export async function taskWorker() {
         if (update) {
           runtimeGeneration = update.generation;
           idleSeconds = update.idleSeconds;
-          if (update.disabledMcps) disabledMcps = update.disabledMcps;
+          disabledMcps = update.disabledMcps;
           idleUntil = completedTurn ? lastResultAt + idleSeconds * 1000 : 0;
           if (model !== update.model) {
             model = update.model;

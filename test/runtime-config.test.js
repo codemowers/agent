@@ -4,7 +4,7 @@ import {runtimeConfig, turnMetrics} from '../src/task-worker.js';
 
 test('runtime configuration applies only newer bounded updates', () => {
   const update = {type: 'config', generation: 5, idleSeconds: 0, model: 'claude-sonnet'};
-  assert.equal(runtimeConfig(update, 4), update);
+  assert.deepEqual(runtimeConfig(update, 4), {...update, disabledMcps: []});
   assert.equal(runtimeConfig(update, 5), null);
   assert.throws(() => runtimeConfig({...update, idleSeconds: -1}, 4));
   assert.throws(() => runtimeConfig({...update, model: 42}, 4));
