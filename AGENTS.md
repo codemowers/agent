@@ -180,10 +180,10 @@ replica the worker calls. A Task records its queue in `Task.status.queue`
 under the `codemowers.cloud/task-queue` finalizer, which deletes the queue
 with the Task even after its Agent is gone.
 The Device bridge is a separate Go Deployment and image named `agent-devices`.
-The chart enables the webhook receiver and Device bridge by default; set
-`webhook.enabled=false` or `deviceBridge.enabled=false` to omit their workloads
-and related routing. When the bridge is disabled, workers receive neither its
-MCP endpoint nor its projected token.
+The chart enables the webhook receiver by default and the Device bridge only
+with `deviceBridge.enabled=true`; `webhook.enabled=false` omits the receiver.
+A disabled component has no workloads or related routing. When the bridge is
+disabled, workers receive neither its MCP endpoint nor its projected token.
 The existing operator Ingress routes `/devices/` to its Service, while workers
 call its `/mcp` endpoint in the harness namespace. A namespaced Device CR
 references one key in a Secret in its namespace. The bridge reads Devices and

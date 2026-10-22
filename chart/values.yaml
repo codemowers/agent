@@ -7,7 +7,7 @@ imageRepository: ghcr.io/codemowers
 imageDigests: {}
 
 deviceBridge:
-  enabled: true
+  enabled: false
   secretNames: [agent-device-hifiberry]
   resources:
     requests:

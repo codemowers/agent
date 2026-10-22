@@ -44,6 +44,7 @@ manifests:
           webhook.host: webhook
           rabbitmq.name: agent-events
           feeds.enabled: true
+          deviceBridge.enabled: true
           imageRepository: ""
         setValueTemplates:
           operator.apiResource: "{{.AGENT_OPERATOR_API_RESOURCE}}"
