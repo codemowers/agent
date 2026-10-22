@@ -30,7 +30,7 @@ func TestWakeRequiresAudienceTokenAndWakeVerb(t *testing.T) {
 	kube := kubefake.NewSimpleClientset()
 	kube.PrependReactor("create", "tokenreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
 		review := action.(ktesting.CreateAction).GetObject().(*authenticationv1.TokenReview)
-		review.Status.Authenticated = review.Spec.Token == "valid" && review.Spec.Audiences[0] == wakeAudience
+		review.Status.Authenticated = review.Spec.Token == "valid" && review.Spec.Audiences[0] == "agent-operator-wake.harness"
 		review.Status.User = authenticationv1.UserInfo{Username: "system:serviceaccount:agents:schedule"}
 		return true, review, nil
 	})
@@ -41,7 +41,7 @@ func TestWakeRequiresAudienceTokenAndWakeVerb(t *testing.T) {
 		return true, review, nil
 	})
 	waker := &recordingWaker{}
-	h := &Handler{TokenReviews: kube.AuthenticationV1(), AccessReviews: kube.AuthorizationV1(), Waker: waker}
+	h := &Handler{TokenReviews: kube.AuthenticationV1(), AccessReviews: kube.AuthorizationV1(), Waker: waker, HarnessNamespace: "harness"}
 	wake := func(token, task, key, body string) int {
 		request := httptest.NewRequest(http.MethodPost, "/internal/v1/namespaces/agents/tasks/"+task+"/wake", strings.NewReader(body))
 		request.SetPathValue("namespace", "agents")

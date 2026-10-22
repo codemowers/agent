@@ -26,8 +26,10 @@ import (
 
 func main() {
 	var wakeURL, tokenFile, probeAddr, mcpAddr string
-	flag.StringVar(&wakeURL, "wake-url", os.Getenv("AGENT_WAKE_URL"), "Base URL of the operator wake endpoint.")
-	flag.StringVar(&tokenFile, "token-file", "/var/run/agent-wake/token", "Projected token for audience agent-operator-wake.")
+	// The crawler runs in the harness namespace beside the operator.
+	namespace := os.Getenv("POD_NAMESPACE")
+	flag.StringVar(&wakeURL, "wake-url", agentsv1alpha1.OperatorWakeURL(namespace), "Base URL of the operator wake endpoint.")
+	flag.StringVar(&tokenFile, "token-file", "/var/run/agent-wake/token", "Projected token for the wake Service's audience.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address for health probes.")
 	flag.StringVar(&mcpAddr, "mcp-bind-address", ":8080", "Address for the workers' feeds MCP.")
 	opts := zap.Options{}
@@ -35,8 +37,8 @@ func main() {
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	logger := ctrl.Log.WithName("feeds")
-	if wakeURL == "" {
-		logger.Info("wake URL required")
+	if namespace == "" {
+		logger.Info("POD_NAMESPACE required")
 		os.Exit(1)
 	}
 
@@ -57,7 +59,7 @@ func main() {
 		logger.Error(err, "set up Feed controller")
 		os.Exit(1)
 	}
-	server := &http.Server{Addr: mcpAddr, Handler: &feedsMCP{reader: mgr.GetClient(),
+	server := &http.Server{Addr: mcpAddr, Handler: &feedsMCP{audience: "agent-feeds." + namespace, reader: mgr.GetClient(),
 		reviews: authenticationclient.NewForConfigOrDie(mgr.GetConfig())}, ReadHeaderTimeout: 10 * time.Second}
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		go func() {

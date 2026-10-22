@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {createMailboxMcpServer, audience} from '../mailbox/mcp.js';
+import {createMailboxMcpServer} from '../mailbox/mcp.js';
 
 async function listen(server, t) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -14,7 +14,7 @@ test('Mailbox MCP authenticates ServiceAccount tokens and checks RBAC verbs per 
   const kube = async (path, body) => {
     reviews.push({path, body});
     if (path.endsWith('/tokenreviews')) {
-      assert.deepEqual(body.spec.audiences, [audience]);
+      assert.deepEqual(body.spec.audiences, ['agent-mailbox-shared.team']);
       const username = {good: 'system:serviceaccount:team:agent-worker-mat', foreign: 'system:serviceaccount:other:agent-worker-mat'}[body.spec.token];
       return {status: username ? {authenticated: true, user: {username, uid: 'u', groups: []}} : {authenticated: false}};
     }
@@ -30,7 +30,7 @@ test('Mailbox MCP authenticates ServiceAccount tokens and checks RBAC verbs per 
     res.writeHead(200, {'content-type': 'application/json'}).end(JSON.stringify({messageId: '<m@test>', accepted: ['to@example.test'], rejected: [], sentCopy: {status: 'disabled'}}));
   });
   const smtpURL = await listen(smtp, t);
-  const url = await listen(createMailboxMcpServer({namespace: 'team', mailbox: 'shared', address: 'shared@example.test',
+  const url = await listen(createMailboxMcpServer({namespace: 'team', mailbox: 'shared', audience: 'agent-mailbox-shared.team', address: 'shared@example.test',
     smtp: true, imap: true, kube, smtpURL, listURL: 'http://127.0.0.1:1'}), t);
   const rpc = (token, method, params) => fetch(`${url}/mcp`, {method: 'POST', headers: {authorization: `Bearer ${token}`},
     body: JSON.stringify({jsonrpc: '2.0', id: 1, method, params})});

@@ -256,6 +256,7 @@ func (r *MailboxReconciler) mcpContainer(mailbox *agentsv1alpha1.Mailbox, caller
 			{Name: "MAILBOX_IMAP", Value: strconv.FormatBool(mailbox.Spec.IMAP != nil)},
 			{Name: "MAILBOX_SMTP", Value: strconv.FormatBool(mailbox.Spec.SMTP != nil)},
 			{Name: "MAILBOX_CALLER", Value: caller},
+			{Name: "MCP_AUDIENCE", Value: agentsv1alpha1.ServiceAudience(agentsv1alpha1.MailboxMCPURL(mailbox.Name, mailbox.Namespace))},
 		},
 		Ports:           []corev1.ContainerPort{{Name: "mcp", ContainerPort: 8080}},
 		VolumeMounts:    []corev1.VolumeMount{{Name: "kube-api-access", MountPath: "/var/run/secrets/kubernetes.io/serviceaccount", ReadOnly: true}},

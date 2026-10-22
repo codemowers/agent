@@ -827,7 +827,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.cloud/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "15"
+	WorkerPodVersion = "16"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -968,8 +968,11 @@ func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv
 	return names
 }
 
-// mcpServer is an advertised MCP server attached to a worker.
-type mcpServer struct{ Name, URL, Audience string }
+// mcpServer is an advertised MCP server attached to a worker; a non-empty
+// Audience sends it a projected token.
+type mcpServer struct {
+	Name, URL, Audience string
+}
 
 // authorizedMCPServers lists the ClusterMCPServers and the namespace's
 // MCPServers on which the worker ServiceAccount holds the custom verb "use".
@@ -997,7 +1000,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 	}
 	for _, server := range cluster.Items {
 		if allowed("", "clustermcpservers", server.Name) {
-			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.Audience}
+			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience()}
 		}
 	}
 	var local agentsv1alpha1.MCPServerList
@@ -1006,7 +1009,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 	}
 	for _, server := range local.Items {
 		if allowed(namespace, "mcpservers", server.Name) {
-			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.Audience}
+			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience()}
 		}
 	}
 	servers := make([]mcpServer, 0, len(byName))
@@ -1084,7 +1087,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		{Name: "AGENT_IDLE_SECONDS", Value: strconv.FormatInt(int64(taskIdleSeconds(task, agent)), 10)},
 		{Name: "AGENT_TASK_GENERATION", Value: strconv.FormatInt(task.Generation, 10)},
 		{Name: "AGENT_OPERATOR_MCP_URL", Value: agentsv1alpha1.OperatorMCPURL(r.HarnessNamespace)},
-		{Name: "AGENT_OPERATOR_MCP_TOKEN_FILE", Value: "/var/run/agent-operator-mcp/token"},
+		{Name: "AGENT_OPERATOR_MCP_TOKEN_FILE", Value: agentsv1alpha1.WorkerTokenDir + "/agent_operator"},
 	}
 	if task.Status.Progress != nil && task.Status.Progress.Summary != "" {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_PREVIOUS_SUMMARY", Value: task.Status.Progress.Summary})
@@ -1094,12 +1097,26 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	} else if task.Status.Progress != nil && !task.Status.Progress.UpdatedAt.IsZero() {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_LAST_RESULT_AT", Value: task.Status.Progress.UpdatedAt.Time.Format(time.RFC3339Nano)})
 	}
+	// One projected token per service, each for the service's own audience,
+	// so no service can replay a token against another.
+	token := func(audience, path string) corev1.VolumeProjection {
+		return corev1.VolumeProjection{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+			Audience: audience, ExpirationSeconds: int64Ptr(3600), Path: path}}
+	}
+	tokens := []corev1.VolumeProjection{
+		token(agentsv1alpha1.ServiceAudience(agentsv1alpha1.OperatorMCPURL(r.HarnessNamespace)), "agent_operator"),
+		token(agentsv1alpha1.RabbitMQAudience, "rabbitmq"),
+	}
 	endpoints := make([]agentsv1alpha1.MCPEndpoint, len(servers))
 	for i, server := range servers {
 		endpoints[i] = agentsv1alpha1.MCPEndpoint{Name: server.Name, URL: server.URL}
 		if server.Audience != "" {
-			endpoints[i].TokenFile = "/var/run/agent-mcp/" + server.Name + "/token"
+			endpoints[i].TokenFile = agentsv1alpha1.WorkerTokenDir + "/mcp/" + server.Name
+			tokens = append(tokens, token(server.Audience, "mcp/"+server.Name))
 		}
+	}
+	for _, mailbox := range mailboxes {
+		tokens = append(tokens, token(agentsv1alpha1.ServiceAudience(agentsv1alpha1.MailboxMCPURL(mailbox, task.Namespace)), "mcp/mailbox-"+mailbox))
 	}
 	endpointsJSON, _ := json.Marshal(agentsv1alpha1.WorkerMCPEndpoints(r.HarnessNamespace, task.Namespace, endpoints, mailboxes))
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MCP_ENDPOINTS", Value: string(endpointsJSON)})
@@ -1125,7 +1142,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		opEnv = append(opEnv,
 			corev1.EnvVar{Name: "AMQP_URL", Value: r.AMQPURL},
 			corev1.EnvVar{Name: "TASK_QUEUE", Value: agentsv1alpha1.TaskQueue(task, agent)},
-			corev1.EnvVar{Name: "AGENT_RABBITMQ_TOKEN_FILE", Value: "/var/run/agent-rabbitmq/token"},
+			corev1.EnvVar{Name: "AGENT_RABBITMQ_TOKEN_FILE", Value: agentsv1alpha1.WorkerTokenDir + "/rabbitmq"},
 		)
 	}
 	for i := range ps.Containers {
@@ -1141,41 +1158,11 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 			ps.Containers[i].Env = filtered
 			ps.Containers[i].Env = append(ps.Containers[i].Env, opEnv...)
 			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
-				Name: "agent-operator-mcp-token", MountPath: "/var/run/agent-operator-mcp", ReadOnly: true})
-			for _, server := range servers {
-				if server.Audience != "" {
-					ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
-						Name: "mcp-" + server.Name, MountPath: "/var/run/agent-mcp/" + server.Name, ReadOnly: true})
-				}
-			}
-			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
-				Name: "agent-rabbitmq-token", MountPath: "/var/run/agent-rabbitmq", ReadOnly: true})
-			if len(mailboxes) > 0 {
-				ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
-					Name: "agent-mailbox-token", MountPath: "/var/run/agent-mailbox", ReadOnly: true})
-			}
+				Name: "agent-tokens", MountPath: agentsv1alpha1.WorkerTokenDir, ReadOnly: true})
 		}
 	}
-	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-operator-mcp-token", VolumeSource: corev1.VolumeSource{
-		Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-			Audience: "agent-operator-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
-	// Each advertised server gets its own audience-bound token, so a server
-	// cannot replay it against another.
-	for _, server := range servers {
-		if server.Audience != "" {
-			ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "mcp-" + server.Name, VolumeSource: corev1.VolumeSource{
-				Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-					Audience: server.Audience, ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
-		}
-	}
-	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-rabbitmq-token", VolumeSource: corev1.VolumeSource{
-		Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-			Audience: agentsv1alpha1.RabbitMQAudience, ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
-	if len(mailboxes) > 0 {
-		ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-mailbox-token", VolumeSource: corev1.VolumeSource{
-			Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-				Audience: "agent-mailbox-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
-	}
+	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-tokens", VolumeSource: corev1.VolumeSource{
+		Projected: &corev1.ProjectedVolumeSource{Sources: tokens}}})
 
 	annotations := make(map[string]string, len(agent.Spec.Template.ObjectMeta.Annotations)+1)
 	for key, value := range agent.Spec.Template.ObjectMeta.Annotations {

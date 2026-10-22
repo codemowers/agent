@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,16 +17,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const wakeAudience = "agent-operator-wake"
-
 // TaskWaker records a wake request on a Task.
 type TaskWaker interface {
 	WakeTask(ctx context.Context, namespace, name, actor, key, text, sourceURL string) error
 }
 
 // wakeTask lets an in-cluster caller holding the custom verb "wake" on a Task
-// wake it with a projected ServiceAccount token for audience
-// agent-operator-wake. An Idempotency-Key header makes retries safe.
+// wake it with a projected ServiceAccount token for the audience of the wake
+// Service, agent-operator-wake.<namespace>. An Idempotency-Key header makes
+// retries safe.
 func (h *Handler) wakeTask(w http.ResponseWriter, r *http.Request) {
 	namespace, name := r.PathValue("namespace"), r.PathValue("name")
 	logger := log.FromContext(r.Context()).WithValues("namespace", namespace, "task", name)
@@ -35,7 +35,7 @@ func (h *Handler) wakeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	review, err := h.TokenReviews.TokenReviews().Create(r.Context(), &authenticationv1.TokenReview{
-		Spec: authenticationv1.TokenReviewSpec{Token: strings.TrimPrefix(authorization, "Bearer "), Audiences: []string{wakeAudience}},
+		Spec: authenticationv1.TokenReviewSpec{Token: strings.TrimPrefix(authorization, "Bearer "), Audiences: []string{agentsv1alpha1.ServiceAudience(agentsv1alpha1.OperatorWakeURL(h.HarnessNamespace))}},
 	}, metav1.CreateOptions{})
 	if err != nil {
 		jsonError(w, errors.New("token review unavailable"), http.StatusServiceUnavailable)

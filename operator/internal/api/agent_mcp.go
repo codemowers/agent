@@ -23,8 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const agentMCPAudience = "agent-operator-mcp"
-
 var mcpHTTPDetail = regexp.MustCompile(`^HTTP [1-5][0-9][0-9]$`)
 
 var mcpToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
@@ -72,7 +70,7 @@ func (h *Handler) authenticateWorker(ctx context.Context, authorization string) 
 		return nil, errors.New("worker token required")
 	}
 	review, err := h.TokenReviews.TokenReviews().Create(ctx, &authenticationv1.TokenReview{
-		Spec: authenticationv1.TokenReviewSpec{Token: strings.TrimPrefix(authorization, "Bearer "), Audiences: []string{agentMCPAudience}},
+		Spec: authenticationv1.TokenReviewSpec{Token: strings.TrimPrefix(authorization, "Bearer "), Audiences: []string{agentsv1alpha1.ServiceAudience(agentsv1alpha1.OperatorMCPURL(h.HarnessNamespace))}},
 	}, metav1.CreateOptions{})
 	if err != nil || !review.Status.Authenticated || review.Status.Error != "" {
 		return nil, errors.New("worker token rejected")

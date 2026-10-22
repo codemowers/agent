@@ -133,11 +133,11 @@ func TestFeedsMCPListsOwnNamespaceItemsSince(t *testing.T) {
 	kube := kubefake.NewSimpleClientset()
 	kube.PrependReactor("create", "tokenreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
 		review := action.(ktesting.CreateAction).GetObject().(*authnv1.TokenReview)
-		review.Status.Authenticated = review.Spec.Token == "worker" && review.Spec.Audiences[0] == mcpAudience
+		review.Status.Authenticated = review.Spec.Token == "worker" && review.Spec.Audiences[0] == "agent-feeds.harness"
 		review.Status.User.Username = "system:serviceaccount:agents:agent-worker-krtek"
 		return true, review, nil
 	})
-	server := &feedsMCP{reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(feeds...).Build(), reviews: kube.AuthenticationV1()}
+	server := &feedsMCP{audience: "agent-feeds.harness", reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(feeds...).Build(), reviews: kube.AuthenticationV1()}
 	call := func(token, arguments string) (int, string) {
 		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
 			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_feed_items","arguments":`+arguments+`}}`))

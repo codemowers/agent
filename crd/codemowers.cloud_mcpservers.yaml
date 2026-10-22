@@ -17,9 +17,9 @@ spec:
         - name: URL
           type: string
           jsonPath: .spec.url
-        - name: Audience
-          type: string
-          jsonPath: .spec.audience
+        - name: Token
+          type: boolean
+          jsonPath: .spec.serviceAccountToken
       schema:
         openAPIV3Schema:
           description: Advertises an MCP server to workers of this namespace whose ServiceAccount holds the custom verb use on it; it overrides a ClusterMCPServer of the same name.
@@ -35,14 +35,13 @@ spec:
               required:
                 - url
               x-kubernetes-validations:
-                - rule: "!has(self.audience) || self.audience == self.url"
-                  message: a namespaced server's audience must equal its URL, so it cannot request tokens for other audiences
+                - rule: "!has(self.serviceAccountToken) || !self.serviceAccountToken || self.url.matches('^https?://[a-z0-9]([-a-z0-9]*[a-z0-9])?[.][a-z0-9]([-a-z0-9]*[a-z0-9])?[.]svc([.]cluster[.]local)?([:/].*)?$')"
+                  message: a token needs an in-cluster URL http(s)://<service>.<namespace>.svc[.cluster.local], whose Service is its audience
               properties:
                 url:
                   type: string
                   pattern: ^https?://
                   maxLength: 2048
-                audience:
-                  description: Audience of the projected ServiceAccount token workers present; absent sends no token.
-                  type: string
-                  maxLength: 2048
+                serviceAccountToken:
+                  description: Send a projected ServiceAccount token for the audience <service>.<namespace> of the in-cluster URL.
+                  type: boolean

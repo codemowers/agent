@@ -2,10 +2,10 @@ import http from 'node:http';
 import https from 'node:https';
 import {readFile} from 'node:fs/promises';
 
-// Workers present a projected ServiceAccount token for this audience. The
+// Workers present a projected ServiceAccount token for the audience of this
+// Mailbox's Service, <service>.<namespace>, which the operator passes in. The
 // Mailbox Pod authenticates it with TokenReview and checks the custom verbs
 // `send` and `read` on its own Mailbox with SubjectAccessReview per call.
-export const audience = 'agent-mailbox-mcp';
 const serviceAccountDir = '/var/run/secrets/kubernetes.io/serviceaccount';
 
 export function kubeClient({host = process.env.KUBERNETES_SERVICE_HOST, port = process.env.KUBERNETES_SERVICE_PORT || '443',
@@ -31,7 +31,7 @@ export function kubeClient({host = process.env.KUBERNETES_SERVICE_HOST, port = p
   };
 }
 
-export function createMailboxMcpServer({namespace, mailbox, address = '', displayName = '', smtp = false, imap = false,
+export function createMailboxMcpServer({namespace, mailbox, audience, address = '', displayName = '', smtp = false, imap = false,
   caller = '', kube = kubeClient(), smtpURL = 'http://127.0.0.1:8083', listURL = 'http://127.0.0.1:8082'}) {
   const authenticate = async header => {
     if (typeof header !== 'string' || !header.startsWith('Bearer ') || header.length < 8) return null;
@@ -159,7 +159,7 @@ export function createMailboxMcpServer({namespace, mailbox, address = '', displa
 
 if (process.argv[1]?.endsWith('/mailbox/mcp.js')) {
   const env = process.env;
-  createMailboxMcpServer({namespace: env.AGENT_NAMESPACE, mailbox: env.MAILBOX_NAME, address: env.MAILBOX_ADDRESS || '',
+  createMailboxMcpServer({namespace: env.AGENT_NAMESPACE, mailbox: env.MAILBOX_NAME, audience: env.MCP_AUDIENCE, address: env.MAILBOX_ADDRESS || '',
     displayName: env.MAILBOX_DISPLAY_NAME || '', smtp: env.MAILBOX_SMTP === 'true', imap: env.MAILBOX_IMAP === 'true',
     caller: env.MAILBOX_CALLER || ''})
     .listen(Number(env.MCP_PORT || 8080));

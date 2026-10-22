@@ -46,14 +46,14 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	kube := kubefake.NewSimpleClientset()
 	kube.PrependReactor("create", "tokenreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
 		request := action.(ktesting.CreateAction).GetObject().(*authenticationv1.TokenReview)
-		if len(request.Spec.Audiences) != 1 || request.Spec.Audiences[0] != agentMCPAudience {
+		if len(request.Spec.Audiences) != 1 || request.Spec.Audiences[0] != "agent-operator.harness" {
 			t.Fatal("wrong audience")
 		}
 		return true, &authenticationv1.TokenReview{Status: authenticationv1.TokenReviewStatus{Authenticated: request.Spec.Token == "valid",
 			User: authenticationv1.UserInfo{Username: "system:serviceaccount:team:worker-sa", Extra: map[string]authenticationv1.ExtraValue{
 				"authentication.kubernetes.io/pod-name": {"worker"}, "authentication.kubernetes.io/pod-uid": {"pod-uid"}}}}}, nil
 	})
-	h := &Handler{Client: store, APIReader: store, TokenReviews: kube.AuthenticationV1()}
+	h := &Handler{Client: store, APIReader: store, TokenReviews: kube.AuthenticationV1(), HarnessNamespace: "harness"}
 	call := func(token, name, args string) *httptest.ResponseRecorder {
 		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + name + `","arguments":` + args + `}}`
 		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))

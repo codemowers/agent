@@ -253,12 +253,23 @@ spec:
     - name: agent-mcp
       port: 8083
       targetPort: agent-mcp
-    - name: wake
-      port: 8084
-      targetPort: wake
     - name: metrics
       port: 8081
       targetPort: metrics
+---
+# The wake endpoint has its own Service, and so its own token audience,
+# agent-operator-wake.<namespace>, distinct from the Agent MCP's.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-wake
+spec:
+  selector:
+    app: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: wake
 ---
 apiVersion: codemowers.cloud/v1
 kind: OIDCClient

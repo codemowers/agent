@@ -193,8 +193,8 @@ Device on which it holds a verb, named bare in its own namespace and as
 `namespace/name` elsewhere. The bridge owns device-agent
 WebSockets and updates Device connection status. With the bridge enabled, the
 chart advertises it as the `devices` ClusterMCPServer that every
-ServiceAccount may use, so workers get a projected token for audience
-`agent-devices-mcp`, never a Device key; Device RBAC alone decides access.
+ServiceAccount may use, so workers get a projected token for its Service's
+audience, never a Device key; Device RBAC alone decides access.
 Pat's separate unprivileged ServiceAccount has no RBAC and its default API
 token mount is disabled, so its device calls are denied.
 The bridge authenticates TokenReview and checks SubjectAccessReview on the exact
@@ -312,9 +312,10 @@ fetches the ServiceAccount issuer's JWKS from `rabbitmq.jwksURI`: the API
 server on k3s, which must allow anonymous discovery, or the public issuer on
 EKS.
 In-cluster callers wake a Task directly through the operator's wake endpoint,
-`POST /internal/v1/namespaces/<namespace>/tasks/<task>/wake` on internal port
-8084, which every replica serves and the Ingress never routes. The caller
-presents a projected ServiceAccount token for audience `agent-operator-wake`;
+`POST /internal/v1/namespaces/<namespace>/tasks/<task>/wake` on the
+`agent-operator-wake` Service, which every replica serves and the Ingress
+never routes. The caller presents a projected ServiceAccount token for
+audience `agent-operator-wake.<harness namespace>`;
 the operator checks it with TokenReview and requires a SubjectAccessReview for
 the custom verb `wake` on that Task, which nobody holds by default. The JSON
 body carries optional `text` (4 KiB, the conversation line and prompt) and
@@ -336,19 +337,24 @@ only after every wake succeeded. The crawler's ServiceAccount holds `wake` on
 Tasks cluster-wide, so namespace administrators decide through FeedBindings
 which of their Tasks a Feed wakes. With the crawler enabled, the chart
 advertises it as the `feeds` ClusterMCPServer that every ServiceAccount may
-use, with token audience `agent-feeds-mcp`; `list_feeds` and
+use, with a token for its Service's audience; `list_feeds` and
 `list_feed_items` (by feed, `since` a first-seen time, limit) cover the Feeds
 of the worker's own namespace, and the worker reads linked pages it finds
 relevant.
 MCP servers reach workers by advertisement and RBAC. A cluster-scoped
-`ClusterMCPServer` or a namespaced `MCPServer` names a URL and an optional
-token audience; its metadata name is the endpoint name. When it creates a
-worker Pod, the operator attaches every server on which a SubjectAccessReview
-grants the worker ServiceAccount the custom verb `use`, a namespaced server
-overriding a cluster one of the same name, and projects one token per
-audience at `/var/run/agent-mcp/<name>/token`. A namespaced server's audience
-must equal its URL, so a namespace administrator cannot have workers mint
-tokens for harness audiences. Attachment stays out of the worker
+`ClusterMCPServer` or a namespaced `MCPServer` names a URL and whether workers
+present a ServiceAccount token; its metadata name is the endpoint name. Every
+in-cluster token audience the harness checks is its Service's
+`<service>.<namespace>`, each such Service checking tokens on one port, so the
+wake endpoint has its own Service. A server's token audience is derived the
+same way from its in-cluster URL, so a token only ever goes to the Service it
+names; only a ClusterMCPServer may set an explicit `audience`, as Driftmower
+does. When it creates a worker Pod, the operator attaches every server on
+which a SubjectAccessReview grants the worker ServiceAccount the custom verb
+`use`, a namespaced server overriding a cluster one of the same name. One
+projected volume at `/var/run/agent-tokens` holds every worker token:
+`agent_operator`, `rabbitmq`, `mcp/<name>` per server and
+`mcp/mailbox-<name>` per Mailbox. Attachment stays out of the worker
 configuration hash, like Mailboxes, so RBAC changes reach the next worker Pod.
 Wildcard RBAC such as cluster-admin uses every server. The servers still
 authorize each call.
@@ -501,7 +507,7 @@ leaves the pinned Mailbox accepting no worker. Attachment is excluded from the w
 so RBAC changes reach a worker with its next Pod. Each attached Mailbox becomes
 the worker MCP endpoint `mailbox-<name>`, served by an `mcp` container in that Mailbox's Pod behind
 the operator-owned Service `agent-mailbox-<name>`. Workers present a projected
-token for audience `agent-mailbox-mcp`. The `mcp` container authenticates it
+token for that Service's audience. The `mcp` container authenticates it
 with TokenReview, accepts only ServiceAccounts of the Mailbox's namespace and
 checks a SubjectAccessReview per call for the custom verb `send` or `read` on
 that Mailbox; grant them with ordinary Roles. Only the `mcp` container

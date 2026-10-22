@@ -17,13 +17,13 @@ import (
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 )
 
-const mcpAudience = "agent-feeds-mcp"
-
 // feedsMCP serves the recent items of the Feeds in a worker's own namespace.
 // Feeds are public, so namespace alone scopes access.
 type feedsMCP struct {
-	reader  client.Reader
-	reviews authenticationclient.AuthenticationV1Interface
+	// audience is this Service's own, agent-feeds.<namespace>.
+	audience string
+	reader   client.Reader
+	reviews  authenticationclient.AuthenticationV1Interface
 }
 
 type mcpRequest struct {
@@ -92,7 +92,7 @@ func (s *feedsMCP) authenticate(r *http.Request) (string, error) {
 		return "", errors.New("missing bearer token")
 	}
 	review, err := s.reviews.TokenReviews().Create(r.Context(), &authnv1.TokenReview{
-		Spec: authnv1.TokenReviewSpec{Token: token, Audiences: []string{mcpAudience}}}, metav1.CreateOptions{})
+		Spec: authnv1.TokenReviewSpec{Token: token, Audiences: []string{s.audience}}}, metav1.CreateOptions{})
 	if err != nil || !review.Status.Authenticated || review.Status.Error != "" {
 		return "", errors.New("token rejected")
 	}

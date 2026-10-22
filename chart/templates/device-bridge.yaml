@@ -97,6 +97,11 @@ spec:
         - name: bridge
           image: {{ include "agent.image" (list . "agent-devices") }}
           imagePullPolicy: Always
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - name: http
               containerPort: 8080
@@ -123,7 +128,7 @@ metadata:
   name: devices
 spec:
   url: {{ printf "http://agent-devices.%s.svc.cluster.local:8080/mcp" .Release.Namespace | quote }}
-  audience: agent-devices-mcp
+  serviceAccountToken: true
 ---
 apiVersion: v1
 kind: Service

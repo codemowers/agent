@@ -4,7 +4,9 @@ package v1alpha1
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	neturl "net/url"
 	"slices"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -175,13 +177,12 @@ func WorkerMCPEndpoints(harnessNamespace, namespace string, servers []MCPEndpoin
 	endpoints := make([]MCPEndpoint, 0, len(servers)+len(mailboxes)+1)
 	endpoints = append(endpoints, MCPEndpoint{Name: "agent_operator",
 		URL:       OperatorMCPURL(harnessNamespace),
-		TokenFile: "/var/run/agent-operator-mcp/token"})
+		TokenFile: WorkerTokenDir + "/agent_operator"})
 	endpoints = append(endpoints, servers...)
 	// Each Mailbox Pod serves its own MCP and still checks RBAC per call.
 	for _, mailbox := range mailboxes {
 		endpoints = append(endpoints, MCPEndpoint{Name: "mailbox-" + mailbox,
-			URL:       "http://" + MailboxResourceName(mailbox) + "." + namespace + ".svc.cluster.local:8080/mcp",
-			TokenFile: "/var/run/agent-mailbox/token"})
+			URL: MailboxMCPURL(mailbox, namespace), TokenFile: WorkerTokenDir + "/mcp/mailbox-" + mailbox})
 	}
 	return endpoints
 }
@@ -190,6 +191,37 @@ func WorkerMCPEndpoints(harnessNamespace, namespace string, servers []MCPEndpoin
 func OperatorMCPURL(harnessNamespace string) string {
 	return "http://agent-operator." + harnessNamespace + ".svc.cluster.local:8083/mcp"
 }
+
+// OperatorWakeURL is the base URL of the wake endpoint. It has a Service of
+// its own so that its token audience differs from the Agent MCP's.
+func OperatorWakeURL(harnessNamespace string) string {
+	return "http://agent-operator-wake." + harnessNamespace + ".svc.cluster.local"
+}
+
+// MailboxMCPURL is a Mailbox's MCP endpoint.
+func MailboxMCPURL(mailbox, namespace string) string {
+	return "http://" + MailboxResourceName(mailbox) + "." + namespace + ".svc.cluster.local:8080/mcp"
+}
+
+// ServiceAudience is the projected token audience of an in-cluster service:
+// <service>.<namespace>. Each such Service checks tokens on one port only.
+func ServiceAudience(url string) string {
+	parsed, err := neturl.Parse(url)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	host, found := strings.CutSuffix(parsed.Hostname(), ".svc.cluster.local")
+	if !found {
+		host, found = strings.CutSuffix(parsed.Hostname(), ".svc")
+	}
+	if !found || strings.Count(host, ".") != 1 {
+		return ""
+	}
+	return host
+}
+
+// WorkerTokenDir holds one projected token file per audience a worker uses.
+const WorkerTokenDir = "/var/run/agent-tokens"
 
 type AgentStatus struct {
 	TaskCount                int                `json:"taskCount,omitempty"`

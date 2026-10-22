@@ -1,6 +1,7 @@
 # MCP servers advertised to workers. The operator attaches a server to a
-# worker whose ServiceAccount holds the custom verb "use" on it and projects a
-# token for its audience; the chart advertises the Devices and feeds servers.
+# worker whose ServiceAccount holds the custom verb "use" on it; with
+# serviceAccountToken it projects a token for the audience <service>.<namespace>
+# of the URL. The chart advertises the Devices and feeds servers.
 apiVersion: codemowers.cloud/v1alpha1
 kind: ClusterMCPServer
 metadata:
@@ -14,6 +15,7 @@ metadata:
   name: driftmower
 spec:
   url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
+  # Driftmower's own audience contract predates <service>.<namespace>.
   audience: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
 ---
 # The developer's shared browser in demo; see ../browser/README.md.

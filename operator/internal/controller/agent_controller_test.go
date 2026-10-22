@@ -158,7 +158,7 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 		},
 	}
 	pod := (&TaskReconciler{AMQPURL: "amqp://broker", WorkerImage: "registry/agent:build"}).buildWorkerPod("worker-pod", task, agent, "agent-worker", nil,
-		mcpServer{"driftmower", "http://driftmower-mcp/mcp", "http://driftmower-mcp/mcp"})
+		mcpServer{"driftmower", "http://driftmower-mcp/mcp", "driftmower-mcp.driftmower"})
 	if pod.Spec.Containers[0].Image != "registry/agent:build" {
 		t.Fatal("worker did not use the configured runner image")
 	}
@@ -168,12 +168,7 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 	if len(pod.Spec.Containers[1].Env) != 0 || len(pod.Spec.InitContainers[0].Env) != 0 {
 		t.Fatal("execution credentials leaked to another container")
 	}
-	brokerToken := false
-	for _, volume := range pod.Spec.Volumes {
-		if volume.Name == "agent-rabbitmq-token" && volume.Projected.Sources[0].ServiceAccountToken.Audience == agentsv1alpha1.RabbitMQAudience {
-			brokerToken = true
-		}
-	}
+	brokerToken := workerTokens(pod)["rabbitmq"] == agentsv1alpha1.RabbitMQAudience
 	queue := ""
 	for _, env := range pod.Spec.Containers[0].Env {
 		if env.Name == "TASK_QUEUE" {
@@ -183,12 +178,7 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 	if !brokerToken || queue != agentsv1alpha1.TaskQueue(task, agent) || !strings.HasPrefix(queue, "system:serviceaccount:") {
 		t.Fatalf("worker cannot log in to its own broker queue: token=%v queue=%q", brokerToken, queue)
 	}
-	projected := false
-	for _, volume := range pod.Spec.Volumes {
-		if volume.Name == "mcp-driftmower" && volume.Projected.Sources[0].ServiceAccountToken.Audience == "http://driftmower-mcp/mcp" {
-			projected = true
-		}
-	}
+	projected := workerTokens(pod)["mcp/driftmower"] == "driftmower-mcp.driftmower"
 	if !projected {
 		t.Fatal("Driftmower token was not projected for the worker")
 	}
@@ -281,12 +271,7 @@ func TestWorkersAttachOnlyAuthorizedMailboxes(t *testing.T) {
 		Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "worker"}}}}}}
 	reconciler := &TaskReconciler{WorkerImage: "agent:test"}
 	hasMailboxToken := func(pod *corev1.Pod) bool {
-		for _, volume := range pod.Spec.Volumes {
-			if volume.Name == "agent-mailbox-token" {
-				return volume.Projected.Sources[0].ServiceAccountToken.Audience == "agent-mailbox-mcp"
-			}
-		}
-		return false
+		return workerTokens(pod)["mcp/mailbox-shared"] == "agent-mailbox-shared.team"
 	}
 	endpoints := func(pod *corev1.Pod) string {
 		for _, env := range pod.Spec.Containers[0].Env {
@@ -493,10 +478,10 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 	}
 	authorizationv1.AddToScheme(scheme)
 	objects := []client.Object{
-		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "devices"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://devices/mcp", Audience: "agent-devices-mcp"}},
-		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://cluster-drift/mcp", Audience: "http://cluster-drift/mcp"}},
-		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "secret-tools"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://secret/mcp"}},
-		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower", Namespace: "team"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://team-drift/mcp", Audience: "http://team-drift/mcp"}},
+		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "devices"}, Spec: agentsv1alpha1.ClusterMCPServerSpec{MCPServerSpec: agentsv1alpha1.MCPServerSpec{URL: "http://agent-devices.harness.svc.cluster.local:8080/mcp", ServiceAccountToken: true}}},
+		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower"}, Spec: agentsv1alpha1.ClusterMCPServerSpec{MCPServerSpec: agentsv1alpha1.MCPServerSpec{URL: "http://drift/mcp"}, Audience: "http://drift/mcp"}},
+		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "secret-tools"}, Spec: agentsv1alpha1.ClusterMCPServerSpec{MCPServerSpec: agentsv1alpha1.MCPServerSpec{URL: "http://secret/mcp"}}},
+		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower", Namespace: "team"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://drift.team.svc:3000/mcp", ServiceAccountToken: true}},
 		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "codemowers", Namespace: "team"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "https://mcp.codemowers.io/mcp"}},
 	}
 	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(interceptor.Funcs{
@@ -511,7 +496,7 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 	r := &TaskReconciler{Client: store, HarnessNamespace: "harness"}
 	servers := r.authorizedMCPServers(context.Background(), "team", "worker")
 	if len(servers) != 3 || servers[0] != (mcpServer{"codemowers", "https://mcp.codemowers.io/mcp", ""}) ||
-		servers[1] != (mcpServer{"devices", "http://devices/mcp", "agent-devices-mcp"}) || servers[2].URL != "http://team-drift/mcp" {
+		servers[1].Audience != "agent-devices.harness" || servers[2] != (mcpServer{"driftmower", "http://drift.team.svc:3000/mcp", "drift.team"}) {
 		t.Fatalf("unexpected attachment: %+v", servers)
 	}
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
@@ -521,13 +506,9 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
 		t.Fatal("worker changed the disabled default API token mount")
 	}
-	audiences := map[string]string{}
-	for _, volume := range pod.Spec.Volumes {
-		if strings.HasPrefix(volume.Name, "mcp-") {
-			audiences[volume.Name] = volume.Projected.Sources[0].ServiceAccountToken.Audience
-		}
-	}
-	if len(audiences) != 2 || audiences["mcp-devices"] != "agent-devices-mcp" || audiences["mcp-driftmower"] != "http://team-drift/mcp" {
+	audiences := workerTokens(pod)
+	if len(audiences) != 4 || audiences["mcp/devices"] != "agent-devices.harness" || audiences["mcp/driftmower"] != "drift.team" ||
+		audiences["agent_operator"] != "agent-operator.harness" {
 		t.Fatalf("each audience-bound server needs its own token: %v", audiences)
 	}
 	var endpoints string
@@ -537,9 +518,23 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 		}
 	}
 	for _, want := range []string{`{"name":"agent_operator"`, `{"name":"codemowers","url":"https://mcp.codemowers.io/mcp"}`,
-		`{"name":"devices","url":"http://devices/mcp","tokenFile":"/var/run/agent-mcp/devices/token"}`} {
+		`{"name":"devices","url":"http://agent-devices.harness.svc.cluster.local:8080/mcp","tokenFile":"/var/run/agent-tokens/mcp/devices"}`} {
 		if !strings.Contains(endpoints, want) {
 			t.Fatalf("endpoints %s lack %s", endpoints, want)
 		}
 	}
+}
+
+// workerTokens maps each projected token path in the worker's token volume
+// to its audience.
+func workerTokens(pod *corev1.Pod) map[string]string {
+	tokens := map[string]string{}
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Name == "agent-tokens" {
+			for _, source := range volume.Projected.Sources {
+				tokens[source.ServiceAccountToken.Path] = source.ServiceAccountToken.Audience
+			}
+		}
+	}
+	return tokens
 }

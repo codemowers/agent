@@ -59,7 +59,7 @@ spec:
                     -H "Authorization: Bearer $(cat /run/token)" \
                     -H "Idempotency-Key: platform-watch-$week" \
                     -d "{\"text\":\"Weekly platform watch ($week)\"}" \
-                    http://agent-operator.codemowers-agent-system.svc.cluster.local:8084/internal/v1/namespaces/agents/tasks/krtek-platform-watch/wake
+                    http://agent-operator-wake.codemowers-agent-system.svc.cluster.local/internal/v1/namespaces/agents/tasks/krtek-platform-watch/wake
               volumeMounts:
                 - name: wake-token
                   mountPath: /run
@@ -68,5 +68,5 @@ spec:
               projected:
                 sources:
                   - serviceAccountToken:
-                      audience: agent-operator-wake
+                      audience: agent-operator-wake.codemowers-agent-system
                       path: token

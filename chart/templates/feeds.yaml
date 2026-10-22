@@ -94,8 +94,10 @@ spec:
           image: {{ include "agent.image" (list . "agent-feeds") }}
           imagePullPolicy: Always
           env:
-            - name: AGENT_WAKE_URL
-              value: {{ printf "http://%s.%s.svc.cluster.local:8084" .Release.Name .Release.Namespace | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - name: http
               containerPort: 8080
@@ -124,7 +126,7 @@ spec:
           projected:
             sources:
               - serviceAccountToken:
-                  audience: agent-operator-wake
+                  audience: {{ printf "%s-wake.%s" .Release.Name .Release.Namespace }}
                   expirationSeconds: 3600
                   path: token
 ---
@@ -134,7 +136,7 @@ metadata:
   name: feeds
 spec:
   url: {{ printf "http://agent-feeds.%s.svc.cluster.local:8080/mcp" .Release.Namespace | quote }}
-  audience: agent-feeds-mcp
+  serviceAccountToken: true
 ---
 apiVersion: v1
 kind: Service

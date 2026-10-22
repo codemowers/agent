@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -25,13 +26,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const audience = "agent-devices-mcp"
-
 var deviceKeyPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 // bridge serves Devices of every namespace. Connections are keyed by
 // namespace/name; workers see only Devices of their own namespace.
 type bridge struct {
+	// audience is this Service's own, agent-devices.<namespace>.
+	audience  string
 	objects   client.Client
 	kube      kubernetes.Interface
 	mu        sync.Mutex
@@ -87,7 +88,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	b := &bridge{objects: objects, kube: kube, connected: make(map[string]*deviceConn)}
+	b := &bridge{audience: "agent-devices." + os.Getenv("POD_NAMESPACE"), objects: objects, kube: kube, connected: make(map[string]*deviceConn)}
 	go b.reconcileLoop()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -319,7 +320,7 @@ func (b *bridge) authenticate(r *http.Request) (caller, error) {
 	if token == "" {
 		return caller{}, errors.New("missing bearer token")
 	}
-	review, err := b.kube.AuthenticationV1().TokenReviews().Create(r.Context(), &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token, Audiences: []string{audience}}}, metav1.CreateOptions{})
+	review, err := b.kube.AuthenticationV1().TokenReviews().Create(r.Context(), &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token, Audiences: []string{b.audience}}}, metav1.CreateOptions{})
 	if err != nil || !review.Status.Authenticated || review.Status.Error != "" {
 		return caller{}, errors.New("token rejected")
 	}

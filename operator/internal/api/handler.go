@@ -41,6 +41,9 @@ type Handler struct {
 	AMQP      Publisher // nil if RabbitMQ not configured
 	Addr      string
 	MCPAddr   string
+	// HarnessNamespace names the operator's Services, which are the
+	// audiences of the tokens its callers present.
+	HarnessNamespace string
 	// WakeAddr serves the wake endpoint to in-cluster callers.
 	WakeAddr        string
 	Waker           TaskWaker
