@@ -506,11 +506,19 @@ Pod UID remains necessary for execution identity and safe adoption.
 `skaffold.yaml` reads it from `AGENT_OPERATOR_API_RESOURCE` in local `skaffold.env`.
 Do not use the short host for this resource: OIDC admission expands URI,
 redirect and CORS fields but does not expand `allowedResources`.
-The chart names its images `<imageRepository>/<name>:latest`, with
+The chart names its images `<imageRepository>/<name>:latest` by default, with
 `imageRepository` defaulting to `ghcr.io/codemowers`. Skaffold sets it empty
 and replaces the bare names with its builds, including the `image` key of the
 `agent-worker-image` and `agent-mailbox-image` ConfigMaps the operator reads.
-There are no per-image values and no separate cluster values file. Operator, worker and RabbitMQ defaults live in the chart.
+Release charts set `imageDigests` for all five harness images to the final
+multi-architecture manifest digests, so the packaged references are immutable.
+GitHub Actions builds images and the chart on main/master and publishes both
+images and `oci://ghcr.io/<owner>/charts/agent` only for `v*` tags. There is
+no separate cluster values file. Operator, worker and RabbitMQ defaults live
+in the chart. Published images carry OCI source, revision and version labels.
+Release packaging replaces the chart's empty `imageDigests` map with the five
+final multi-architecture manifest digests and verifies every rendered image
+reference before pushing the chart.
 
 ## Task identity, state and execution
 

@@ -1,8 +1,17 @@
-{{/* Image reference: imageRepository prefix, fixed name, latest tag. Skaffold
-replaces the bare names with the images it built. */}}
+{{/* Release charts pin each image by digest. Development builds retain latest
+so Skaffold can replace bare image names with the images it built. */}}
 {{- define "agent.image" -}}
 {{- $root := index . 0 -}}
-{{- with $root.Values.imageRepository }}{{ . }}/{{ end }}{{ index . 1 }}:latest
+{{- $name := index . 1 -}}
+{{- $image := $name -}}
+{{- with $root.Values.imageRepository -}}
+{{- $image = printf "%s/%s" . $name -}}
+{{- end -}}
+{{- with (index $root.Values.imageDigests $name) -}}
+{{- printf "%s@%s" $image . -}}
+{{- else -}}
+{{- printf "%s:latest" $image -}}
+{{- end -}}
 {{- end -}}
 
 {{/* RabbitmqCluster name; its topology objects share the prefix before -events. */}}

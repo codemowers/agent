@@ -110,8 +110,11 @@ cluster, install compatible operators or adapt those chart resources. Configure
 Ingress, DNS and TLS for the operator and webhook hostnames. Workers run with
 `hostUsers: false`.
 
-Release images for `linux/amd64` and `linux/arm64` are published to ghcr.io by
-[GitHub Actions](.github/workflows/container.yml). For development, install
+The [GitHub Actions workflow](.github/workflows/container.yml) builds all five
+images for `linux/amd64` and `linux/arm64` and packages the chart on main/master.
+Only `v*` tags publish images and the OCI chart at
+`oci://ghcr.io/<repository-owner>/charts/agent`; the release chart pins each
+image to its multi-architecture digest. For development, install
 Skaffold, kubectl and Helm, then populate the gitignored `skaffold.env` in the
 project root from [skaffold.env.example](skaffold.env.example):
 

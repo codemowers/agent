@@ -38,7 +38,6 @@ manifests:
     releases:
       - name: agent-operator
         chartPath: chart
-        skipBuildDependencies: true
         setValues:
           operator.host: dashboard
           webhook.host: webhook

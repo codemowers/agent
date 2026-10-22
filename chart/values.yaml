@@ -2,6 +2,10 @@
 # it empty so it can replace the bare image names with its builds.
 imageRepository: ghcr.io/codemowers
 
+# Release packages set one immutable digest per harness image. Skaffold uses
+# the latest-tag fallback so it can replace image references with local builds.
+imageDigests: {}
+
 deviceBridge:
   secretNames: [agent-device-hifiberry]
   resources:
