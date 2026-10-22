@@ -1,4 +1,5 @@
 apiVersion: v2
 name: agent
-version: 0.2.0
+# Release builds set version and appVersion from the Git tag; never bump this.
+version: 0.0.0
 description: GitOps developer agent with OIDC Task UI and workers isolated with user namespaces
