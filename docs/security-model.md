@@ -69,37 +69,28 @@ grants such as cluster-admin include them all.
 | ClusterMCPServer, MCPServer | `use` | The server's endpoint and a token for its audience in the worker |
 | Task | `wake` | Waking the Task through the operator's wake endpoint |
 
-### MCP server authority
+### MCP servers
 
-Granting `use` on an MCP server should mean that the server's own authority
-is no greater than the grantee's. The operator cannot check this; whoever
-grants `use` decides it. A server that answers every authenticated caller
-with its own credentials is a confused deputy: a Prometheus MCP accepts any
-PromQL, and Prometheus sees every namespace. A gate in front of it, whether
-a ServiceAccount token check, a proxy such as kube-rbac-proxy or per-tool
-rules, decides who connects but cannot confine what the arguments reach.
-An MCP server is acceptable in one of three forms:
+Tools that reach sensitive data must authorize each call themselves. An MCP
+server that answers every caller with its own credentials is a confused
+deputy: a Prometheus MCP accepts any PromQL, and Prometheus sees every
+namespace. An authentication layer bolted on in front, whether a token check,
+a proxy such as kube-rbac-proxy or per-tool policies, decides who connects but
+not what the arguments reach, so it does not make such a server safe. Generic
+authless servers that proxy sensitive data are therefore of little use here.
 
-- **Identity-aware:** it authorizes each call against the caller and the
-  exact object, as the Device bridge, Mailboxes and Driftmower do. Only these
-  may be shared across trust boundaries.
-- **Acting as the caller:** it forwards the caller's identity and the backend
-  authorizes it.
-- **Confined per trust boundary:** one instance per namespace or Agent whose
-  credentials or upstream reach no more than its users may anyway, such as a
-  Prometheus MCP behind prom-label-proxy pinned to `namespace="<ns>"`. A front
-  proxy then only authenticates.
+ClusterMCPServer and MCPServer advertise two kinds of server:
 
-[ToolHive](https://docs.stacklok.com/toolhive/) is the closest comparable
-project. It runs MCP servers in containers with egress filtering, validates
-OIDC or ServiceAccount tokens for a free-form audience, authorizes with Cedar
-policies down to tool arguments and brokers OAuth to SaaS backends. Its
-gateway does not remove the deputy problem: Cedar rules over arguments cannot
-reliably tell a safe query from an unsafe one. Its `kubernetesServiceAccount`
-validation trusts one named ServiceAccount per configuration rather than
-leaving access to RBAC, which suits a server per Agent, not one shared by
-many. A ToolHive-run server can still be advertised here as an MCPServer
-whose `audience` matches its configuration.
+- **Kubernetes-native:** the server checks the worker's ServiceAccount token
+  with TokenReview and authorizes each call with SubjectAccessReview on the
+  exact object, as the Device bridge, Mailboxes and Driftmower do.
+- **Authless with nothing sensitive:** public advisory content such as the
+  Codemowers MCP, or a tool whose reach any worker may have anyway.
+
+Granting `use` asserts that the server can do no more for the grantee than
+the grantee could alone; the operator cannot check it. Gateways that layer
+policy over existing servers, such as
+[ToolHive](https://docs.stacklok.com/toolhive/), do not change this.
 
 ## Kubernetes permissions
 
