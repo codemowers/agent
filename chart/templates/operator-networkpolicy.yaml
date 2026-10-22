@@ -33,6 +33,17 @@ spec:
       ports:
         - protocol: TCP
           port: 8083
+    # Prometheus scrapes the operator's metrics.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.operator.prometheusNamespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8081
     # Any Pod may ask to wake a Task; the endpoint authorizes each request.
     - from:
         - namespaceSelector: {}

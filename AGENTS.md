@@ -253,7 +253,11 @@ them while the turn runs; call results are never streamed or stored. The turn re
 a headless turn's exit would kill background subagents and lose their results. A terminal Pod's
 termination message remains a fallback summary. The Task view links structured
 GitHub and Gitea references. Prometheus Task gauges are rebuilt from Task
-status at scrape time with namespace, phase and activity labels.
+status at scrape time with namespace, phase and activity labels. Each replica
+also records `agent_operator_` histograms of the requests it serves: MCP check
+round trips and Agent MCP tool calls. The chart's PodMonitor scrapes them, and
+the operator NetworkPolicy admits Prometheus from
+`operator.prometheusNamespace`.
 `Task.spec.routingKeys` holds exact canonical resource URIs, scoped by the
 Task's namespace and Agent; webhook and mail events share them. Forge issues
 and pull requests use `https://<forge>/<owner>/<repo>/issues/<number>` with

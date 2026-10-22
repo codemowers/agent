@@ -56,6 +56,8 @@ operator:
   host: dashboard
   apiResource: ""
   ingressNamespace: traefik
+  # Prometheus Pods in this namespace may scrape the operator's metrics.
+  prometheusNamespace: monitoring
   resources:
     requests:
       memory: 64Mi

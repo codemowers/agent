@@ -10,6 +10,8 @@ import (
 	"time"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -172,8 +174,12 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	if response := call("valid", "report_mcp_probe", `{"requestId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","endpoints":[{"name":"bad name","state":"available"}]}`); !strings.Contains(response.Body.String(), `"error"`) {
 		t.Fatalf("unknown endpoint was accepted: %s", response.Body.String())
 	}
+	roundtrips := histogramCount(t, mcpProbeRoundtrip)
 	if response := call("valid", "report_mcp_probe", `{"requestId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","endpoints":[{"name":"agent_operator","state":"available"},{"name":"mailbox-shared","state":"available"}]}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
 		t.Fatalf("current probe was rejected: %s", response.Body.String())
+	}
+	if histogramCount(t, mcpProbeRoundtrip) != roundtrips+1 {
+		t.Fatal("probe round trip was not observed")
 	}
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &current); err != nil || current.Status.MCPProbe == nil || current.Status.MCPProbe.State != "complete" {
 		t.Fatalf("probe status was not saved: %v %+v", err, current.Status.MCPProbe)
@@ -188,4 +194,12 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	if response := call("valid", "set_task_title", `{"title":"Stale edit"}`); response.Code != http.StatusUnauthorized {
 		t.Fatalf("stale worker could edit title: %d %s", response.Code, response.Body.String())
 	}
+}
+
+func histogramCount(t *testing.T, histogram prometheus.Histogram) uint64 {
+	var metric dto.Metric
+	if err := histogram.Write(&metric); err != nil {
+		t.Fatal(err)
+	}
+	return metric.GetHistogram().GetSampleCount()
 }

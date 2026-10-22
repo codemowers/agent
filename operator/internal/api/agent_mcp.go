@@ -150,6 +150,16 @@ func validTurnMetrics(metrics *agentsv1alpha1.TurnMetrics) bool {
 	return true
 }
 
+// knownAgentTool bounds the tool label of the call histogram.
+func knownAgentTool(name string) bool {
+	for _, tool := range agentTools() {
+		if tool["name"] == name {
+			return true
+		}
+	}
+	return false
+}
+
 func agentTools() []map[string]any {
 	return []map[string]any{
 		mcpTool("report_turn_start", "Mark the current worker Pod as working on its own Task.", map[string]any{}),
@@ -227,7 +237,16 @@ func (h *Handler) agentMCP(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("invalid tool call")
 			break
 		}
+		start := time.Now()
 		result, err = h.callAgentTool(r.Context(), scope, call.Name, call.Arguments)
+		outcome, tool := "ok", "unknown"
+		if err != nil {
+			outcome = "error"
+		}
+		if knownAgentTool(call.Name) {
+			tool = call.Name
+		}
+		observeSince(agentMCPCallDuration.WithLabelValues(tool, outcome), start)
 	default:
 		err = errors.New("unknown method")
 	}
@@ -303,7 +322,9 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			}
 			seen[endpoint.Name] = true
 		}
+		var requestedAt time.Time
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			requestedAt = time.Time{}
 			var current agentsv1alpha1.Task
 			if err := h.Client.Get(ctx, client.ObjectKeyFromObject(&scope.Task), &current); err != nil {
 				return err
@@ -315,6 +336,8 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			if probe.State == "complete" {
 				return nil
 			}
+			// A pending probe's UpdatedAt is the time it was requested.
+			requestedAt = probe.UpdatedAt.Time
 			now := metav1.Now()
 			probe.State = "complete"
 			probe.Endpoints = arg.Endpoints
@@ -324,6 +347,9 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		})
 		if err != nil {
 			return nil, err
+		}
+		if !requestedAt.IsZero() {
+			observeSince(mcpProbeRoundtrip, requestedAt)
 		}
 		return mcpText(map[string]any{"recorded": true})
 	case "set_task_title":

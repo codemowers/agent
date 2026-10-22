@@ -104,6 +104,10 @@ func main() {
 		ctrl.Log.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+	if err := api.RegisterMetrics(metrics.Registry); err != nil {
+		ctrl.Log.Error(err, "unable to register API metrics")
+		os.Exit(1)
+	}
 	if err := metrics.Registry.Register(controller.NewTaskMetrics(mgr.GetClient())); err != nil {
 		ctrl.Log.Error(err, "unable to register Task metrics")
 		os.Exit(1)
