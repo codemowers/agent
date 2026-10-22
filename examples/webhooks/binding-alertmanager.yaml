@@ -13,4 +13,3 @@ spec:
   routing:
     otherwise:
       taskRef: alert-triage
-    coalesceFor: 2m

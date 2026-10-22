@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -104,20 +103,13 @@ func (c *EventConsumer) handleMail(ctx context.Context, d amqp.Delivery) error {
 		if !matched {
 			continue
 		}
-		var coalesce time.Duration
-		if binding.Spec.Routing.CoalesceFor != "" {
-			coalesce, err = time.ParseDuration(binding.Spec.Routing.CoalesceFor)
-			if err != nil || coalesce < time.Second || coalesce > time.Hour {
-				return fmt.Errorf("invalid mail coalesceFor on %s/%s", namespace, binding.Name)
-			}
-		}
 		text := matchedEvent.Text
 		if id, ok := singleMailHeader(event.Headers, "Message-ID"); ok {
 			text += " (Message-ID: " + id + ")"
 		}
 		selected, err := c.routeEvent(ctx, &agent, intakeEvent{Namespace: namespace, Source: "imap", Type: matchedEvent.Type,
 			Actor: matchedEvent.Actor, Text: text, URL: matchedEvent.URL, Key: matchedEvent.Key,
-			FallbackTask: binding.Spec.Routing.Otherwise.TaskRef, Receipt: d.MessageId + "-" + string(binding.UID), Coalesce: coalesce})
+			FallbackTask: binding.Spec.Routing.Otherwise.TaskRef, Receipt: d.MessageId + "-" + string(binding.UID), Binding: string(binding.UID)})
 		if err != nil {
 			return err
 		}

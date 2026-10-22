@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"time"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -32,7 +31,6 @@ type normalizedEvent struct {
 	URL          string `json:"url,omitempty"`
 	Key          string `json:"key,omitempty"`
 	FallbackTask string `json:"fallbackTask"`
-	CoalesceFor  string `json:"coalesceFor,omitempty"`
 }
 
 // intakeEvent is an authenticated arrival from any transport.
@@ -46,7 +44,8 @@ type intakeEvent struct {
 	Key          string // canonical resource URI; empty routes to the fallback
 	FallbackTask string
 	Receipt      string
-	Coalesce     time.Duration
+	// Binding is the UID of the delivering WebhookBinding or MailBinding.
+	Binding string
 }
 
 func (c *EventConsumer) handleNormalized(ctx context.Context, d amqp.Delivery) error {
@@ -73,14 +72,6 @@ func (c *EventConsumer) handleNormalized(ctx context.Context, d amqp.Delivery) e
 			return nil
 		}
 	}
-	var coalesce time.Duration
-	if event.CoalesceFor != "" {
-		var err error
-		coalesce, err = time.ParseDuration(event.CoalesceFor)
-		if err != nil || coalesce < time.Second || coalesce > time.Hour {
-			return nil
-		}
-	}
 	var agent agentsv1alpha1.Agent
 	if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agentName}, &agent); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -90,7 +81,7 @@ func (c *EventConsumer) handleNormalized(ctx context.Context, d amqp.Delivery) e
 	}
 	_, err := c.routeEvent(ctx, &agent, intakeEvent{Namespace: namespace, Source: event.Protocol, Type: event.Type,
 		Actor: event.Actor, Text: event.Text, URL: event.URL, Key: event.Key, FallbackTask: event.FallbackTask,
-		Receipt: d.MessageId, Coalesce: coalesce})
+		Receipt: d.MessageId, Binding: event.BindingUID})
 	return err
 }
 
@@ -139,15 +130,23 @@ func (c *EventConsumer) routeEvent(ctx context.Context, agent *agentsv1alpha1.Ag
 	if matched == nil || taskHasDelivery(matched, ev.Receipt) {
 		return nil, nil
 	}
-	message := ev.Text
-	if message == "" {
-		message = "New " + ev.Source + " event: " + ev.Type
+	arrival := taskArrival{Key: ev.Key, Receipt: ev.Receipt, Source: ev.Source, Actor: ev.Actor, Text: ev.Text, URL: ev.URL,
+		Binding: ev.Binding, Wake: true}
+	if arrival.Text == "" {
+		arrival.Text = "New " + ev.Source + " event: " + ev.Type
 	}
-	label := ev.Key
-	if label == "" {
-		label = ev.Source
+	if arrival.Key == "" {
+		arrival.Key = ev.Source
 	}
-	if err := c.wakeTaskWithContent(ctx, matched, label, ev.Receipt, ev.Source, ev.Actor, message, ev.URL, ev.Coalesce); err != nil {
+	switch {
+	case matched.Status.Completed():
+		// Recorded only; a completed Task does not reopen on later events.
+		arrival.Wake = false
+	case byKey && ev.Source != "imap" && closingEvents[ev.Type] && matched.Spec.RoutingKeys[0] == ev.Key:
+		arrival.Wake = false
+		arrival.Complete = ev.Key + " was closed"
+	}
+	if err := c.recordArrival(ctx, matched, agent, arrival); err != nil {
 		return nil, err
 	}
 	if !byKey {
@@ -155,6 +154,10 @@ func (c *EventConsumer) routeEvent(ctx context.Context, agent *agentsv1alpha1.Ag
 	}
 	return matched, nil
 }
+
+// closingEvents close the forge issue or pull request named by the event key.
+// Closing a Task's primary key completes the Task and stops its worker.
+var closingEvents = map[string]bool{"issues.closed": true, "pull_request.closed": true}
 
 // selfEvent reports an event authored by the Agent's own probed forge account
 // on that forge's host, so a worker's comments do not wake its Task.

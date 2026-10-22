@@ -27,12 +27,20 @@ type TaskPolicySpec struct {
 	// Verify is "forgeAssignment" to require an open forge issue or pull
 	// request assigned to the Agent's account, or "none".
 	Verify string `json:"verify"`
+	// CoalesceSeconds is copied into the Tasks this policy creates.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=86400
+	CoalesceSeconds *int32 `json:"coalesceSeconds,omitempty"`
 }
 
 func (in *TaskPolicy) DeepCopyObject() runtime.Object {
 	out := *in
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	out.Spec.EventTypes = append([]string(nil), in.Spec.EventTypes...)
+	if in.Spec.CoalesceSeconds != nil {
+		value := *in.Spec.CoalesceSeconds
+		out.Spec.CoalesceSeconds = &value
+	}
 	return &out
 }
 func (in *TaskPolicyList) DeepCopyObject() runtime.Object {

@@ -50,3 +50,9 @@ spec:
                   enum:
                     - forgeAssignment
                     - none
+                coalesceSeconds:
+                  description: Event coalescing window copied into the Tasks this policy creates.
+                  type: integer
+                  format: int32
+                  minimum: 0
+                  maximum: 86400

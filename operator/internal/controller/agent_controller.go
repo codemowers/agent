@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -160,6 +161,14 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	if task.Status.Completed() && !task.Spec.Suspend {
+		// Completion stops the worker; the operator owns Task specs.
+		patch := client.MergeFrom(task.DeepCopy())
+		task.Spec.Suspend = true
+		if err := r.Patch(ctx, &task, patch); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if task.Spec.Suspend {
 		return r.reconcileSuspended(ctx, &task)
 	}
@@ -227,57 +236,69 @@ func (r *TaskReconciler) finalizeTaskQueue(ctx context.Context, task *agentsv1al
 	return r.Patch(ctx, task, patch)
 }
 
-// flushCoalescedWake sends one follow-up prompt after a burst of authenticated
-// events. The Task annotations are durable, so a restart does not lose the
-// deadline or the need for a trailing wake.
+// flushCoalescedWake ends expired event windows. A window that collected more
+// events sends one follow-up prompt and opens the next window, so a busy key
+// wakes its Task at most once per window; a quiet one closes. Task status is
+// durable, so a restart does not lose a deadline or a trailing wake. It
+// returns the delay until the next open window ends.
 func (r *TaskReconciler) flushCoalescedWake(ctx context.Context, task *agentsv1alpha1.Task) (time.Duration, error) {
-	untilText := task.Annotations["codemowers.cloud/coalesce-until"]
-	if untilText == "" {
-		return 0, nil
+	var next time.Duration
+	var expired []string
+	for key, window := range task.Status.Events.Windows {
+		if delay := time.Until(window.Until.Time); delay > 0 {
+			if next == 0 || delay < next {
+				next = delay
+			}
+			continue
+		}
+		expired = append(expired, key)
 	}
-	until, err := strconv.ParseInt(untilText, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid coalesce deadline: %w", err)
+	if len(expired) == 0 {
+		return next, nil
 	}
-	delay := time.Until(time.UnixMilli(until))
-	if delay > 0 {
-		return delay, nil
-	}
-	if task.Annotations["codemowers.cloud/coalesce-trailing"] == "true" {
-		if r.AMQP == nil {
-			return 0, fmt.Errorf("RabbitMQ unavailable for coalesced wake")
-		}
-		agent, err := r.ownerAgent(ctx, task)
-		if err != nil {
-			return 0, err
-		}
-		queue := agentsv1alpha1.TaskQueue(task, agent)
-		if err := r.trackTaskQueue(ctx, task, queue); err != nil {
-			return 0, err
-		}
-		if err := r.AMQP.DeclareQueue(queue); err != nil {
-			return 0, err
-		}
-		routingKey := task.Annotations["codemowers.cloud/event-routing-key"]
-		body := "New events arrived; read the latest updates and decide what to do next."
-		if routingKey != "" {
-			body = "New events on " + routingKey + " — read the latest updates and decide what to do next."
-		}
-		if err := r.AMQP.Publish(ctx, queue, rabbitmq.PromptMessage{
-			Type: "event", Body: body, RoutingKey: routingKey,
-			MessageID:  "coalesce-" + string(task.UID) + "-" + untilText,
-			ReceivedAt: time.Now().UnixMilli(),
-		}); err != nil {
-			return 0, err
-		}
-	}
+	slices.Sort(expired)
 	patch := client.MergeFrom(task.DeepCopy())
-	if task.Annotations["codemowers.cloud/coalesce-trailing"] == "true" {
-		task.Annotations["codemowers.cloud/wake-pending"] = "true"
+	for _, key := range expired {
+		window := task.Status.Events.Windows[key]
+		if window.Trailing {
+			if r.AMQP == nil {
+				return 0, fmt.Errorf("RabbitMQ unavailable for coalesced wake")
+			}
+			agent, err := r.ownerAgent(ctx, task)
+			if err != nil {
+				return 0, err
+			}
+			queue := agentsv1alpha1.TaskQueue(task, agent)
+			if err := r.trackTaskQueue(ctx, task, queue); err != nil {
+				return 0, err
+			}
+			if err := r.AMQP.DeclareQueue(queue); err != nil {
+				return 0, err
+			}
+			sum := sha256.Sum256([]byte(key))
+			if err := r.AMQP.Publish(ctx, queue, rabbitmq.PromptMessage{
+				Type: "event", Body: "New events on " + key + " — read the latest updates and decide what to do next.", RoutingKey: key,
+				MessageID:  fmt.Sprintf("coalesce-%s-%x-%d", task.UID, sum[:8], window.Until.Unix()),
+				ReceivedAt: time.Now().UnixMilli(),
+			}); err != nil {
+				return 0, err
+			}
+			task.Status.Events.WakePending = true
+			task.Status.Events.Windows[key] = agentsv1alpha1.EventWindow{Binding: window.Binding,
+				Until: metav1.NewTime(time.Now().Add(agentsv1alpha1.CoalesceWindow(task, agent)))}
+			continue
+		}
+		delete(task.Status.Events.Windows, key)
 	}
-	delete(task.Annotations, "codemowers.cloud/coalesce-until")
-	delete(task.Annotations, "codemowers.cloud/coalesce-trailing")
-	return 0, r.Client.Patch(ctx, task, patch)
+	if err := r.Status().Patch(ctx, task, patch); err != nil {
+		return 0, err
+	}
+	for _, window := range task.Status.Events.Windows {
+		if delay := time.Until(window.Until.Time); delay > 0 && (next == 0 || delay < next) {
+			next = delay
+		}
+	}
+	return next, nil
 }
 
 func (r *TaskReconciler) reconcileSuspended(ctx context.Context, task *agentsv1alpha1.Task) (ctrl.Result, error) {
@@ -341,7 +362,7 @@ func (r *TaskReconciler) reconcileSuspended(ctx context.Context, task *agentsv1a
 			return ctrl.Result{}, err
 		}
 	}
-	if task.Annotations["codemowers.cloud/completed"] == "true" {
+	if task.Status.Completed() {
 		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseCompleted, "CompletedByAgent")
 	}
 	return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, "Suspended")
@@ -411,13 +432,10 @@ func (r *TaskReconciler) replaceUnstartedWorkerImage(ctx context.Context, task *
 	if !blocked {
 		return false, nil
 	}
-	if task.Annotations["codemowers.cloud/retry-worker"] != "true" {
+	if !task.Status.RetryWorker {
 		patch := client.MergeFrom(task.DeepCopy())
-		if task.Annotations == nil {
-			task.Annotations = make(map[string]string)
-		}
-		task.Annotations["codemowers.cloud/retry-worker"] = "true"
-		if err := r.Client.Patch(ctx, task, patch); err != nil {
+		task.Status.RetryWorker = true
+		if err := r.Status().Patch(ctx, task, patch); err != nil {
 			return false, fmt.Errorf("mark worker image retry: %w", err)
 		}
 	}
@@ -451,13 +469,10 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 			}
 			if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed &&
 				pod.Annotations[workerConfigHashAnnotation] != workerConfigHash(task, agent) {
-				if task.Annotations["codemowers.cloud/retry-worker"] != "true" {
+				if !task.Status.RetryWorker {
 					patch := client.MergeFrom(task.DeepCopy())
-					if task.Annotations == nil {
-						task.Annotations = make(map[string]string)
-					}
-					task.Annotations["codemowers.cloud/retry-worker"] = "true"
-					if err := r.Patch(ctx, task, patch); err != nil {
+					task.Status.RetryWorker = true
+					if err := r.Status().Patch(ctx, task, patch); err != nil {
 						return ctrl.Result{}, err
 					}
 				}
@@ -481,11 +496,11 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 				}
 			}
 			// If the pod completed and a new wake signal arrived (event consumer
-			// set codemowers.cloud/wake-pending), clear the pod name so we
+			// set status.events.wakePending), clear the pod name so we
 			// spawn a fresh worker below. The worker's AMQP queue already holds
 			// the prompt; the new pod will consume it on startup.
 			if (pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed) &&
-				task.Annotations["codemowers.cloud/wake-pending"] == "true" {
+				task.Status.Events.WakePending {
 				if changed, err := r.recordWorkerResults(ctx, task, &pod); err != nil {
 					return ctrl.Result{}, err
 				} else if changed {
@@ -501,20 +516,14 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 				if err != nil {
 					return ctrl.Result{}, fmt.Errorf("inspect task queue: %w", err)
 				}
+				statPatch := client.MergeFrom(task.DeepCopy())
+				task.Status.Events.WakePending = false
 				if depth == 0 {
-					annPatch := client.MergeFrom(task.DeepCopy())
-					delete(task.Annotations, "codemowers.cloud/wake-pending")
-					if err := r.Client.Patch(ctx, task, annPatch); err != nil {
+					if err := r.Status().Patch(ctx, task, statPatch); err != nil {
 						return ctrl.Result{}, err
 					}
 					return r.syncPhaseFromPod(ctx, task, &pod)
 				}
-				annPatch := client.MergeFrom(task.DeepCopy())
-				delete(task.Annotations, "codemowers.cloud/wake-pending")
-				if err := r.Client.Patch(ctx, task, annPatch); err != nil {
-					return ctrl.Result{}, err
-				}
-				statPatch := client.MergeFrom(task.DeepCopy())
 				task.Status.WorkerPodName = ""
 				task.Status.WorkerPodUID = ""
 				if err := r.Status().Patch(ctx, task, statPatch); err != nil {
@@ -528,15 +537,11 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		} else {
 			// A vanished worker might still have an uncertain native result.
 			// A new prompt does not authorize replacing it against the same PVC.
-			if task.Annotations["codemowers.cloud/retry-worker"] != "true" {
+			if !task.Status.RetryWorker {
 				return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, "WorkerDisappeared")
 			}
-			annPatch := client.MergeFrom(task.DeepCopy())
-			delete(task.Annotations, "codemowers.cloud/retry-worker")
-			if err := r.Client.Patch(ctx, task, annPatch); err != nil {
-				return ctrl.Result{}, err
-			}
 			patch := client.MergeFrom(task.DeepCopy())
+			task.Status.RetryWorker = false
 			task.Status.WorkerPodName = ""
 			task.Status.WorkerPodUID = ""
 			if err := r.Status().Patch(ctx, task, patch); err != nil {
@@ -584,7 +589,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 
 	// Ensure the per-task RabbitMQ queue exists and publish the objective once.
 	// The queue is durable so the message survives broker restarts and is waiting
-	// when the worker subscribes. The annotation guards against re-publishing on
+	// when the worker subscribes. Task status guards against re-publishing on
 	// operator restart.
 	if r.AMQP != nil {
 		queue := agentsv1alpha1.TaskQueue(task, agent)
@@ -594,17 +599,14 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		if err := r.AMQP.DeclareQueue(queue); err != nil {
 			return ctrl.Result{}, fmt.Errorf("declare task queue: %w", err)
 		}
-		if task.Annotations["codemowers.cloud/objective-published"] != "true" {
+		if !task.Status.ObjectivePublished {
 			msg := rabbitmq.PromptMessage{Type: "objective", Body: task.Spec.Objective, MessageID: string(task.UID) + ":objective"}
 			if err := r.AMQP.Publish(ctx, queue, msg); err != nil {
 				return ctrl.Result{}, fmt.Errorf("publish objective: %w", err)
 			}
-			annPatch := client.MergeFrom(task.DeepCopy())
-			if task.Annotations == nil {
-				task.Annotations = make(map[string]string)
-			}
-			task.Annotations["codemowers.cloud/objective-published"] = "true"
-			if err := r.Client.Patch(ctx, task, annPatch); err != nil {
+			patch := client.MergeFrom(task.DeepCopy())
+			task.Status.ObjectivePublished = true
+			if err := r.Status().Patch(ctx, task, patch); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -652,8 +654,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 
 func (r *TaskReconciler) publishRuntimeConfig(ctx context.Context, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, pod *corev1.Pod) (bool, error) {
 	initial, _ := strconv.ParseInt(pod.Annotations[workerRuntimeGenerationAnnotation], 10, 64)
-	published, _ := strconv.ParseInt(task.Annotations[runtimePublishedGenerationAnnotation], 10, 64)
-	if task.Generation <= initial || task.Generation <= published {
+	if task.Generation <= initial || task.Generation <= task.Status.RuntimePublishedGeneration {
 		return false, nil
 	}
 	if r.AMQP == nil {
@@ -675,11 +676,8 @@ func (r *TaskReconciler) publishRuntimeConfig(ctx context.Context, task *agentsv
 		return false, err
 	}
 	patch := client.MergeFrom(task.DeepCopy())
-	if task.Annotations == nil {
-		task.Annotations = make(map[string]string)
-	}
-	task.Annotations[runtimePublishedGenerationAnnotation] = strconv.FormatInt(task.Generation, 10)
-	if err := r.Patch(ctx, task, patch); err != nil {
+	task.Status.RuntimePublishedGeneration = task.Generation
+	if err := r.Status().Patch(ctx, task, patch); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -814,10 +812,9 @@ func taskIdleSeconds(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) int
 }
 
 const (
-	workerConfigHashAnnotation           = "codemowers.cloud/worker-config-hash"
-	workerVersionAnnotation              = "codemowers.cloud/operator-worker-version"
-	workerRuntimeGenerationAnnotation    = "codemowers.cloud/worker-runtime-generation"
-	runtimePublishedGenerationAnnotation = "codemowers.cloud/runtime-published-generation"
+	workerConfigHashAnnotation        = "codemowers.cloud/worker-config-hash"
+	workerVersionAnnotation           = "codemowers.cloud/operator-worker-version"
+	workerRuntimeGenerationAnnotation = "codemowers.cloud/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
 	WorkerPodVersion = "9"

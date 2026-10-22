@@ -163,6 +163,12 @@ spec:
                 format: int32
                 minimum: 0
                 maximum: 86400
+              coalesceSeconds:
+                description: Overrides the Agent's event coalescing window for this Task; TaskPolicy copies its own into the Tasks it creates.
+                type: integer
+                format: int32
+                minimum: 0
+                maximum: 86400
               resources:
                 description: Worker container requests and limits copied from Agent on Task creation and overridable per Task.
                 type: object
@@ -374,6 +380,62 @@ spec:
               lastResultAt:
                 type: string
                 format: date-time
+              events:
+                description: Operator intake bookkeeping for routed events.
+                type: object
+                properties:
+                  initialDeliveryID:
+                    description: Receipt of the event that created the Task.
+                    type: string
+                  receipts:
+                    description: Latest accepted delivery receipts, newest last.
+                    type: array
+                    maxItems: 128
+                    items:
+                      type: string
+                  wakePending:
+                    description: Asks the reconciler to start a worker for queued messages.
+                    type: boolean
+                  windows:
+                    description: Open coalescing windows by routing key.
+                    type: object
+                    additionalProperties:
+                      type: object
+                      required: [until]
+                      properties:
+                        binding:
+                          description: UID of the binding whose event opened the window.
+                          type: string
+                        until:
+                          type: string
+                          format: date-time
+                        trailing:
+                          description: The same binding delivered more events; one wake follows the window.
+                          type: boolean
+              completion:
+                description: Set when the worker or a closing forge event completes the Task.
+                type: object
+                properties:
+                  requested:
+                    description: The worker requested completion of its own Task; it completes after the turn result.
+                    type: boolean
+                  reason:
+                    type: string
+                  actor:
+                    type: string
+                  completedAt:
+                    type: string
+                    format: date-time
+              objectivePublished:
+                description: The objective reached the Task queue.
+                type: boolean
+              runtimePublishedGeneration:
+                description: Latest Task generation sent to the resident worker as runtime configuration.
+                type: integer
+                format: int64
+              retryWorker:
+                description: Authorizes replacing a worker the operator stopped itself.
+                type: boolean
               lastMessageAt:
                 type: string
                 format: date-time

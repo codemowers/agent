@@ -630,23 +630,10 @@ func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
 		}
 		current.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: msg.MessageID, Role: "user", Source: "web", Actor: identity.user,
 			Content: req.Body, CreatedAt: metav1.Now()})
+		// The TaskReconciler ensures a worker Pod is running.
+		current.Status.Events.WakePending = true
 		return h.Client.Status().Update(r.Context(), &current)
 	}); err != nil {
-		jsonError(w, err, http.StatusServiceUnavailable)
-		return
-	}
-	if err := h.Client.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: name}, &task); err != nil {
-		jsonError(w, err, http.StatusServiceUnavailable)
-		return
-	}
-	// Annotate task so the TaskReconciler ensures a worker pod is running.
-	patch := client.MergeFrom(task.DeepCopy())
-	if task.Annotations == nil {
-		task.Annotations = make(map[string]string)
-	}
-	task.Annotations["codemowers.cloud/prompt-sent-at"] = fmt.Sprintf("%d", metav1.Now().UnixMilli())
-	task.Annotations["codemowers.cloud/wake-pending"] = "true"
-	if err := h.Client.Patch(r.Context(), &task, patch); err != nil {
 		jsonError(w, err, http.StatusServiceUnavailable)
 		return
 	}
@@ -688,7 +675,7 @@ func (h *Handler) setTaskSuspend(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, 400)
 		return
 	}
-	if !req.Suspend && task.Annotations["codemowers.cloud/completed"] == "true" {
+	if !req.Suspend && task.Status.Completed() {
 		jsonError(w, fmt.Errorf("completed Task cannot be resumed"), http.StatusConflict)
 		return
 	}

@@ -150,7 +150,7 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(peer), &current); err != nil {
 		t.Fatal(err)
 	}
-	if !current.Spec.Suspend || current.Annotations["codemowers.cloud/completed"] != "true" {
+	if !current.Status.Completed() {
 		t.Fatalf("peer was not completed: %+v", current)
 	}
 	if response := call("valid", "create_task", `{"objective":"New work","routingKey":"https://example.test/one"}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {

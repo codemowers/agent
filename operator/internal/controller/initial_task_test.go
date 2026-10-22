@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -53,7 +52,7 @@ func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: types.UID("agent-uid")},
-		Spec: agentsv1alpha1.AgentSpec{Suspended: true, IdleSeconds: int32Ptr(120), Resources: &corev1.ResourceRequirements{
+		Spec: agentsv1alpha1.AgentSpec{Suspended: true, IdleSeconds: int32Ptr(120), CoalesceSeconds: int32Ptr(120), Resources: &corev1.ResourceRequirements{
 			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}}, GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://forge.example.test",
 			CredentialKeyRef: "git-token"}}}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agentsv1alpha1.ProviderTokensSecretName, Namespace: "team"},
@@ -67,7 +66,7 @@ func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 	}
 	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(append(policies, agent, secret)...).Build()
 	consumer := &EventConsumer{Client: k8s, APIReader: k8s, HTTPClient: &http.Client{Transport: transport}}
-	event := intakeEvent{Namespace: "team", Source: "github", Type: "issues.assigned", Key: "https://forge.example.test/team/project/issues/8", Receipt: "delivery-1", Coalesce: 2 * time.Minute}
+	event := intakeEvent{Namespace: "team", Source: "github", Type: "issues.assigned", Key: "https://forge.example.test/team/project/issues/8", Receipt: "delivery-1"}
 	if created, err := consumer.createTaskByPolicy(context.Background(), agent, intakeEvent{Namespace: "team", Type: "issue_comment.created", Key: event.Key}); err != nil || created {
 		t.Fatalf("event type outside the policy created a Task: %v %v", created, err)
 	}
@@ -82,7 +81,7 @@ func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 	if len(tasks.Items) != 1 || tasks.Items[0].Spec.ExternalReferences[0].ID != "8" {
 		t.Fatalf("wrong Task created: %+v", tasks.Items)
 	}
-	if tasks.Items[0].Annotations["codemowers.cloud/coalesce-until"] == "" {
+	if _, ok := tasks.Items[0].Status.Events.Windows[event.Key]; !ok || tasks.Items[0].Status.Events.InitialDeliveryID != "delivery-1" {
 		t.Fatal("created Task did not start its coalesce window")
 	}
 	if !slices.Equal(tasks.Items[0].Spec.RoutingKeys, []string{event.Key}) || tasks.Items[0].Name != agentsv1alpha1.TaskNameForKey(agent.UID, event.Key) {
@@ -137,7 +136,7 @@ func TestEquallySpecificTaskPoliciesCreateNothing(t *testing.T) {
 		objects = append(objects, &agentsv1alpha1.TaskPolicy{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team"},
 			Spec: agentsv1alpha1.TaskPolicySpec{AgentRef: "developer", KeyPrefix: "mid:", Verify: "none"}})
 	}
-	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(objects...).Build()
 	consumer := &EventConsumer{Client: k8s, APIReader: k8s}
 	if created, err := consumer.createTaskByPolicy(context.Background(), agent, intakeEvent{Namespace: "team", Key: "mid:root@example.test"}); err != nil || created {
 		t.Fatalf("ambiguous policies created=%v err=%v", created, err)

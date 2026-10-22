@@ -111,8 +111,7 @@ type MailEvent struct {
 	Key   string `json:"key"`
 }
 type MailRouting struct {
-	Otherwise   WebhookFallback `json:"otherwise,omitempty"`
-	CoalesceFor string          `json:"coalesceFor,omitempty"`
+	Otherwise WebhookFallback `json:"otherwise,omitempty"`
 }
 type MailBindingStatus struct {
 	ObservedGeneration int64        `json:"observedGeneration,omitempty"`

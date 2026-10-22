@@ -154,7 +154,7 @@ func taskDisplay(task *agentsv1alpha1.Task) taskItem {
 		Objective: task.Spec.Objective, IdleSeconds: displayIdleSeconds(task), Activity: task.Status.Activity,
 		CreatedAt: task.CreationTimestamp.Time.Format(time.RFC3339), WorkerPod: task.Status.WorkerPodName,
 		WorkerPodUID: task.Status.WorkerPodUID, Suspended: task.Spec.Suspend,
-		Completed:    task.Annotations["codemowers.cloud/completed"] == "true",
+		Completed:    task.Status.Completed(),
 		DisabledMCPs: task.Spec.DisabledMCPs}
 	if task.Status.MCPProbe != nil {
 		item.MCPProbeAt = task.Status.MCPProbe.UpdatedAt.Time.Format(time.RFC3339Nano)
@@ -162,7 +162,7 @@ func taskDisplay(task *agentsv1alpha1.Task) taskItem {
 	if task.Status.LastResultAt != nil {
 		item.LastResultAt = task.Status.LastResultAt.Time.Format(time.RFC3339Nano)
 	}
-	if task.Annotations["codemowers.cloud/initial-delivery-id"] != "" {
+	if task.Status.Events.InitialDeliveryID != "" {
 		item.ObjectiveSource = "webhook"
 	}
 	for _, owner := range task.OwnerReferences {

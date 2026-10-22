@@ -541,7 +541,9 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		if _, err := h.scopedTask(ctx, scope, arg.Name); err != nil {
 			return nil, err
 		}
-		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// The worker's own Task completes after its turn result is recorded;
+		// another Task completes at once. Completion suspends the Task.
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			var task agentsv1alpha1.Task
 			if err := h.Client.Get(ctx, client.ObjectKey{Namespace: scope.Task.Namespace, Name: arg.Name}, &task); err != nil {
 				return err
@@ -549,30 +551,19 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			if task.Spec.AgentRef != scope.Agent.Name {
 				return errors.New("Task outside Agent scope")
 			}
-			if task.Annotations == nil {
-				task.Annotations = make(map[string]string)
-			}
-			task.Annotations["codemowers.cloud/completion-reason"] = arg.Reason
+			now := metav1.Now()
+			completion := &agentsv1alpha1.TaskCompletion{Reason: arg.Reason, Actor: scope.Agent.Name}
 			if task.Name == scope.Task.Name {
-				task.Annotations["codemowers.cloud/completion-requested"] = "true"
+				completion.Requested = true
 			} else {
-				task.Annotations["codemowers.cloud/completed"] = "true"
-				task.Spec.Suspend = true
+				completion.CompletedAt = &now
 			}
-			return h.Client.Update(ctx, &task)
-		})
-		if err != nil {
-			return nil, err
-		}
-		activityID := "completion:" + randHex(12)
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			var current agentsv1alpha1.Task
-			if err := h.Client.Get(ctx, client.ObjectKey{Namespace: scope.Task.Namespace, Name: arg.Name}, &current); err != nil {
-				return err
+			if !task.Status.Completed() {
+				task.Status.Completion = completion
 			}
-			current.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: activityID, Role: "system", Source: "agent-mcp",
-				Actor: scope.Agent.Name, Content: "Agent requested completion: " + arg.Reason, CreatedAt: metav1.Now()})
-			return h.Client.Status().Update(ctx, &current)
+			task.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: "completion:" + randHex(12), Role: "system", Source: "agent-mcp",
+				Actor: scope.Agent.Name, Content: "Agent requested completion: " + arg.Reason, CreatedAt: now})
+			return h.Client.Status().Update(ctx, &task)
 		}); err != nil {
 			return nil, err
 		}
@@ -588,12 +579,12 @@ func (h *Handler) finishRequestedCompletion(ctx context.Context, namespace, name
 		if err := h.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &task); err != nil {
 			return err
 		}
-		if task.Annotations["codemowers.cloud/completion-requested"] != "true" {
+		if task.Status.Completion == nil || !task.Status.Completion.Requested {
 			return nil
 		}
-		delete(task.Annotations, "codemowers.cloud/completion-requested")
-		task.Annotations["codemowers.cloud/completed"] = "true"
-		task.Spec.Suspend = true
-		return h.Client.Update(ctx, &task)
+		now := metav1.Now()
+		task.Status.Completion.Requested = false
+		task.Status.Completion.CompletedAt = &now
+		return h.Client.Status().Update(ctx, &task)
 	})
 }

@@ -30,9 +30,8 @@ type WebhookReceiverRef struct {
 	Name string `json:"name"`
 }
 type WebhookRouting struct {
-	KeyCEL      string          `json:"keyCEL,omitempty"`
-	Otherwise   WebhookFallback `json:"otherwise,omitempty"`
-	CoalesceFor string          `json:"coalesceFor,omitempty"`
+	KeyCEL    string          `json:"keyCEL,omitempty"`
+	Otherwise WebhookFallback `json:"otherwise,omitempty"`
 }
 type WebhookFallback struct {
 	TaskRef string `json:"taskRef,omitempty"`

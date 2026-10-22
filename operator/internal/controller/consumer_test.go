@@ -43,13 +43,13 @@ func TestCoalesceFirstWakeAndTrailingWake(t *testing.T) {
 	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "ops", Namespace: "team"}}
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "ops", Namespace: "team"}, Spec: agentsv1alpha1.AgentSpec{CoalesceSeconds: int32Ptr(120)}}
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "alerts", Namespace: "team", UID: "task-uid"}, Spec: agentsv1alpha1.TaskSpec{AgentRef: agent.Name}}
 	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(agent, task).Build()
 	broker := &coalesceBroker{}
 	consumer := &EventConsumer{Client: k8s, AMQP: broker}
 	ctx := context.Background()
-	if err := consumer.wakeTaskWithContent(ctx, task, "alerts", "first", "alertmanager", "Alertmanager", "CPU high", "https://alerts.example.test/1", 2*time.Minute); err != nil {
+	if err := consumer.recordArrival(ctx, task, agent, taskArrival{Key: "alerts", Receipt: "first", Source: "alertmanager", Actor: "Alertmanager", Text: "CPU high", URL: "https://alerts.example.test/1", Wake: true}); err != nil {
 		t.Fatal(err)
 	}
 	if len(broker.messages) != 1 || broker.messages[0].Body != "CPU high" || broker.queues[0] != "system:serviceaccount:team:agent-worker-ops:alerts" {
@@ -58,7 +58,7 @@ func TestCoalesceFirstWakeAndTrailingWake(t *testing.T) {
 	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), task); err != nil {
 		t.Fatal(err)
 	}
-	if err := consumer.wakeTaskWithContent(ctx, task, "alerts", "second", "alertmanager", "Alertmanager", "Memory high", "https://alerts.example.test/2", 2*time.Minute); err != nil {
+	if err := consumer.recordArrival(ctx, task, agent, taskArrival{Key: "alerts", Receipt: "second", Source: "alertmanager", Actor: "Alertmanager", Text: "Memory high", URL: "https://alerts.example.test/2", Wake: true}); err != nil {
 		t.Fatal(err)
 	}
 	if len(broker.messages) != 1 {
@@ -67,20 +67,44 @@ func TestCoalesceFirstWakeAndTrailingWake(t *testing.T) {
 	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), task); err != nil {
 		t.Fatal(err)
 	}
-	if task.Annotations["codemowers.cloud/coalesce-trailing"] != "true" || len(task.Status.Conversation) != 2 || task.Status.Conversation[1].URL != "https://alerts.example.test/2" {
+	if !task.Status.Events.Windows["alerts"].Trailing || len(task.Status.Conversation) != 2 || task.Status.Conversation[1].URL != "https://alerts.example.test/2" {
 		t.Fatalf("trailing event was not retained: %+v", task)
 	}
 	patch := client.MergeFrom(task.DeepCopy())
-	task.Annotations["codemowers.cloud/coalesce-until"] = "1"
-	if err := k8s.Patch(ctx, task, patch); err != nil {
+	window := task.Status.Events.Windows["alerts"]
+	window.Until = metav1.NewTime(time.Unix(1, 0))
+	task.Status.Events.Windows["alerts"] = window
+	if err := k8s.Status().Patch(ctx, task, patch); err != nil {
 		t.Fatal(err)
 	}
 	reconciler := &TaskReconciler{Client: k8s, AMQP: broker}
-	if delay, err := reconciler.flushCoalescedWake(ctx, task); err != nil || delay != 0 {
-		t.Fatalf("flush delay=%s err=%v", delay, err)
+	if delay, err := reconciler.flushCoalescedWake(ctx, task); err != nil || delay <= time.Minute {
+		t.Fatalf("trailing wake did not open the next window: delay=%s err=%v", delay, err)
 	}
 	if len(broker.messages) != 2 || broker.messages[1].Type != "event" {
 		t.Fatalf("missing trailing wake: %+v", broker.messages)
+	}
+	// A busy key wakes at most once per window.
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), task); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumer.recordArrival(ctx, task, agent, taskArrival{Key: "alerts", Receipt: "third", Source: "alertmanager", Actor: "Alertmanager", Text: "Disk full", Wake: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(broker.messages) != 2 {
+		t.Fatalf("event after a trailing wake woke inside the next window: %+v", broker.messages)
+	}
+	// A quiet window closes, so the next event wakes at once.
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), task); err != nil {
+		t.Fatal(err)
+	}
+	patch = client.MergeFrom(task.DeepCopy())
+	task.Status.Events.Windows["alerts"] = agentsv1alpha1.EventWindow{Until: metav1.NewTime(time.Unix(1, 0))}
+	if err := k8s.Status().Patch(ctx, task, patch); err != nil {
+		t.Fatal(err)
+	}
+	if delay, err := reconciler.flushCoalescedWake(ctx, task); err != nil || delay != 0 || len(task.Status.Events.Windows) != 0 {
+		t.Fatalf("quiet window stayed open: delay=%s err=%v windows=%+v", delay, err, task.Status.Events.Windows)
 	}
 }
 
@@ -109,7 +133,7 @@ func TestNormalizedEventRoutesOnlyOwnedTask(t *testing.T) {
 	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "issue-8"}, &untouched); err != nil {
 		t.Fatal(err)
 	}
-	if len(untouched.Status.Conversation) != 0 || untouched.Annotations["codemowers.cloud/wake-pending"] == "true" {
+	if len(untouched.Status.Conversation) != 0 || untouched.Status.Events.WakePending {
 		t.Fatal("self-authored forge event reached its Task")
 	}
 	forged := webhookDelivery(t, event)
@@ -120,7 +144,7 @@ func TestNormalizedEventRoutesOnlyOwnedTask(t *testing.T) {
 	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "issue-8"}, &untouched); err != nil {
 		t.Fatal(err)
 	}
-	if untouched.Annotations["codemowers.cloud/wake-pending"] == "true" {
+	if untouched.Status.Events.WakePending {
 		t.Fatal("event from another broker user reached its Task")
 	}
 	delivery := webhookDelivery(t, event)
@@ -135,7 +159,7 @@ func TestNormalizedEventRoutesOnlyOwnedTask(t *testing.T) {
 		if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: item.namespace, Name: "issue-8"}, &task); err != nil {
 			t.Fatal(err)
 		}
-		if (task.Annotations["codemowers.cloud/wake-pending"] == "true") != item.want {
+		if task.Status.Events.WakePending != item.want {
 			t.Fatalf("%s wake mismatch", item.namespace)
 		}
 		if item.want && (len(task.Status.Conversation) != 1 || task.Status.Conversation[0].URL != event.URL) {
@@ -149,7 +173,7 @@ func TestNormalizedEventRoutesOnlyOwnedTask(t *testing.T) {
 	}
 	var other agentsv1alpha1.Task
 	_ = k8s.Get(context.Background(), client.ObjectKey{Namespace: "team-b", Name: "issue-8"}, &other)
-	if other.Annotations["codemowers.cloud/wake-pending"] == "true" {
+	if other.Status.Events.WakePending {
 		t.Fatal("tampered envelope crossed namespace")
 	}
 }
@@ -212,7 +236,7 @@ func TestEnvelopeKeyHeaderMustMatchBody(t *testing.T) {
 }
 
 func TestTaskDeliveryReceiptSurvivesInterleavedEvents(t *testing.T) {
-	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"codemowers.cloud/initial-delivery-id": "delivery-0", "codemowers.cloud/event-message-id": "delivery-3", "codemowers.cloud/delivery-receipts": `["delivery-1","delivery-2","delivery-3"]`}}}
+	task := &agentsv1alpha1.Task{Status: agentsv1alpha1.TaskStatus{Events: agentsv1alpha1.TaskEvents{InitialDeliveryID: "delivery-0", Receipts: []string{"delivery-1", "delivery-2", "delivery-3"}}}}
 	for _, id := range []string{"delivery-0", "delivery-1", "delivery-2", "delivery-3"} {
 		if !taskHasDelivery(task, id) {
 			t.Fatalf("redelivery %s was not recognized", id)
@@ -283,5 +307,42 @@ func TestTaskQueueFollowsTaskDeletion(t *testing.T) {
 	}
 	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), &deleting); !apierrors.IsNotFound(err) {
 		t.Fatalf("Task kept after its queue was deleted: %v", err)
+	}
+}
+
+func TestOtherBindingNotificationAndForgeCloseDoNotPrompt(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	const key = "https://github.com/team/repo/issues/1"
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: "agent-uid"}}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "issue-1", Namespace: "team", UID: "task-uid",
+		Labels:          map[string]string{"codemowers.cloud/agent": agent.Name},
+		OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID}}},
+		Spec: agentsv1alpha1.TaskSpec{AgentRef: agent.Name, RoutingKeys: []string{key}}}
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(agent, task).Build()
+	broker := &coalesceBroker{}
+	consumer := &EventConsumer{Client: k8s, APIReader: k8s, AMQP: broker}
+	ctx := context.Background()
+	for i, ev := range []intakeEvent{
+		{Source: "github", Binding: "webhook", Type: "issue_comment.created", Actor: "lauri", Text: "Disable it", Receipt: "comment"},
+		{Source: "imap", Binding: "mail", Type: "github_notification", Actor: "lauri", Text: "GitHub notification", Receipt: "comment-mail"},
+		{Source: "github", Binding: "webhook", Type: "issues.closed", Actor: "lauri", Text: "Issue title", Receipt: "closed"},
+		{Source: "github", Binding: "webhook", Type: "issue_comment.created", Actor: "lauri", Text: "Thanks", Receipt: "late"},
+	} {
+		ev.Namespace, ev.Key = "team", key
+		if _, err := consumer.routeEvent(ctx, agent, ev); err != nil {
+			t.Fatalf("event %d: %v", i, err)
+		}
+	}
+	if len(broker.messages) != 1 || broker.messages[0].Body != "Disable it" {
+		t.Fatalf("only the webhook comment should prompt: %+v", broker.messages)
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), task); err != nil {
+		t.Fatal(err)
+	}
+	if !task.Status.Completed() || task.Status.Completion.Actor != "lauri" || len(task.Status.Conversation) != 5 {
+		t.Fatalf("close was not recorded as completion: %+v", task.Status)
 	}
 }

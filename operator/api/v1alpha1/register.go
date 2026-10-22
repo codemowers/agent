@@ -54,6 +54,10 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 		value := *in.IdleSeconds
 		out.IdleSeconds = &value
 	}
+	if in.CoalesceSeconds != nil {
+		value := *in.CoalesceSeconds
+		out.CoalesceSeconds = &value
+	}
 	if in.Resources != nil {
 		out.Resources = in.Resources.DeepCopy()
 	}
@@ -166,6 +170,10 @@ func (in *TaskSpec) DeepCopyInto(out *TaskSpec) {
 		value := *in.IdleSeconds
 		out.IdleSeconds = &value
 	}
+	if in.CoalesceSeconds != nil {
+		value := *in.CoalesceSeconds
+		out.CoalesceSeconds = &value
+	}
 	if in.Resources != nil {
 		out.Resources = in.Resources.DeepCopy()
 	}
@@ -235,6 +243,21 @@ func (in *TaskStatus) DeepCopyInto(out *TaskStatus) {
 	if in.LastResultAt != nil {
 		value := *in.LastResultAt
 		out.LastResultAt = &value
+	}
+	out.Events.Receipts = append([]string(nil), in.Events.Receipts...)
+	if in.Events.Windows != nil {
+		out.Events.Windows = make(map[string]EventWindow, len(in.Events.Windows))
+		for k, v := range in.Events.Windows {
+			out.Events.Windows[k] = v
+		}
+	}
+	if in.Completion != nil {
+		completion := *in.Completion
+		if in.Completion.CompletedAt != nil {
+			value := *in.Completion.CompletedAt
+			completion.CompletedAt = &value
+		}
+		out.Completion = &completion
 	}
 	if in.LastMessageAt != nil {
 		value := *in.LastMessageAt

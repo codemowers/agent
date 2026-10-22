@@ -11,7 +11,7 @@ target; Docker/Compose runtime deployments are outside scope. Skaffold builds
 this repository's harness images in cluster Kaniko Pods. Workers build
 application images in separate Kaniko Pods through Skaffold.
 
-In the README segmentation example, customer support has the greatest external
+In the segmentation example in `docs/security-model.md`, customer support has the greatest external
 prompt-injection exposure, developer has the greatest supply-chain and
 privilege-escalation exposure, and kube admin has the greatest sensitive-data
 disclosure risk due to cluster-wide access. Developer builds with Kaniko and
@@ -275,8 +275,18 @@ policy of the Agent with the longest matching `keyPrefix` and allowed
 `verify: forgeAssignment` checks with the Agent's credential that the issue or
 pull request is open and assigned to the Agent's account, reusing the current
 forge snapshot's login; `verify: none` creates directly but never for mail.
-Unknown keys go to the binding's fallback Task. `routing.coalesceFor` wakes on the first event, records later events in
-the window, and sends one trailing wake when they arrived. Workers hold no
+Unknown keys go to the binding's fallback Task. Coalescing is upstream of
+both transports and per routing key: the first event on a key wakes the Task
+at once and opens a window. Within it, an event from another binding, such as
+forge mail after its webhook, notifies of the same activity and is only
+recorded; events from the same binding get one trailing wake, which opens the
+next window, so a busy key wakes its Task at most once per window. The window
+is `Task.spec.coalesceSeconds`, copied from the creating TaskPolicy, else
+`Agent.spec.coalesceSeconds`, else 180 seconds; zero wakes on every event and
+a day suits a chatty issue reviewed daily. The operator keeps intake
+bookkeeping (delivery receipts, pending wakes and open windows) in
+`Task.status.events`, and completion in `Task.status.completion`, never in
+Task annotations. Workers hold no
 broker password: they log in to RabbitMQ with a projected ServiceAccount token
 for audience `agent-rabbitmq` and refresh it with AMQP `update-secret`. The
 broker's OAuth2 backend maps that audience to read and configure on queues
@@ -309,7 +319,11 @@ its own Task. The operator performs MCP-triggered Task spec/status writes; the w
 no Task write RBAC. Key claiming on an existing Task and reopening remain to
 be implemented.
 Completion must stop the owning worker, retain history/PVC for review, and not
-silently reopen on duplicate webhook delivery. A later authenticated event or
+silently reopen on duplicate webhook delivery. The operator suspends a
+completed Task, which deletes its worker Pod at once. A webhook
+`issues.closed` or `pull_request.closed` event on a Task's first routing key
+is recorded and completes the Task without prompting the worker. Later events
+on a completed Task are recorded without waking it. A later authenticated event or
 user action may reopen according to the Task's lifecycle policy. Slack-to-alert
 linking is not implemented yet.
 The operator UI uses the dark green harness palette and a keyboard-accessible
@@ -415,9 +429,9 @@ issue URL from `References`, which GitHub's DKIM signature covers; its
 `Message-ID` and `X-GitHub-*` headers are unsigned. Ambiguous From or
 duplicate matched headers fail closed, and a template that expands to an
 invalid URI is a nonmatch. The key resolves through the same exact Task lookup
-and TaskPolicy as webhook events. Cross-transport duplicate
-wakeup suppression remains unimplemented; mail and webhook arrivals are both
-recorded with their own source and receipt. Mail body text is never routing
+and TaskPolicy as webhook events. Mail and webhook arrivals are both recorded
+with their own source and receipt; the coalescing window above keeps a
+notification of the same activity from waking the Task twice. Mail body text is never routing
 authority.
 For an exact Task key match, the operator appends an IMAP thread external
 reference using the root RFC Message-ID, Mailbox name and UID, and folder.

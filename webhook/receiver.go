@@ -114,7 +114,6 @@ type receiverBinding struct {
 			Otherwise struct {
 				TaskRef string `json:"taskRef"`
 			} `json:"otherwise"`
-			CoalesceFor string `json:"coalesceFor"`
 		} `json:"routing"`
 	} `json:"spec"`
 }
@@ -146,7 +145,6 @@ type normalizedEvent struct {
 	URL          string `json:"url,omitempty"`
 	Key          string `json:"key,omitempty"`
 	FallbackTask string `json:"fallbackTask,omitempty"`
-	CoalesceFor  string `json:"coalesceFor,omitempty"`
 }
 
 func (k *kubeHookResolver) Protocol(ctx context.Context, name string) (receiverProtocol, error) {
@@ -571,13 +569,7 @@ func receiverMessageID(event normalizedEvent) string {
 	return hex.EncodeToString(sum[:])
 }
 func normalizeReceiverEvent(b receiverBinding, p receiverProtocol, e map[string]any) (normalizedEvent, error) {
-	n := normalizedEvent{Version: 2, Namespace: b.Metadata.Namespace, Agent: b.Spec.AgentRef, Binding: b.Metadata.Name, BindingUID: b.Metadata.UID, Protocol: p.Metadata.Name, FallbackTask: b.Spec.Routing.Otherwise.TaskRef, CoalesceFor: b.Spec.Routing.CoalesceFor}
-	if n.CoalesceFor != "" {
-		d, err := time.ParseDuration(n.CoalesceFor)
-		if err != nil || d < time.Second || d > time.Hour {
-			return n, fmt.Errorf("coalesceFor must be a duration from 1s to 1h")
-		}
-	}
+	n := normalizedEvent{Version: 2, Namespace: b.Metadata.Namespace, Agent: b.Spec.AgentRef, Binding: b.Metadata.Name, BindingUID: b.Metadata.UID, Protocol: p.Metadata.Name, FallbackTask: b.Spec.Routing.Otherwise.TaskRef}
 	for _, field := range []struct {
 		key string
 		dst *string

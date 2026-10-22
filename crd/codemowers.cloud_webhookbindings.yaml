@@ -67,5 +67,3 @@ spec:
                       properties:
                         taskRef:
                           type: string
-                    coalesceFor:
-                      type: string

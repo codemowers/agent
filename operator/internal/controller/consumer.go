@@ -3,12 +3,11 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
+	"slices"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -211,103 +210,86 @@ func ownedByAgent(task *agentsv1alpha1.Task, name string, uid types.UID) bool {
 	return false
 }
 
-// wakeTaskWithContent records an authenticated event and wakes its Task.
-func (c *EventConsumer) wakeTaskWithContent(ctx context.Context, task *agentsv1alpha1.Task, routingKey, messageID, source, from, content, sourceURL string, coalesceFor time.Duration) error {
-	now := time.Now().UnixMilli()
-	until, _ := strconv.ParseInt(task.Annotations["codemowers.cloud/coalesce-until"], 10, 64)
-	firstInWindow := coalesceFor == 0 || now >= until
-	body := fmt.Sprintf("New event on %s — read the latest updates and decide what to do next.", routingKey)
-	if content != "" {
-		body = content
-	}
-	if firstInWindow && c.AMQP != nil {
-		var agent agentsv1alpha1.Agent
-		if err := c.Client.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: task.Spec.AgentRef}, &agent); err != nil {
-			return err
-		}
-		queue := agentsv1alpha1.TaskQueue(task, &agent)
-		msg := rabbitmq.PromptMessage{
-			Type:       "event",
-			Body:       body,
-			RoutingKey: routingKey,
-			MessageID:  messageID,
-			ReceivedAt: now,
-		}
-		if err := c.AMQP.Publish(ctx, queue, msg); err != nil {
-			return err
-		}
-	}
-	if messageID != "" {
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			var current agentsv1alpha1.Task
-			if err := c.Client.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: task.Name}, &current); err != nil {
-				return fmt.Errorf("get conversation Task %s/%s: %w", task.Namespace, task.Name, err)
-			}
-			transport := "webhook/" + source
-			if source == "imap" {
-				transport = "imap"
-			}
-			if !current.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: "event-" + messageID, Role: "external", Source: transport,
-				Actor: from, Content: body, URL: sourceURL, CreatedAt: metav1.NewTime(time.UnixMilli(now))}) {
-				return nil
-			}
-			return c.Client.Status().Update(ctx, &current)
+// taskArrival is an authenticated event accepted for one Task.
+type taskArrival struct {
+	Key, Receipt, Source, Actor, Text, URL string
+	// Binding is the UID of the WebhookBinding or MailBinding that delivered it.
+	Binding string
+	// Wake publishes the event to the worker, subject to coalescing.
+	Wake bool
+	// Complete completes the Task with this reason instead of waking it.
+	Complete string
+}
+
+// recordArrival records an authenticated event on its Task and wakes or
+// completes the Task. The first event on a key wakes at once and opens a
+// window: another binding's event within it notifies of the same activity,
+// such as forge mail after its webhook, and is only recorded; the same
+// binding's events receive one trailing wake. The prompt is published before
+// the status write, so a failed write redelivers the event instead of losing
+// the wake.
+func (c *EventConsumer) recordArrival(ctx context.Context, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, a taskArrival) error {
+	now := time.Now()
+	window := agentsv1alpha1.CoalesceWindow(task, agent)
+	open, inWindow := task.Status.Events.Windows[a.Key]
+	inWindow = inWindow && now.Before(open.Until.Time)
+	if a.Wake && !inWindow && c.AMQP != nil {
+		if err := c.AMQP.Publish(ctx, agentsv1alpha1.TaskQueue(task, agent), rabbitmq.PromptMessage{
+			Type: "event", Body: a.Text, RoutingKey: a.Key, MessageID: a.Receipt, ReceivedAt: now.UnixMilli(),
 		}); err != nil {
 			return err
 		}
 	}
-	patch := client.MergeFrom(task.DeepCopy())
-	if task.Annotations == nil {
-		task.Annotations = make(map[string]string)
-	}
-	task.Annotations["codemowers.cloud/event-routing-key"] = routingKey
-	task.Annotations["codemowers.cloud/event-message-id"] = messageID
-	if messageID != "" {
-		var receipts []string
-		_ = json.Unmarshal([]byte(task.Annotations["codemowers.cloud/delivery-receipts"]), &receipts)
-		receipts = append(receipts, messageID)
-		if len(receipts) > 128 {
-			receipts = receipts[len(receipts)-128:]
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current agentsv1alpha1.Task
+		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(task), &current); err != nil {
+			return fmt.Errorf("get Task %s/%s: %w", task.Namespace, task.Name, err)
 		}
-		encoded, err := json.Marshal(receipts)
-		if err != nil {
-			return err
+		if current.UID != task.UID || taskHasDelivery(&current, a.Receipt) {
+			return nil
 		}
-		task.Annotations["codemowers.cloud/delivery-receipts"] = string(encoded)
-	}
-	task.Annotations["codemowers.cloud/event-received-at"] = strconv.FormatInt(now, 10)
-	if firstInWindow {
-		// The first event wakes immediately. Later events receive a trailing wake.
-		task.Annotations["codemowers.cloud/wake-pending"] = "true"
-		if coalesceFor > 0 {
-			task.Annotations["codemowers.cloud/coalesce-until"] = strconv.FormatInt(now+coalesceFor.Milliseconds(), 10)
-			task.Annotations["codemowers.cloud/coalesce-trailing"] = "false"
+		transport := "webhook/" + a.Source
+		if a.Source == "imap" {
+			transport = "imap"
 		}
-	} else {
-		task.Annotations["codemowers.cloud/coalesce-trailing"] = "true"
-	}
-	if err := c.Client.Patch(ctx, task, patch); err != nil {
-		return err
-	}
-	return nil
+		at := metav1.NewTime(now)
+		current.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: "event-" + a.Receipt, Role: "external", Source: transport,
+			Actor: a.Actor, Content: a.Text, URL: a.URL, CreatedAt: at})
+		events := &current.Status.Events
+		events.Receipts = append(events.Receipts, a.Receipt)
+		if len(events.Receipts) > 128 {
+			events.Receipts = events.Receipts[len(events.Receipts)-128:]
+		}
+		for key, w := range events.Windows {
+			if !w.Trailing && !now.Before(w.Until.Time) {
+				delete(events.Windows, key)
+			}
+		}
+		switch {
+		case a.Complete != "":
+			if !current.Status.Completed() {
+				current.Status.Completion = &agentsv1alpha1.TaskCompletion{Reason: a.Complete, Actor: a.Actor, CompletedAt: &at}
+				events.WakePending, events.Windows = false, nil
+				current.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: "completion:" + a.Receipt, Role: "system", Source: "operator",
+					Actor: a.Actor, Content: "Completed: " + a.Complete, CreatedAt: at})
+			}
+		case !a.Wake:
+		case !inWindow:
+			events.WakePending = true
+			if window > 0 {
+				if events.Windows == nil {
+					events.Windows = map[string]agentsv1alpha1.EventWindow{}
+				}
+				events.Windows[a.Key] = agentsv1alpha1.EventWindow{Binding: a.Binding, Until: metav1.NewTime(now.Add(window))}
+			}
+		case open.Binding == a.Binding:
+			open.Trailing = true
+			events.Windows[a.Key] = open
+		}
+		return c.Client.Status().Update(ctx, &current)
+	})
 }
 
-func taskHasDelivery(task *agentsv1alpha1.Task, messageID string) bool {
-	if messageID == "" {
-		return false
-	}
-	if task.Annotations["codemowers.cloud/initial-delivery-id"] == messageID ||
-		task.Annotations["codemowers.cloud/event-message-id"] == messageID {
-		return true
-	}
-	var receipts []string
-	if json.Unmarshal([]byte(task.Annotations["codemowers.cloud/delivery-receipts"]), &receipts) != nil {
-		return false
-	}
-	for _, receipt := range receipts {
-		if receipt == messageID {
-			return true
-		}
-	}
-	return false
+func taskHasDelivery(task *agentsv1alpha1.Task, receipt string) bool {
+	return receipt != "" && (task.Status.Events.InitialDeliveryID == receipt || slices.Contains(task.Status.Events.Receipts, receipt))
 }

@@ -1,8 +1,15 @@
 package v1alpha1
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	"time"
 
-const DefaultIdleSeconds int32 = 3600
+	corev1 "k8s.io/api/core/v1"
+)
+
+const (
+	DefaultIdleSeconds     int32 = 3600
+	DefaultCoalesceSeconds int32 = 180
+)
 
 // AgentIdleSeconds resolves the Agent's default for newly created Tasks.
 func AgentIdleSeconds(agent *Agent) int32 {
@@ -10,6 +17,18 @@ func AgentIdleSeconds(agent *Agent) int32 {
 		return *agent.Spec.IdleSeconds
 	}
 	return DefaultIdleSeconds
+}
+
+// CoalesceWindow resolves a Task's event coalescing window: its own
+// override, then its Agent's default.
+func CoalesceWindow(task *Task, agent *Agent) time.Duration {
+	seconds := DefaultCoalesceSeconds
+	if task.Spec.CoalesceSeconds != nil {
+		seconds = *task.Spec.CoalesceSeconds
+	} else if agent.Spec.CoalesceSeconds != nil {
+		seconds = *agent.Spec.CoalesceSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // AgentWorkerResources captures the worker container's resource budget for a

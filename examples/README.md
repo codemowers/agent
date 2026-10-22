@@ -1,9 +1,10 @@
 # Examples
 
-The Agents implement the README's segmentation example. Agents, their workers,
-Tasks, bindings, Mailbox and the `hifiberry` Device share the namespace `agents`;
-the harness stays in `codemowers-agent-system`. `matmlazi` deploys into the
-workload namespace `demo`:
+These manifests run the Agents of the [segmentation
+example](../docs/security-model.md#agent-segmentation-example). The Agents,
+their Tasks, bindings, Mailboxes and the `hifiberry` Device live in namespace
+`agents`, the harness in `codemowers-agent-system`, and `matmlazi` deploys
+into `demo`.
 
 | Agent | Profile | Worker access in `rbac.yaml` |
 | --- | --- | --- |
@@ -12,32 +13,35 @@ workload namespace `demo`:
 | `patpalouk` | Customer service | None; API token mount disabled |
 | `laurivosandi` | Personal Gitea agent | None |
 
-None of the Agents sets `resourcePrefix`, so plain RBAC decides what each
-worker may change; set it to confine a worker's writes through the cluster's
-`agent-resource-prefix` admission policy. `agents` holds the
-`agent-operator-provider-tokens` and `agent-operator-webhook-keys` Secrets.
-Kaniko builds use the `zot-registry-cluster-push-kaniko` Secret in `demo`.
+No Agent sets `resourcePrefix`, so plain RBAC decides what each worker may
+change. Set it to confine a worker's writes through the `agent-resource-prefix`
+admission policy.
 
-Apply with the context and namespace from `skaffold.env`. Files under
-`*/optional/` are templates with placeholder IDs and URLs.
+## Apply
 
-1. `crd/codemowers.cloud_*.yaml` with `kubectl apply --server-side`, then
-   `rbac.yaml` and `agents/`.
-2. `tasks/fallbacks.yaml`, and optionally the durable `tasks/krtek-capacity-review.yaml`.
+Files under `*/optional/` are templates with placeholder IDs and URLs.
+
+1. CRDs with `kubectl apply --server-side -f ../crd/`, then `rbac.yaml` and
+   `agents/`.
+2. `tasks/fallbacks.yaml`, and optionally `tasks/krtek-capacity-review.yaml`.
    Creating a Task starts a worker turn.
-3. `webhooks/protocol-*.yaml`, the `clusterreceiver-*.yaml` and
-   `receiver-*.yaml` you use, then their `binding-*.yaml` and `policy-*.yaml`.
-   Set each protocol's `allowedKeyPrefixes` to your hosts, and point each
-   forge hook at its receiver's path.
+3. `webhooks/protocol-*.yaml`, the receivers you use, then their bindings and
+   policies. Set each protocol's `allowedKeyPrefixes` to your hosts and point
+   each forge hook at its receiver's path.
 4. `mail/rbac.yaml`, then the Mailboxes and MailBinding.
 5. `devices/hifiberry.yaml`.
 
-Steps outside these files:
+Outside these files:
 
+- `agents` needs the `agent-operator-provider-tokens` and
+  `agent-operator-webhook-keys` Secrets, and `demo` the
+  `zot-registry-cluster-push-kaniko` Secret for Kaniko builds.
 - Slack needs the app's signing secret as key `slack-codemowers` in
-  `agent-operator-webhook-keys`. `mat-slack-token` holds API tokens and cannot
-  verify events.
+  `agent-operator-webhook-keys`. A Slack API token cannot verify events.
 - Gitea assignment policies need a Gitea API token in
-  `agent-operator-provider-tokens` and a matching `gitProviders` entry. The
-  generated webhook signing key is not an API token.
-- Configure senders and `device-agent` with the values the UI shows.
+  `agent-operator-provider-tokens` and a matching `gitProviders` entry.
+- Configure senders and `device-agent` with the values the dashboard shows.
+
+`task-quota.yaml` caps the namespace at 1000 Tasks and alerts before that.
+`task-maintain-agent.yaml` is a long-running maintenance Task for this
+repository.

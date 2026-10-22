@@ -42,6 +42,15 @@ type AgentSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
 	IdleSeconds *int32 `json:"idleSeconds,omitempty"`
+	// CoalesceSeconds is the default event coalescing window of its Tasks.
+	// The first event on a routing key wakes the Task at once and opens the
+	// window. Within it, events from other bindings are notifications of the
+	// same activity and only recorded; events from the same binding receive
+	// one trailing wake. Zero wakes on every event; nil defaults to three
+	// minutes.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=86400
+	CoalesceSeconds *int32 `json:"coalesceSeconds,omitempty"`
 	// ResourcePrefix confines the worker ServiceAccount, through the
 	// agent-resource-prefix admission policy, to resources named with it and
 	// starts the names of worker Pods and Task PVCs. Empty leaves the worker to
@@ -281,6 +290,11 @@ type TaskSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
 	IdleSeconds *int32 `json:"idleSeconds,omitempty"`
+	// CoalesceSeconds overrides the Agent's event coalescing window for this
+	// Task, such as a longer one for an alert fallback Task.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=86400
+	CoalesceSeconds *int32 `json:"coalesceSeconds,omitempty"`
 	// Resources is the Task's copied or overridden worker requests and limits.
 	// Changes replace the current worker Pod.
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -349,6 +363,42 @@ const (
 	TaskPhaseFailed    TaskPhase = "Failed"
 )
 
+// TaskEvents records routed event deliveries and pending wakes.
+type TaskEvents struct {
+	// InitialDeliveryID is the receipt of the event that created the Task.
+	InitialDeliveryID string `json:"initialDeliveryID,omitempty"`
+	// Receipts holds the latest accepted delivery receipts, newest last.
+	Receipts []string `json:"receipts,omitempty"`
+	// WakePending asks the reconciler to start a worker for queued messages.
+	WakePending bool `json:"wakePending,omitempty"`
+	// Windows maps routing keys to their open coalescing windows.
+	Windows map[string]EventWindow `json:"windows,omitempty"`
+}
+
+// EventWindow follows the first event on a routing key.
+type EventWindow struct {
+	// Binding is the UID of the binding whose event opened the window.
+	Binding string      `json:"binding"`
+	Until   metav1.Time `json:"until"`
+	// Trailing is set when the same binding delivered more events.
+	Trailing bool `json:"trailing,omitempty"`
+}
+
+// TaskCompletion records who completed a Task and why.
+type TaskCompletion struct {
+	// Requested is set by the worker on its own Task; completion follows its
+	// turn result.
+	Requested   bool         `json:"requested,omitempty"`
+	Reason      string       `json:"reason,omitempty"`
+	Actor       string       `json:"actor,omitempty"`
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+}
+
+// Completed reports a finished Task.
+func (s *TaskStatus) Completed() bool {
+	return s.Completion != nil && s.Completion.CompletedAt != nil
+}
+
 type TaskStatus struct {
 	Phase TaskPhase `json:"phase,omitempty"`
 	// Activity is reported by the current worker and reconciled on Pod exit.
@@ -373,8 +423,19 @@ type TaskStatus struct {
 	// ExternalReferences are source links collected after Task creation.
 	ExternalReferences []ExternalReference `json:"externalReferences,omitempty"`
 	LastResultAt       *metav1.Time        `json:"lastResultAt,omitempty"`
-	Outputs            map[string]string   `json:"outputs,omitempty"`
-	Conditions         []metav1.Condition  `json:"conditions,omitempty"`
+	// Events is the operator's intake bookkeeping for routed events.
+	Events TaskEvents `json:"events,omitempty"`
+	// Completion is set when the worker or a closing forge event completes the Task.
+	Completion *TaskCompletion `json:"completion,omitempty"`
+	// ObjectivePublished records that the objective reached the Task queue.
+	ObjectivePublished bool `json:"objectivePublished,omitempty"`
+	// RuntimePublishedGeneration is the latest Task generation sent to the
+	// resident worker as runtime configuration.
+	RuntimePublishedGeneration int64 `json:"runtimePublishedGeneration,omitempty"`
+	// RetryWorker authorizes replacing a worker the operator stopped itself.
+	RetryWorker bool               `json:"retryWorker,omitempty"`
+	Outputs     map[string]string  `json:"outputs,omitempty"`
+	Conditions  []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // MCPProbeStatus is the latest worker-side connectivity check for this Task.

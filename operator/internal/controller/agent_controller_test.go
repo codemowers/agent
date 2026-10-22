@@ -45,7 +45,7 @@ func TestRuntimeSettingsUseQueueWithoutReplacingPod(t *testing.T) {
 	if workerConfigHash(task, agent) == workerConfigHash(initial, agent) {
 		t.Fatal("backend change would leave stale worker credentials")
 	}
-	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(task).Build()
+	store := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(task).WithObjects(task).Build()
 	broker := &coalesceBroker{}
 	r := &TaskReconciler{Client: store, AMQP: broker}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{workerRuntimeGenerationAnnotation: "1"}}}
@@ -373,7 +373,7 @@ func TestWorkerConfigChangeStopsOwnedPodOnce(t *testing.T) {
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &actual); err != nil {
 		t.Fatal(err)
 	}
-	if actual.Annotations["codemowers.cloud/retry-worker"] != "true" {
+	if !actual.Status.RetryWorker {
 		t.Fatal("replacement not marked")
 	}
 	if len(actual.Status.Conversation) != 1 || actual.Status.Conversation[0].Content != "Stopping worker worker" {
@@ -436,7 +436,7 @@ func TestBlockedUnstartedWorkerIsReplacedForSkaffoldImage(t *testing.T) {
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &actual); err != nil {
 		t.Fatal(err)
 	}
-	if actual.Annotations["codemowers.cloud/retry-worker"] != "true" {
+	if !actual.Status.RetryWorker {
 		t.Fatal("worker retry not recorded")
 	}
 }

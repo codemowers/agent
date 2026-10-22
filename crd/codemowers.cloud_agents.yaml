@@ -83,6 +83,17 @@ spec:
                 format: int32
                 minimum: 0
                 maximum: 86400
+              coalesceSeconds:
+                description: >-
+                  Default event coalescing window of the Agent's Tasks. The first event on a
+                  routing key wakes the Task at once and opens the window. Within it, events
+                  from other bindings are notifications of the same activity and are only
+                  recorded; events from the same binding receive one trailing wake, which
+                  opens the next window. Zero wakes on every event; absent means 180 seconds.
+                type: integer
+                format: int32
+                minimum: 0
+                maximum: 86400
               instructions:
                 description: Role description that leads every worker turn's prompt; changes reach the next worker Pod.
                 type: string

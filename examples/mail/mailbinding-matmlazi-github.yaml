@@ -30,4 +30,3 @@ spec:
   routing:
     otherwise:
       taskRef: mail-intake
-    coalesceFor: 3m

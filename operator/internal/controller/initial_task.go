@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -59,8 +60,7 @@ func (c *EventConsumer) createTaskByPolicy(ctx context.Context, agent *agentsv1a
 	task := &agentsv1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: agentsv1alpha1.TaskNameForKey(agent.UID, ev.Key), Namespace: ev.Namespace,
-			Labels:      map[string]string{"codemowers.cloud/agent": agent.Name},
-			Annotations: map[string]string{"codemowers.cloud/initial-delivery-id": ev.Receipt},
+			Labels: map[string]string{"codemowers.cloud/agent": agent.Name},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name,
 				UID: agent.UID, Controller: boolPtr(true), BlockOwnerDeletion: boolPtr(true),
@@ -73,6 +73,8 @@ func (c *EventConsumer) createTaskByPolicy(ctx context.Context, agent *agentsv1a
 			IdleSeconds: int32Ptr(agentsv1alpha1.AgentIdleSeconds(agent)),
 			Resources:   agentsv1alpha1.AgentWorkerResources(agent),
 			RoutingKeys: []string{ev.Key},
+			// The policy's workflow may need its own window.
+			CoalesceSeconds: policy.Spec.CoalesceSeconds,
 		},
 	}
 	switch policy.Spec.Verify {
@@ -92,17 +94,27 @@ func (c *EventConsumer) createTaskByPolicy(ctx context.Context, agent *agentsv1a
 		logger.Info("unsupported TaskPolicy verify, not creating a Task", "verify", policy.Spec.Verify)
 		return false, nil
 	}
-	if ev.Coalesce > 0 {
-		task.Annotations["codemowers.cloud/coalesce-until"] = strconv.FormatInt(time.Now().Add(ev.Coalesce).UnixMilli(), 10)
-		task.Annotations["codemowers.cloud/coalesce-trailing"] = "false"
-	}
-	if err := c.Client.Create(ctx, task); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return true, nil
-		}
+	if err := c.Client.Create(ctx, task); err != nil && !apierrors.IsAlreadyExists(err) {
 		return false, fmt.Errorf("create policy Task: %w", err)
 	}
-	return true, nil
+	// Status cannot be set on creation. A redelivery after a failed write
+	// finds the deterministically named Task and records it then.
+	return true, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current agentsv1alpha1.Task
+		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(task), &current); err != nil {
+			return err
+		}
+		if current.Status.Events.InitialDeliveryID != "" || !ownedByAgent(&current, agent.Name, agent.UID) {
+			return nil
+		}
+		current.Status.Events.InitialDeliveryID = ev.Receipt
+		if window := agentsv1alpha1.CoalesceWindow(&current, agent); window > 0 {
+			// Other bindings' notifications of the creating event do not wake.
+			current.Status.Events.Windows = map[string]agentsv1alpha1.EventWindow{
+				ev.Key: {Binding: ev.Binding, Until: metav1.NewTime(time.Now().Add(window))}}
+		}
+		return c.Client.Status().Update(ctx, &current)
+	})
 }
 
 type forgeAccount struct {

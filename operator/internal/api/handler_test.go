@@ -223,8 +223,8 @@ func TestTaskSuspendAndStopControls(t *testing.T) {
 	support := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "support", Namespace: "team", UID: "support-uid"}}
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "dev-task", Namespace: "team", OwnerReferences: owner("developer", developer.UID)},
 		Status: agentsv1alpha1.TaskStatus{Phase: agentsv1alpha1.TaskPhaseRunning, Activity: "idle", WorkerPodUID: "pod-uid"}}
-	completed := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "done-task", Namespace: "team", OwnerReferences: owner("developer", developer.UID),
-		Annotations: map[string]string{"codemowers.cloud/completed": "true"}}, Spec: agentsv1alpha1.TaskSpec{Suspend: true}}
+	completed := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "done-task", Namespace: "team", OwnerReferences: owner("developer", developer.UID)}, Spec: agentsv1alpha1.TaskSpec{Suspend: true},
+		Status: agentsv1alpha1.TaskStatus{Completion: &agentsv1alpha1.TaskCompletion{CompletedAt: &metav1.Time{Time: time.Now()}}}}
 	foreign := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "support-task", Namespace: "team", OwnerReferences: owner("support", support.UID)}}
 	h := &Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(developer, support, task, completed, foreign).
 		WithStatusSubresource(&agentsv1alpha1.Task{}).Build(), Verifier: fakeVerifier{}, Reviewer: fakeReviewer{}}
