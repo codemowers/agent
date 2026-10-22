@@ -22,6 +22,10 @@ and workers never read or write these resources through the Kubernetes API.
 | Mailbox | Namespaced | Namespace administrators | Operator | Administrators; operator writes the IMAP cursor |
 | MailBinding | Namespaced | Namespace administrators | Operator | Administrators |
 | Device | Namespaced | Namespace administrators | Device bridge | Administrators; bridge writes connection status |
+| Feed | Namespaced | Namespace administrators | Feed crawler | Administrators; crawler writes crawl state and recent items |
+| FeedBinding | Namespaced | Namespace administrators | Feed crawler | Administrators |
+| ClusterMCPServer | Cluster | Cluster administrators; the chart for built-in servers | Operator | Cluster administrators |
+| MCPServer | Namespaced | Namespace administrators | Operator | Administrators |
 
 - **Agent:** a worker definition with CLI and model, Pod template, workspace
   volume claims, Git providers, idle timeout, coalescing window and extra MCP
@@ -40,13 +44,19 @@ and workers never read or write these resources through the Kubernetes API.
 - **Mailbox:** a Pod holding one account's IMAP and SMTP credentials.
   **MailBinding** wakes one Agent's Tasks for matching mail headers.
 - **Device:** a remote machine and its connection key.
+- **Feed:** a public feed the crawler polls; **FeedBinding** wakes a Task of
+  its namespace with the feed's new items.
+- **ClusterMCPServer** and **MCPServer:** an MCP server advertised to workers.
+  A namespaced server's token audience must equal its URL.
 
 Dashboard users reach an Agent's Tasks if they are listed in its `spec.access`
 or, without that list, if they have `get` on the Agent.
 
-Workers get a Mailbox or Device through custom RBAC verbs on that object,
-checked by its MCP server on every call. Standard verbs such as `get` grant
-none of them.
+Workers get a Mailbox, Device or MCP server, and callers wake a Task, through
+custom RBAC verbs on that object. Mailbox and Device verbs are checked by
+their MCP server on every call; `use` is checked when the operator builds a
+worker Pod. Standard verbs such as `get` grant none of them, but wildcard
+grants such as cluster-admin include them all.
 
 | Kind | Verb | Allows |
 | --- | --- | --- |
@@ -55,15 +65,18 @@ none of them.
 | Device | `exec` | `device_shell` |
 | Device | `read` | `device_file_read` |
 | Device | `write` | `device_file_write`, which usually allows code execution too |
+| ClusterMCPServer, MCPServer | `use` | The server's endpoint and a token for its audience in the worker |
+| Task | `wake` | Waking the Task through the operator's wake endpoint |
 
 ## Kubernetes permissions
 
 | Identity | Permissions |
 | --- | --- |
-| `agent-operator` | Reads Agents, Mailboxes and policies; manages Tasks, worker Pods, PVCs and Mailbox Services; writes Agent, Task and Mailbox status; reads `agent-operator-provider-tokens` by name; creates TokenReviews and SubjectAccessReviews. |
+| `agent-operator` | Reads Agents, Mailboxes, MCP servers and policies; manages Tasks, worker Pods, PVCs and Mailbox Services; writes Agent, Task and Mailbox status; reads `agent-operator-provider-tokens` by name; creates TokenReviews and SubjectAccessReviews. |
 | `agent-operator-webhook` | Reads protocols, receivers, bindings and the Secret each receiver names; creates TokenReviews for ServiceAccount-token senders. |
 | `agent-devices` | Reads Devices and the Secrets named in `deviceBridge.secretNames`; writes Device status; creates TokenReviews and SubjectAccessReviews. |
 | `agent-mailbox` | Creates TokenReviews and SubjectAccessReviews. Only the Mailbox Pod's MCP container gets its token. |
+| `agent-feeds` | Reads Feeds and FeedBindings, writes Feed status, holds `wake` on Tasks cluster-wide and creates TokenReviews. FeedBindings decide which Tasks it wakes. |
 | `agent-worker-<agent>` | Whatever the namespace administrator grants; [examples/](../examples/README.md) has three profiles. |
 
 ### Credential storage

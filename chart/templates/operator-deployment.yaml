@@ -25,6 +25,8 @@ rules:
   - apiGroups: [codemowers.cloud]
     resources:
       - mailboxes
+      - clustermcpservers
+      - mcpservers
     verbs:
       - get
       - list
@@ -188,8 +190,6 @@ spec:
                   fieldPath: metadata.namespace
             - name: AGENT_DEVICES_ENABLED
               value: {{ .Values.deviceBridge.enabled | quote }}
-            - name: AGENT_FEEDS_ENABLED
-              value: {{ .Values.feeds.enabled | quote }}
             - name: AGENT_WEBHOOK_ENABLED
               value: {{ .Values.webhook.enabled | quote }}
             {{- if .Values.webhook.enabled }}

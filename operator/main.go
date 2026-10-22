@@ -157,14 +157,12 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.TaskReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		AMQP:           amqpMgr,
-		AMQPURL:        workerAMQPURL(amqpURL),
-		WorkerImage:    os.Getenv("AGENT_WORKER_IMAGE"),
-		DisableDevices: os.Getenv("AGENT_DEVICES_ENABLED") == "false",
-		EnableFeeds:    os.Getenv("AGENT_FEEDS_ENABLED") == "true",
-		KubectlTag:     kubectlTag,
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		AMQP:        amqpMgr,
+		AMQPURL:     workerAMQPURL(amqpURL),
+		WorkerImage: os.Getenv("AGENT_WORKER_IMAGE"),
+		KubectlTag:  kubectlTag,
 		// Only the Pod's metadata.namespace fieldRef supplies this.
 		HarnessNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {

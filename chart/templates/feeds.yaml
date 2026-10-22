@@ -26,6 +26,31 @@ rules:
     resources: [tokenreviews]
     verbs: [create]
 ---
+# Every ServiceAccount may use the feeds MCP; it serves only the caller's
+# own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-agent-feeds-mcp
+rules:
+  - apiGroups: [codemowers.cloud]
+    resources: [clustermcpservers]
+    resourceNames: [feeds]
+    verbs: [use]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-agent-feeds-mcp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-agent-feeds-mcp
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: system:serviceaccounts
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -102,6 +127,14 @@ spec:
                   audience: agent-operator-wake
                   expirationSeconds: 3600
                   path: token
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterMCPServer
+metadata:
+  name: feeds
+spec:
+  url: {{ printf "http://agent-feeds.%s.svc.cluster.local:8080/mcp" .Release.Namespace | quote }}
+  audience: agent-feeds-mcp
 ---
 apiVersion: v1
 kind: Service

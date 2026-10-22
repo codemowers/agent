@@ -43,6 +43,30 @@ subjects:
     name: agent-devices
     namespace: {{ .Release.Namespace }}
 ---
+# Every ServiceAccount may use the Devices MCP; Device RBAC decides each call.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-agent-devices-mcp
+rules:
+  - apiGroups: [codemowers.cloud]
+    resources: [clustermcpservers]
+    resourceNames: [devices]
+    verbs: [use]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-agent-devices-mcp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-agent-devices-mcp
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: system:serviceaccounts
+---
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -92,6 +116,14 @@ spec:
               path: /healthz
               port: http
             initialDelaySeconds: 5
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterMCPServer
+metadata:
+  name: devices
+spec:
+  url: {{ printf "http://agent-devices.%s.svc.cluster.local:8080/mcp" .Release.Namespace | quote }}
+  audience: agent-devices-mcp
 ---
 apiVersion: v1
 kind: Service

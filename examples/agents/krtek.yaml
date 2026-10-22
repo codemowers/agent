@@ -56,10 +56,3 @@ spec:
     - type: github
       serverURL: https://github.com
       credentialKeyRef: github
-  mcpEndpoints:
-    - name: codemowers
-      url: https://mcp.codemowers.io/mcp
-      siteURL: https://mcp.codemowers.io
-    - name: driftmower
-      url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
-      tokenFile: /var/run/agent-mcp/driftmower

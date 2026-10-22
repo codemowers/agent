@@ -191,8 +191,9 @@ only Secrets with names allowed by `deviceBridge.secretNames` in chart RBAC.
 The example Hifiberry uses its own `agent-device-hifiberry` Secret. A worker sees each
 Device on which it holds a verb, named bare in its own namespace and as
 `namespace/name` elsewhere. The bridge owns device-agent
-WebSockets and updates Device connection status. With the bridge enabled, every worker receives the
-`devices` MCP endpoint and a projected ServiceAccount token for audience
+WebSockets and updates Device connection status. With the bridge enabled, the
+chart advertises it as the `devices` ClusterMCPServer that every
+ServiceAccount may use, so workers get a projected token for audience
 `agent-devices-mcp`, never a Device key; Device RBAC alone decides access.
 Pat's separate unprivileged ServiceAccount has no RBAC and its default API
 token mount is disabled, so its device calls are denied.
@@ -333,11 +334,24 @@ same-namespace `FeedBinding` once, with the new items' titles, links and their
 first-seen time, under an idempotency key derived from them. Status advances
 only after every wake succeeded. The crawler's ServiceAccount holds `wake` on
 Tasks cluster-wide, so namespace administrators decide through FeedBindings
-which of their Tasks a Feed wakes. With the crawler enabled, every worker gets
-its `feeds` MCP endpoint and a projected token for audience `agent-feeds-mcp`;
-`list_feeds` and `list_feed_items` (by feed, `since` a first-seen time, limit)
-cover the Feeds of the worker's own namespace, and the worker reads linked
-pages it finds relevant.
+which of their Tasks a Feed wakes. With the crawler enabled, the chart
+advertises it as the `feeds` ClusterMCPServer that every ServiceAccount may
+use, with token audience `agent-feeds-mcp`; `list_feeds` and
+`list_feed_items` (by feed, `since` a first-seen time, limit) cover the Feeds
+of the worker's own namespace, and the worker reads linked pages it finds
+relevant.
+MCP servers reach workers by advertisement and RBAC. A cluster-scoped
+`ClusterMCPServer` or a namespaced `MCPServer` names a URL and an optional
+token audience; its metadata name is the endpoint name. When it creates a
+worker Pod, the operator attaches every server on which a SubjectAccessReview
+grants the worker ServiceAccount the custom verb `use`, a namespaced server
+overriding a cluster one of the same name, and projects one token per
+audience at `/var/run/agent-mcp/<name>/token`. A namespaced server's audience
+must equal its URL, so a namespace administrator cannot have workers mint
+tokens for harness audiences. Attachment stays out of the worker
+configuration hash, like Mailboxes, so RBAC changes reach the next worker Pod.
+Wildcard RBAC such as cluster-admin uses every server. The servers still
+authorize each call.
 Alertmanager notifications posted to Slack by a bot and human replies in that
 thread are separate arrivals. Ignore bot echoes, preserve a human reply's
 Slack source and receipt, and never merge by similar text, labels, or channel.
@@ -372,9 +386,8 @@ Opening a running Task requests an MCP connectivity check over a short-lived
 RabbitMQ control queue for that worker Pod. The worker checks it even during a
 CLI turn, initializes each configured MCP and lists its tools,
 then reports endpoint names and availability through the execution-bound Agent
-MCP. `Agent.spec.mcpEndpoints` lists additional endpoints; the operator adds
-`agent_operator`, `devices` and one `mailbox-<name>` per RBAC-authorized
-Mailbox. The operator accepts any sanitized report: names match
+MCP. Workers get `agent_operator`, the advertised servers they may use and
+one `mailbox-<name>` per RBAC-authorized Mailbox. The operator accepts any sanitized report: names match
 `^[A-Za-z0-9_-]{1,64}$` without duplicates, and detail, title, instructions
 and tool names are bounded. The operator records the latest request and result in Task status and
 streams the change to the UI. Requests are coalesced for 20 seconds. A Task
@@ -387,8 +400,7 @@ capitalized endpoint name before the first probe. The multi-line tooltip shows
 state and check time, the server's bounded `initialize` instructions and its
 tool names.
 The Device bridge's instructions list the caller's authorized Devices.
-`Agent.spec.mcpEndpoints` is a list-map keyed by `name`; the API server rejects
-duplicates and the operator-provided `agent_operator` and `devices` names.
+Server names are DNS labels that cannot start with `mailbox-`.
 Apply the Agent CRD with `kubectl apply --server-side`; it is too large for
 client-side apply. Selecting one toggles it in
 `Task.spec.disabledMCPs`, which the operator sends to a running worker as

@@ -147,33 +147,6 @@ spec:
                   - type
                   type: object
                 type: array
-              mcpEndpoints:
-                description: MCPEndpoints lists MCP servers available to workers, keyed by name.
-                maxItems: 30
-                items:
-                  properties:
-                    name:
-                      description: Name identifies the server in CLI tool names, probe results and Task.spec.disabledMCPs.
-                      type: string
-                      maxLength: 64
-                      pattern: '^[A-Za-z0-9_-]+$'
-                    siteURL:
-                      type: string
-                    tokenFile:
-                      type: string
-                    url:
-                      type: string
-                  required:
-                  - name
-                  - url
-                  type: object
-                  x-kubernetes-validations:
-                  - rule: "!(self.name in ['agent_operator', 'devices', 'feeds']) && !self.name.startsWith('mailbox-')"
-                    message: agent_operator, devices, feeds and mailbox-* are provided by the operator
-                type: array
-                x-kubernetes-list-type: map
-                x-kubernetes-list-map-keys:
-                - name
               model:
                 description: Model selects the AI backend and its credential secret.
                 properties:

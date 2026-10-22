@@ -37,7 +37,3 @@ spec:
     - type: github
       serverURL: https://github.com
       credentialKeyRef: github
-  mcpEndpoints:
-    - name: codemowers
-      url: https://mcp.codemowers.io/mcp
-      siteURL: https://mcp.codemowers.io

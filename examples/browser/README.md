@@ -5,15 +5,9 @@ development namespace `demo`, outside the harness and worker namespaces. Each
 MCP session gets its own in-memory browser context in that one browser
 process; a worker CLI session that reconnects starts with an empty context.
 
-Apply it with the developer's or worker's own access to `demo`, then add the
-endpoint to the Agent:
-
-```yaml
-spec:
-  mcpEndpoints:
-    - name: browser
-      url: http://browser-mcp.demo.svc.cluster.local:8931/mcp
-```
+Apply it with the developer's or worker's own access to `demo`. The
+`browser` MCPServer and its `use` grant to `matmlazi` are in
+[../mcp/servers.yaml](../mcp/servers.yaml).
 
 Access control is the ingress NetworkPolicy, which admits only Pods labelled
 `codemowers.cloud/agent: matmlazi` in `agents`. The browser has no bearer

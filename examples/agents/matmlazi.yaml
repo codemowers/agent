@@ -73,10 +73,3 @@ spec:
     - type: gitea
       serverURL: https://git.codemowers.io
       credentialKeyRef: matmlazi-gitea
-  mcpEndpoints:
-    - name: codemowers
-      url: https://mcp.codemowers.io/mcp
-      siteURL: https://mcp.codemowers.io
-    - name: driftmower
-      url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
-      tokenFile: /var/run/agent-mcp/driftmower

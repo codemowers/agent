@@ -1,0 +1,97 @@
+# MCP servers advertised to workers. The operator attaches a server to a
+# worker whose ServiceAccount holds the custom verb "use" on it and projects a
+# token for its audience; the chart advertises the Devices and feeds servers.
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterMCPServer
+metadata:
+  name: codemowers
+spec:
+  url: https://mcp.codemowers.io/mcp
+---
+apiVersion: codemowers.cloud/v1alpha1
+kind: ClusterMCPServer
+metadata:
+  name: driftmower
+spec:
+  url: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
+  audience: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
+---
+# The developer's shared browser in demo; see ../browser/README.md.
+apiVersion: codemowers.cloud/v1alpha1
+kind: MCPServer
+metadata:
+  name: browser
+  namespace: agents
+spec:
+  url: http://browser-mcp.demo.svc.cluster.local:8931/mcp
+---
+# Every worker of agents may use the advisory server.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-mcp-codemowers
+rules:
+  - apiGroups: [codemowers.cloud]
+    resources: [clustermcpservers]
+    resourceNames: [codemowers]
+    verbs: [use]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-mcp-codemowers-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-mcp-codemowers
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: system:serviceaccounts:agents
+---
+# Cluster inventory for every Agent except customer support.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-mcp-driftmower
+rules:
+  - apiGroups: [codemowers.cloud]
+    resources: [clustermcpservers]
+    resourceNames: [driftmower]
+    verbs: [use]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-mcp-driftmower
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-mcp-driftmower
+subjects:
+  - {kind: ServiceAccount, name: agent-worker-krtek, namespace: agents}
+  - {kind: ServiceAccount, name: agent-worker-matmlazi, namespace: agents}
+  - {kind: ServiceAccount, name: agent-worker-laurivosandi, namespace: agents}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-mcp-browser
+  namespace: agents
+rules:
+  - apiGroups: [codemowers.cloud]
+    resources: [mcpservers]
+    resourceNames: [browser]
+    verbs: [use]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-mcp-browser
+  namespace: agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-mcp-browser
+subjects:
+  - {kind: ServiceAccount, name: agent-worker-matmlazi, namespace: agents}

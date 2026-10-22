@@ -14,7 +14,7 @@ test('worker MCP bridge reloads rotated tokens, preserves sessions and never put
     res.writeHead(200, {'content-type':'application/json','mcp-session-id':'session'});res.end('{"ok":true}');
   });
   await new Promise(resolve=>upstream.listen(0,'127.0.0.1',resolve));t.after(()=>upstream.close());
-  const config = await workerMcpConfig({mcpServers:{driftmower:{url:`http://127.0.0.1:${upstream.address().port}/mcp`,tokenFile,siteURL:'https://console.example.test/'}}});
+  const config = await workerMcpConfig({mcpServers:{driftmower:{url:`http://127.0.0.1:${upstream.address().port}/mcp`,tokenFile}}});
   t.after(()=>config.close());
   const url = config.mcpServers.driftmower.url;
   assert.ok(!JSON.stringify(config.mcpServers).includes('first'));

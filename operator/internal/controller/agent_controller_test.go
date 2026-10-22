@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func TestWorkerPodVersionChangesPodConfigHash(t *testing.T) {
@@ -149,14 +151,14 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 			Model:        agentsv1alpha1.ModelSpec{Backend: "claude", CredentialKeyRef: "agent-cred-model"},
 			IdleSeconds:  int32Ptr(60),
 			GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://github.com", CredentialKeyRef: "agent-cred-git"}},
-			MCPEndpoints: []agentsv1alpha1.MCPEndpoint{{Name: "driftmower", URL: "http://driftmower-mcp/mcp", TokenFile: "/var/run/agent-mcp/driftmower"}},
 			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 				Containers:     []corev1.Container{{Name: "worker", Image: "codemowers/agent:latest"}, {Name: "helper", Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m")}}}},
 				InitContainers: []corev1.Container{{Name: "init"}},
 			}},
 		},
 	}
-	pod := (&TaskReconciler{AMQPURL: "amqp://broker", WorkerImage: "registry/agent:build"}).buildWorkerPod("worker-pod", task, agent, "agent-worker", nil)
+	pod := (&TaskReconciler{AMQPURL: "amqp://broker", WorkerImage: "registry/agent:build"}).buildWorkerPod("worker-pod", task, agent, "agent-worker", nil,
+		mcpServer{"driftmower", "http://driftmower-mcp/mcp", "http://driftmower-mcp/mcp"})
 	if pod.Spec.Containers[0].Image != "registry/agent:build" {
 		t.Fatal("worker did not use the configured runner image")
 	}
@@ -183,7 +185,7 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 	}
 	projected := false
 	for _, volume := range pod.Spec.Volumes {
-		if volume.Name == "agent-driftmower-token" && volume.Projected != nil {
+		if volume.Name == "mcp-driftmower" && volume.Projected.Sources[0].ServiceAccountToken.Audience == "http://driftmower-mcp/mcp" {
 			projected = true
 		}
 	}
@@ -270,58 +272,6 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 		if names[name] != key {
 			t.Fatalf("missing or wrong %s: %v", name, names)
 		}
-	}
-}
-
-func TestWorkersReceiveScopedDeviceToken(t *testing.T) {
-	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
-	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "support"}, Spec: agentsv1alpha1.AgentSpec{
-		Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{AutomountServiceAccountToken: boolPtr(false),
-			Containers: []corev1.Container{{Name: "worker"}}}},
-	}}
-	reconciler := &TaskReconciler{WorkerImage: "agent:test"}
-	pod := reconciler.buildWorkerPod("worker", task, agent, "support-sa", nil)
-	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
-		t.Fatal("worker changed the disabled default API token mount")
-	}
-	found := false
-	for _, volume := range pod.Spec.Volumes {
-		if volume.Name == "agent-devices-token" {
-			found = true
-			if volume.Projected == nil || volume.Projected.Sources[0].ServiceAccountToken.Audience != "agent-devices-mcp" {
-				t.Fatal("device token has the wrong audience")
-			}
-		}
-	}
-	if !found {
-		t.Fatal("device token missing")
-	}
-}
-
-func TestDisabledDeviceBridgeOmitsWorkerAccess(t *testing.T) {
-	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
-	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
-		Containers: []corev1.Container{{Name: "worker"}},
-	}}}}
-	r := &TaskReconciler{DisableDevices: true}
-	pod := r.buildWorkerPod("worker", task, agent, "worker", nil)
-	for _, volume := range pod.Spec.Volumes {
-		if volume.Name == "agent-devices-token" {
-			t.Fatal("disabled bridge projected a Device token")
-		}
-	}
-	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
-		if mount.Name == "agent-devices-token" {
-			t.Fatal("disabled bridge mounted a Device token")
-		}
-	}
-	for _, env := range pod.Spec.Containers[0].Env {
-		if env.Name == "AGENT_MCP_ENDPOINTS" && strings.Contains(env.Value, `"name":"devices"`) {
-			t.Fatal("disabled bridge exposed the Devices MCP endpoint")
-		}
-	}
-	if r.workerConfigHash(task, agent) == workerConfigHash(task, agent) {
-		t.Fatal("bridge setting did not change worker configuration hash")
 	}
 }
 
@@ -536,25 +486,60 @@ func TestUntaggedKubectlImagesFollowServerVersion(t *testing.T) {
 	}
 }
 
-func TestFeedsCrawlerAddsWorkerEndpointAndToken(t *testing.T) {
+func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	authorizationv1.AddToScheme(scheme)
+	objects := []client.Object{
+		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "devices"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://devices/mcp", Audience: "agent-devices-mcp"}},
+		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://cluster-drift/mcp", Audience: "http://cluster-drift/mcp"}},
+		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "secret-tools"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://secret/mcp"}},
+		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower", Namespace: "team"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://team-drift/mcp", Audience: "http://team-drift/mcp"}},
+		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "codemowers", Namespace: "team"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "https://mcp.codemowers.io/mcp"}},
+	}
+	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if review, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+				attrs := review.Spec.ResourceAttributes
+				review.Status.Allowed = attrs.Verb == "use" && attrs.Name != "secret-tools" && review.Spec.User == "system:serviceaccount:team:worker"
+				return nil
+			}
+			return c.Create(ctx, obj, opts...)
+		}}).Build()
+	r := &TaskReconciler{Client: store, HarnessNamespace: "harness"}
+	servers := r.authorizedMCPServers(context.Background(), "team", "worker")
+	if len(servers) != 3 || servers[0] != (mcpServer{"codemowers", "https://mcp.codemowers.io/mcp", ""}) ||
+		servers[1] != (mcpServer{"devices", "http://devices/mcp", "agent-devices-mcp"}) || servers[2].URL != "http://team-drift/mcp" {
+		t.Fatalf("unexpected attachment: %+v", servers)
+	}
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
 	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
-		Containers: []corev1.Container{{Name: "worker"}},
-	}}}}
-	r := &TaskReconciler{EnableFeeds: true, HarnessNamespace: "harness"}
-	pod := r.buildWorkerPod("worker", task, agent, "worker", nil)
-	var token bool
+		AutomountServiceAccountToken: boolPtr(false), Containers: []corev1.Container{{Name: "worker"}}}}}}
+	pod := r.buildWorkerPod("worker", task, agent, "worker", nil, servers...)
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Fatal("worker changed the disabled default API token mount")
+	}
+	audiences := map[string]string{}
 	for _, volume := range pod.Spec.Volumes {
-		token = token || volume.Name == "agent-feeds-token" && volume.Projected.Sources[0].ServiceAccountToken.Audience == "agent-feeds-mcp"
+		if strings.HasPrefix(volume.Name, "mcp-") {
+			audiences[volume.Name] = volume.Projected.Sources[0].ServiceAccountToken.Audience
+		}
 	}
-	var endpoint bool
+	if len(audiences) != 2 || audiences["mcp-devices"] != "agent-devices-mcp" || audiences["mcp-driftmower"] != "http://team-drift/mcp" {
+		t.Fatalf("each audience-bound server needs its own token: %v", audiences)
+	}
+	var endpoints string
 	for _, env := range pod.Spec.Containers[0].Env {
-		endpoint = endpoint || env.Name == "AGENT_MCP_ENDPOINTS" && strings.Contains(env.Value, `"name":"feeds","url":"http://agent-feeds.harness.svc.cluster.local:8080/mcp"`)
+		if env.Name == "AGENT_MCP_ENDPOINTS" {
+			endpoints = env.Value
+		}
 	}
-	if !token || !endpoint {
-		t.Fatalf("feeds MCP not attached: token=%v endpoint=%v", token, endpoint)
-	}
-	if r.workerConfigHash(task, agent) == (&TaskReconciler{}).workerConfigHash(task, agent) {
-		t.Fatal("enabling feeds did not change the worker configuration hash")
+	for _, want := range []string{`{"name":"agent_operator"`, `{"name":"codemowers","url":"https://mcp.codemowers.io/mcp"}`,
+		`{"name":"devices","url":"http://devices/mcp","tokenFile":"/var/run/agent-mcp/devices/token"}`} {
+		if !strings.Contains(endpoints, want) {
+			t.Fatalf("endpoints %s lack %s", endpoints, want)
+		}
 	}
 }

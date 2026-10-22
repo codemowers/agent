@@ -19,7 +19,7 @@ export async function workerMcpConfig(config) {
   const mcpServers = {}, bridges = [];
   try {
     for (const [name, definition] of Object.entries(config.mcpServers || {})) {
-      const {siteURL, ...remote} = definition;
+      const remote = definition;
       if (!remote.tokenFile) { mcpServers[name] = remote; continue; }
       const server = http.createServer(async (req, res) => {
         try {

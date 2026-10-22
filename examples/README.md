@@ -21,8 +21,8 @@ admission policy.
 
 Files under `*/optional/` are templates with placeholder IDs and URLs.
 
-1. CRDs with `kubectl apply --server-side -f ../crd/`, then `rbac.yaml` and
-   `agents/`.
+1. CRDs with `kubectl apply --server-side -f ../crd/`, then `rbac.yaml`,
+   `agents/` and the MCP servers they may use, `mcp/servers.yaml`.
 2. `tasks/fallbacks.yaml`, and optionally `tasks/krtek-capacity-review.yaml`
    and `tasks/krtek-platform-watch.yaml` with its weekly wake,
    `tasks/krtek-platform-watch-schedule.yaml`, and its feeds,

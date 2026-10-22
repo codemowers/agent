@@ -113,12 +113,10 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // TaskReconciler reconciles Task CRs: manages worker Pod and workspace PVC lifecycle.
 type TaskReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	AMQP           AMQPManager // nil when RabbitMQ is not configured
-	AMQPURL        string      // injected into worker pods as AMQP_URL
-	WorkerImage    string      // approved runner image injected by deployment/Skaffold
-	DisableDevices bool        // omit Device MCP and token when the bridge is disabled
-	EnableFeeds    bool        // add the feeds MCP and token when the crawler runs
+	Scheme      *runtime.Scheme
+	AMQP        AMQPManager // nil when RabbitMQ is not configured
+	AMQPURL     string      // injected into worker pods as AMQP_URL
+	WorkerImage string      // approved runner image injected by deployment/Skaffold
 	// KubectlTag is the API server version, read at startup, that untagged
 	// kubectl image volumes are pinned to.
 	KubectlTag string
@@ -478,7 +476,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 			}
 			if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed &&
-				pod.Annotations[workerConfigHashAnnotation] != r.workerConfigHash(task, agent) {
+				pod.Annotations[workerConfigHashAnnotation] != workerConfigHash(task, agent) {
 				if !task.Status.RetryWorker {
 					patch := client.MergeFrom(task.DeepCopy())
 					task.Status.RetryWorker = true
@@ -637,7 +635,8 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 
 	podName := workerPodName(agentsv1alpha1.ResourcePrefix(agent), task.Name, randSuffix())
 	sa := agentsv1alpha1.WorkerServiceAccount(agent)
-	pod := r.buildWorkerPod(podName, task, agent, sa, r.authorizedMailboxes(ctx, agent, task.Namespace, sa))
+	pod := r.buildWorkerPod(podName, task, agent, sa, r.authorizedMailboxes(ctx, agent, task.Namespace, sa),
+		r.authorizedMCPServers(ctx, task.Namespace, sa)...)
 	r.pinKubectlImages(pod)
 
 	if err := r.Create(ctx, pod); err != nil {
@@ -828,7 +827,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.cloud/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "14"
+	WorkerPodVersion = "15"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -842,19 +841,10 @@ func workerConfigHash(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) st
 	return workerConfigHashWithVersion(task, agent, WorkerPodVersion)
 }
 
+// workerConfigHashWithVersion covers what the worker Pod is built from.
+// Attached MCP servers and Mailboxes are excluded: RBAC changes reach a
+// worker with its next Pod.
 func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, version string) string {
-	return workerConfigHashWithServices(task, agent, version, agentsv1alpha1.HarnessServices{Devices: true})
-}
-
-func (r *TaskReconciler) workerConfigHash(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) string {
-	return workerConfigHashWithServices(task, agent, WorkerPodVersion, r.services())
-}
-
-func (r *TaskReconciler) services() agentsv1alpha1.HarnessServices {
-	return agentsv1alpha1.HarnessServices{Devices: !r.DisableDevices, Feeds: r.EnableFeeds}
-}
-
-func workerConfigHashWithServices(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, version string, services agentsv1alpha1.HarnessServices) string {
 	model := agent.Spec.Model
 	if task.Spec.Model != nil {
 		model = *task.Spec.Model
@@ -867,8 +857,7 @@ func workerConfigHashWithServices(task *agentsv1alpha1.Task, agent *agentsv1alph
 		Backend          string                       `json:"backend"`
 		CredentialKeyRef string                       `json:"credentialKeyRef"`
 		Template         corev1.PodTemplateSpec       `json:"template"`
-		MCPEndpoints     []agentsv1alpha1.MCPEndpoint `json:"mcpEndpoints"`
-	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, agent.Spec.Template, agentsv1alpha1.WorkerMCPEndpoints(agent, "", task.Namespace, nil, services)})
+	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, agent.Spec.Template})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -979,6 +968,55 @@ func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv
 	return names
 }
 
+// mcpServer is an advertised MCP server attached to a worker.
+type mcpServer struct{ Name, URL, Audience string }
+
+// authorizedMCPServers lists the ClusterMCPServers and the namespace's
+// MCPServers on which the worker ServiceAccount holds the custom verb "use".
+// A namespaced server overrides a cluster one of the same name. Like Mailbox
+// attachment, an RBAC change reaches a worker with its next Pod.
+func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa string) []mcpServer {
+	logger := log.FromContext(ctx)
+	byName := map[string]mcpServer{}
+	allowed := func(scope, resource, name string) bool {
+		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+			User:   "system:serviceaccount:" + namespace + ":" + sa,
+			Groups: []string{"system:serviceaccounts", "system:serviceaccounts:" + namespace, "system:authenticated"},
+			ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: scope, Verb: "use",
+				Group: agentsv1alpha1.GroupVersion.Group, Resource: resource, Name: name},
+		}}
+		if err := r.Create(ctx, review); err != nil {
+			logger.Error(err, "review MCP server access", "server", name)
+			return false
+		}
+		return review.Status.Allowed
+	}
+	var cluster agentsv1alpha1.ClusterMCPServerList
+	if err := r.List(ctx, &cluster); err != nil {
+		logger.Error(err, "list ClusterMCPServers for worker attachment")
+	}
+	for _, server := range cluster.Items {
+		if allowed("", "clustermcpservers", server.Name) {
+			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.Audience}
+		}
+	}
+	var local agentsv1alpha1.MCPServerList
+	if err := r.List(ctx, &local, client.InNamespace(namespace)); err != nil {
+		logger.Error(err, "list MCPServers for worker attachment")
+	}
+	for _, server := range local.Items {
+		if allowed(namespace, "mcpservers", server.Name) {
+			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.Audience}
+		}
+	}
+	servers := make([]mcpServer, 0, len(byName))
+	for _, server := range byName {
+		servers = append(servers, server)
+	}
+	slices.SortFunc(servers, func(a, b mcpServer) int { return strings.Compare(a.Name, b.Name) })
+	return servers
+}
+
 // KubectlTag returns the release part of an API server version, such as
 // v1.36.5 for v1.36.5+k3s1, since image tags cannot carry build metadata.
 func KubectlTag(gitVersion string) (string, error) {
@@ -1000,7 +1038,7 @@ func (r *TaskReconciler) pinKubectlImages(pod *corev1.Pod) {
 	}
 }
 
-func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, sa string, mailboxes []string) *corev1.Pod {
+func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, sa string, mailboxes []string, servers ...mcpServer) *corev1.Pod {
 	ps := agent.Spec.Template.Spec.DeepCopy()
 
 	// Safety overrides regardless of user-supplied values.
@@ -1056,7 +1094,14 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	} else if task.Status.Progress != nil && !task.Status.Progress.UpdatedAt.IsZero() {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_LAST_RESULT_AT", Value: task.Status.Progress.UpdatedAt.Time.Format(time.RFC3339Nano)})
 	}
-	endpointsJSON, _ := json.Marshal(agentsv1alpha1.WorkerMCPEndpoints(agent, r.HarnessNamespace, task.Namespace, mailboxes, r.services()))
+	endpoints := make([]agentsv1alpha1.MCPEndpoint, len(servers))
+	for i, server := range servers {
+		endpoints[i] = agentsv1alpha1.MCPEndpoint{Name: server.Name, URL: server.URL}
+		if server.Audience != "" {
+			endpoints[i].TokenFile = "/var/run/agent-mcp/" + server.Name + "/token"
+		}
+	}
+	endpointsJSON, _ := json.Marshal(agentsv1alpha1.WorkerMCPEndpoints(r.HarnessNamespace, task.Namespace, endpoints, mailboxes))
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MCP_ENDPOINTS", Value: string(endpointsJSON)})
 	disabledJSON, _ := json.Marshal(append([]string{}, task.Spec.DisabledMCPs...))
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_DISABLED_MCPS", Value: string(disabledJSON)})
@@ -1097,13 +1142,11 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 			ps.Containers[i].Env = append(ps.Containers[i].Env, opEnv...)
 			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
 				Name: "agent-operator-mcp-token", MountPath: "/var/run/agent-operator-mcp", ReadOnly: true})
-			if !r.DisableDevices {
-				ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
-					Name: "agent-devices-token", MountPath: "/var/run/agent-devices", ReadOnly: true})
-			}
-			if r.EnableFeeds {
-				ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
-					Name: "agent-feeds-token", MountPath: "/var/run/agent-feeds", ReadOnly: true})
+			for _, server := range servers {
+				if server.Audience != "" {
+					ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
+						Name: "mcp-" + server.Name, MountPath: "/var/run/agent-mcp/" + server.Name, ReadOnly: true})
+				}
 			}
 			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
 				Name: "agent-rabbitmq-token", MountPath: "/var/run/agent-rabbitmq", ReadOnly: true})
@@ -1111,44 +1154,19 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 				ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
 					Name: "agent-mailbox-token", MountPath: "/var/run/agent-mailbox", ReadOnly: true})
 			}
-			for _, endpoint := range agent.Spec.MCPEndpoints {
-				if endpoint.TokenFile != "/var/run/agent-mcp/driftmower" {
-					continue
-				}
-				mounted := false
-				for _, mount := range ps.Containers[i].VolumeMounts {
-					if mount.MountPath == "/var/run/agent-mcp" {
-						mounted = true
-					}
-				}
-				if !mounted {
-					ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-driftmower-token", VolumeSource: corev1.VolumeSource{
-						Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{
-							ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-								Audience:          "http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp",
-								ExpirationSeconds: int64Ptr(3600), Path: "driftmower",
-							},
-						}}},
-					}})
-					ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts,
-						corev1.VolumeMount{Name: "agent-driftmower-token", MountPath: "/var/run/agent-mcp", ReadOnly: true})
-				}
-				break
-			}
 		}
 	}
 	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-operator-mcp-token", VolumeSource: corev1.VolumeSource{
 		Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 			Audience: "agent-operator-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
-	if !r.DisableDevices {
-		ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-devices-token", VolumeSource: corev1.VolumeSource{
-			Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-				Audience: "agent-devices-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
-	}
-	if r.EnableFeeds {
-		ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-feeds-token", VolumeSource: corev1.VolumeSource{
-			Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-				Audience: "agent-feeds-mcp", ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
+	// Each advertised server gets its own audience-bound token, so a server
+	// cannot replay it against another.
+	for _, server := range servers {
+		if server.Audience != "" {
+			ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "mcp-" + server.Name, VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+					Audience: server.Audience, ExpirationSeconds: int64Ptr(3600), Path: "token"}}}}}})
+		}
 	}
 	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-rabbitmq-token", VolumeSource: corev1.VolumeSource{
 		Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
@@ -1163,7 +1181,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	for key, value := range agent.Spec.Template.ObjectMeta.Annotations {
 		annotations[key] = value
 	}
-	annotations[workerConfigHashAnnotation] = r.workerConfigHash(task, agent)
+	annotations[workerConfigHashAnnotation] = workerConfigHash(task, agent)
 	annotations[workerVersionAnnotation] = WorkerPodVersion
 	annotations[workerRuntimeGenerationAnnotation] = strconv.FormatInt(task.Generation, 10)
 	return &corev1.Pod{

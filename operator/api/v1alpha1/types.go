@@ -87,11 +87,6 @@ type AgentSpec struct {
 	// GitProviders lists git server credentials available to workers.
 	GitProviders []GitProvider `json:"gitProviders,omitempty"`
 
-	// MCPEndpoints lists MCP servers available to workers, keyed by name.
-	// +listType=map
-	// +listMapKey=name
-	MCPEndpoints []MCPEndpoint `json:"mcpEndpoints,omitempty"`
-
 	// Access, when set, alone decides which dashboard users may read this
 	// Agent's Tasks, create them and prompt or control them; an empty Access
 	// admits nobody. Without it, Kubernetes RBAC get on the Agent decides.
@@ -164,49 +159,24 @@ func MailboxResourceName(mailbox string) string {
 	return base[:56] + "-" + hex.EncodeToString(sum[:3])
 }
 
+// MCPEndpoint is an MCP server in a worker's configuration.
 type MCPEndpoint struct {
 	// Name identifies the server in CLI tool names, probe results and
-	// Task.spec.disabledMCPs. agent_operator, devices and feeds are reserved.
+	// Task.spec.disabledMCPs.
 	Name      string `json:"name"`
 	URL       string `json:"url"`
 	TokenFile string `json:"tokenFile,omitempty"`
-	SiteURL   string `json:"siteURL,omitempty"`
 }
 
-// HarnessServices are the optional harness components workers reach over MCP.
-type HarnessServices struct {
-	Devices, Feeds bool
-}
-
-// WorkerMCPEndpoints returns the Agent's endpoints followed by the
-// operator-provided agent_operator, devices and feeds endpoints. Agent
-// entries with a reserved name are ignored.
-//
-// mailboxes names the Mailboxes the worker ServiceAccount may send or read.
-// The operator, Device bridge and feed crawler run in the harness namespace;
-// Mailboxes run in the Task's namespace.
-func WorkerMCPEndpoints(agent *Agent, harnessNamespace, namespace string, mailboxes []string, services HarnessServices) []MCPEndpoint {
-	endpoints := make([]MCPEndpoint, 0, len(agent.Spec.MCPEndpoints)+3)
-	for _, endpoint := range agent.Spec.MCPEndpoints {
-		if endpoint.Name != "agent_operator" && endpoint.Name != "devices" && endpoint.Name != "feeds" {
-			endpoints = append(endpoints, endpoint)
-		}
-	}
+// WorkerMCPEndpoints returns the operator's agent_operator endpoint followed
+// by the advertised servers the worker may use and its Mailboxes. The
+// operator runs in the harness namespace; Mailboxes in the Task's namespace.
+func WorkerMCPEndpoints(harnessNamespace, namespace string, servers []MCPEndpoint, mailboxes []string) []MCPEndpoint {
+	endpoints := make([]MCPEndpoint, 0, len(servers)+len(mailboxes)+1)
 	endpoints = append(endpoints, MCPEndpoint{Name: "agent_operator",
 		URL:       OperatorMCPURL(harnessNamespace),
 		TokenFile: "/var/run/agent-operator-mcp/token"})
-	if services.Devices {
-		// Kubernetes RBAC on each Device decides access; the bridge checks it per call.
-		endpoints = append(endpoints, MCPEndpoint{Name: "devices",
-			URL:       "http://agent-devices." + harnessNamespace + ".svc.cluster.local:8080/mcp",
-			TokenFile: "/var/run/agent-devices/token"})
-	}
-	if services.Feeds {
-		// Public feeds of the worker's own namespace; the token names it.
-		endpoints = append(endpoints, MCPEndpoint{Name: "feeds",
-			URL:       "http://agent-feeds." + harnessNamespace + ".svc.cluster.local:8080/mcp",
-			TokenFile: "/var/run/agent-feeds/token"})
-	}
+	endpoints = append(endpoints, servers...)
 	// Each Mailbox Pod serves its own MCP and still checks RBAC per call.
 	for _, mailbox := range mailboxes {
 		endpoints = append(endpoints, MCPEndpoint{Name: "mailbox-" + mailbox,

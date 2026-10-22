@@ -25,6 +25,8 @@ func init() {
 	SchemeBuilder.Register(&Device{}, &DeviceList{})
 	SchemeBuilder.Register(&Feed{}, &FeedList{})
 	SchemeBuilder.Register(&FeedBinding{}, &FeedBindingList{})
+	SchemeBuilder.Register(&ClusterMCPServer{}, &ClusterMCPServerList{})
+	SchemeBuilder.Register(&MCPServer{}, &MCPServerList{})
 }
 
 // --- Agent ---
@@ -76,10 +78,6 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 	if in.GitProviders != nil {
 		out.GitProviders = make([]GitProvider, len(in.GitProviders))
 		copy(out.GitProviders, in.GitProviders)
-	}
-	if in.MCPEndpoints != nil {
-		out.MCPEndpoints = make([]MCPEndpoint, len(in.MCPEndpoints))
-		copy(out.MCPEndpoints, in.MCPEndpoints)
 	}
 	if in.Access != nil {
 		out.Access = &AgentAccess{Users: append([]string(nil), in.Access.Users...), Groups: append([]string(nil), in.Access.Groups...)}
