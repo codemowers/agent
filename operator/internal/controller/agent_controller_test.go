@@ -478,10 +478,10 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 	}
 	authorizationv1.AddToScheme(scheme)
 	objects := []client.Object{
-		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "devices"}, Spec: agentsv1alpha1.ClusterMCPServerSpec{MCPServerSpec: agentsv1alpha1.MCPServerSpec{URL: "http://agent-devices.harness.svc.cluster.local:8080/mcp", ServiceAccountToken: true}}},
-		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower"}, Spec: agentsv1alpha1.ClusterMCPServerSpec{MCPServerSpec: agentsv1alpha1.MCPServerSpec{URL: "http://drift/mcp"}, Audience: "http://drift/mcp"}},
-		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "secret-tools"}, Spec: agentsv1alpha1.ClusterMCPServerSpec{MCPServerSpec: agentsv1alpha1.MCPServerSpec{URL: "http://secret/mcp"}}},
-		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower", Namespace: "team"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://drift.team.svc:3000/mcp", ServiceAccountToken: true}},
+		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "devices"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://agent-devices.harness.svc.cluster.local:8080/mcp"}},
+		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://drift/mcp", Audience: "http://drift/mcp"}},
+		&agentsv1alpha1.ClusterMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "secret-tools"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://secret/mcp"}},
+		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "driftmower", Namespace: "team"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "http://drift.team.svc:3000/mcp"}},
 		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "codemowers", Namespace: "team"}, Spec: agentsv1alpha1.MCPServerSpec{URL: "https://mcp.codemowers.io/mcp"}},
 	}
 	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(interceptor.Funcs{

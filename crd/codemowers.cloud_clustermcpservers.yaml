@@ -17,9 +17,6 @@ spec:
         - name: URL
           type: string
           jsonPath: .spec.url
-        - name: Token
-          type: boolean
-          jsonPath: .spec.serviceAccountToken
         - name: Audience
           type: string
           jsonPath: .spec.audience
@@ -37,18 +34,12 @@ spec:
               type: object
               required:
                 - url
-              x-kubernetes-validations:
-                - rule: "!has(self.serviceAccountToken) || !self.serviceAccountToken || has(self.audience) || self.url.matches('^https?://[a-z0-9]([-a-z0-9]*[a-z0-9])?[.][a-z0-9]([-a-z0-9]*[a-z0-9])?[.]svc([.]cluster[.]local)?([:/].*)?$')"
-                  message: a token needs an in-cluster URL http(s)://<service>.<namespace>.svc[.cluster.local], whose Service is its audience, or an explicit audience
               properties:
                 url:
                   type: string
                   pattern: ^https?://
                   maxLength: 2048
-                serviceAccountToken:
-                  description: Send a projected ServiceAccount token for the audience <service>.<namespace> of the in-cluster URL.
-                  type: boolean
                 audience:
-                  description: Explicit token audience for a server with an audience contract of its own; it implies a token.
+                  description: Audience of the projected ServiceAccount token workers present. Defaults to <service>.<namespace> for an in-cluster URL http(s)://<service>.<namespace>.svc[.cluster.local]; other URLs get no token without it.
                   type: string
                   maxLength: 2048

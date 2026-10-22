@@ -47,8 +47,8 @@ and workers never read or write these resources through the Kubernetes API.
 - **Feed:** a public feed the crawler polls; **FeedBinding** wakes a Task of
   its namespace with the feed's new items.
 - **ClusterMCPServer** and **MCPServer:** an MCP server advertised to workers.
-  A worker token's audience is the server's Service, `<service>.<namespace>`,
-  derived from its URL; only a ClusterMCPServer may name another audience.
+  A worker token's audience is the server's `audience`, else its Service,
+  `<service>.<namespace>`, derived from an in-cluster URL.
 
 Dashboard users reach an Agent's Tasks if they are listed in its `spec.access`
 or, without that list, if they have `get` on the Agent.

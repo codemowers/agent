@@ -342,14 +342,15 @@ use, with a token for its Service's audience; `list_feeds` and
 of the worker's own namespace, and the worker reads linked pages it finds
 relevant.
 MCP servers reach workers by advertisement and RBAC. A cluster-scoped
-`ClusterMCPServer` or a namespaced `MCPServer` names a URL and whether workers
-present a ServiceAccount token; its metadata name is the endpoint name. Every
-in-cluster token audience the harness checks is its Service's
-`<service>.<namespace>`, each such Service checking tokens on one port, so the
-wake endpoint has its own Service. A server's token audience is derived the
-same way from its in-cluster URL, so a token only ever goes to the Service it
-names; only a ClusterMCPServer may set an explicit `audience`, as Driftmower
-does. When it creates a worker Pod, the operator attaches every server on
+`ClusterMCPServer` or a namespaced `MCPServer` names a URL and an optional
+token `audience`; its metadata name is the endpoint name. Every in-cluster
+token audience the harness checks is its Service's `<service>.<namespace>`,
+each such Service checking tokens on one port, so the wake endpoint has its
+own Service. Without `audience`, a server's audience is derived the same way
+from its in-cluster URL, and a server outside the cluster gets no token; an
+explicit audience serves servers with a contract of their own, such as
+Driftmower. Namespace administrators may set any audience: through the Agent
+Pod template they can already mint worker tokens for any audience. When it creates a worker Pod, the operator attaches every server on
 which a SubjectAccessReview grants the worker ServiceAccount the custom verb
 `use`, a namespaced server overriding a cluster one of the same name. One
 projected volume at `/var/run/agent-tokens` holds every worker token:

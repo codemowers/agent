@@ -128,7 +128,6 @@ metadata:
   name: devices
 spec:
   url: {{ printf "http://agent-devices.%s.svc.cluster.local:8080/mcp" .Release.Namespace | quote }}
-  serviceAccountToken: true
 ---
 apiVersion: v1
 kind: Service

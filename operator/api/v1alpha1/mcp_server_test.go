@@ -16,8 +16,13 @@ func TestServiceAudience(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", url, got, want)
 		}
 	}
-	cluster := ClusterMCPServerSpec{MCPServerSpec: MCPServerSpec{URL: "http://drift.team.svc/mcp"}, Audience: "http://drift.team.svc/mcp"}
-	if cluster.TokenAudience() != "http://drift.team.svc/mcp" || cluster.MCPServerSpec.TokenAudience() != "" {
-		t.Fatal("explicit cluster audience or token opt-in ignored")
+	for spec, want := range map[MCPServerSpec]string{
+		{URL: "http://drift.team.svc/mcp", Audience: "http://drift.team.svc/mcp"}: "http://drift.team.svc/mcp",
+		{URL: "http://drift.team.svc/mcp"}:                                        "drift.team",
+		{URL: "https://mcp.codemowers.io/mcp"}:                                    "",
+	} {
+		if got := spec.TokenAudience(); got != want {
+			t.Errorf("%+v: got %q, want %q", spec, got, want)
+		}
 	}
 }

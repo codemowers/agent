@@ -11,7 +11,7 @@ import (
 type ClusterMCPServer struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              ClusterMCPServerSpec `json:"spec"`
+	Spec              MCPServerSpec `json:"spec"`
 }
 type ClusterMCPServerList struct {
 	metav1.TypeMeta `json:",inline"`
@@ -33,29 +33,17 @@ type MCPServerList struct {
 }
 type MCPServerSpec struct {
 	URL string `json:"url"`
-	// ServiceAccountToken sends a projected ServiceAccount token for the
-	// audience <service>.<namespace> of an in-cluster URL, so a server never
-	// receives a token meant for another.
-	ServiceAccountToken bool `json:"serviceAccountToken,omitempty"`
-}
-type ClusterMCPServerSpec struct {
-	MCPServerSpec `json:",inline"`
-	// Audience overrides the token audience for servers with an audience
-	// contract of their own. Only cluster administrators may set it.
+	// Audience is the audience of the projected ServiceAccount token workers
+	// present, for servers with an audience contract of their own.
 	Audience string `json:"audience,omitempty"`
 }
 
-// TokenAudience is the audience of the token workers present to the server,
-// or "" for none.
-func (s ClusterMCPServerSpec) TokenAudience() string {
+// TokenAudience is the explicit audience, else the <service>.<namespace> of
+// an in-cluster URL; a server outside the cluster without an audience gets
+// no token.
+func (s MCPServerSpec) TokenAudience() string {
 	if s.Audience != "" {
 		return s.Audience
-	}
-	return s.MCPServerSpec.TokenAudience()
-}
-func (s MCPServerSpec) TokenAudience() string {
-	if !s.ServiceAccountToken {
-		return ""
 	}
 	return ServiceAudience(s.URL)
 }

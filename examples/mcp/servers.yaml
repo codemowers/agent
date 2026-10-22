@@ -1,7 +1,7 @@
 # MCP servers advertised to workers. The operator attaches a server to a
-# worker whose ServiceAccount holds the custom verb "use" on it; with
-# serviceAccountToken it projects a token for the audience <service>.<namespace>
-# of the URL. The chart advertises the Devices and feeds servers.
+# worker whose ServiceAccount holds the custom verb "use" on it and projects a
+# token for its audience: spec.audience, else <service>.<namespace> of an
+# in-cluster URL. The chart advertises the Devices and feeds servers.
 apiVersion: codemowers.cloud/v1alpha1
 kind: ClusterMCPServer
 metadata:
