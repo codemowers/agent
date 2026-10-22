@@ -151,6 +151,13 @@ export function turnMetrics(durationMs, usage = {}, apiDurationMs) {
     cacheWriteTokens: count(usage?.cache_creation_input_tokens)}).filter(([, value]) => value !== undefined));
 }
 
+// Codex splits -c keys on dots without TOML quoting, so a quoted name would
+// become part of the server and tool names. Endpoint names are bare keys.
+export function codexMcpArgs(mcpServers) {
+  return Object.entries(mcpServers).flatMap(([name, server]) =>
+    ['-c', `mcp_servers.${name}.url=${JSON.stringify(server.url)}`]);
+}
+
 export function disabledMcpNames(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 32 || !value.every(name => typeof name === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(name))) {
@@ -290,9 +297,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
   } else {
     args = ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'];
     if (model) args.push('--model', model);
-    for (const [name, server] of Object.entries(mcp.mcpServers)) {
-      args.push('-c', `mcp_servers.${JSON.stringify(name)}.url=${JSON.stringify(server.url)}`);
-    }
+    args.push(...codexMcpArgs(mcp.mcpServers));
     if (state.sessionId) args.push('resume', state.sessionId);
     args.push(prompt);
   }

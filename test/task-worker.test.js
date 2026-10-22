@@ -4,7 +4,7 @@ import {mkdtemp, mkdir, readFile, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {EventEmitter} from 'node:events';
-import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail} from '../src/task-worker.js';
+import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs} from '../src/task-worker.js';
 
 test('Turn text keeps its end within the byte bound', () => {
   assert.equal(boundedTail('short'), 'short');
@@ -62,4 +62,9 @@ test('Worker logs in to RabbitMQ with its rotating ServiceAccount token', async 
     process.env = saved;
     await rm(root, {recursive: true, force: true});
   }
+});
+
+test('Codex MCP overrides use bare server names', () => {
+  assert.deepEqual(codexMcpArgs({agent_operator: {url: 'http://127.0.0.1:1234/mcp'}}),
+    ['-c', 'mcp_servers.agent_operator.url="http://127.0.0.1:1234/mcp"']);
 });
