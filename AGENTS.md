@@ -374,7 +374,10 @@ are instructions and never expose Secret values through the API. The expected
 Mittwald-generated signing key is distinct from a Gitea API token.
 The same view gives a copyable command that prints the `device-agent
 --endpoint` line for each Device in the Agent's namespace, reading the key
-through its connectionSecretRef with the user's own kubectl.
+through its connectionSecretRef with the user's own kubectl. It follows with
+commands that download the latest `device-agent` release for the device's
+`uname -m` architecture and install a systemd unit that runs it with
+`--foreground` at boot, keeping the endpoint in a root-only EnvironmentFile.
 Task selection is encoded as `namespace` and `task` URL query parameters,
 restored after OIDC callback and kept in browser history.
 While the worker idles, a system line after the last reply counts down to idle

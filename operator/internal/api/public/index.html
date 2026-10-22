@@ -800,6 +800,31 @@ function deviceAgentSetup(namespace) {
   const refs = `{range .items[*]}{.spec.connectionSecretRef.name} {.spec.connectionSecretRef.key}{"\\n"}{end}`;
   copyableCommand(host, 'Print device-agent commands',
     `${kubectl} get devices.codemowers.cloud -o jsonpath=${shellQuote(refs)} | while read s k; do echo device-agent --endpoint wss://${location.host}/devices/$(${kubectl} get secret $s -o jsonpath="{.data.$k}" | base64 -d); done`);
+  copyableCommand(host, 'Download the latest device-agent release on the device',
+    `case "$(uname -m)" in x86_64|amd64) a=amd64;; aarch64|arm64) a=arm64;; armv7*|armv8l) a=armv7;; *) echo "unsupported architecture: $(uname -m)" >&2; false;; esac && \\
+curl -fsSL -o device-agent https://github.com/codemowers/device-agent/releases/latest/download/device-agent-linux-$a && \\
+sudo install -m 755 device-agent /usr/local/bin/device-agent`);
+  const service = document.createElement('p');
+  service.textContent = 'Starts device-agent at boot. Replace KEY with the Device key printed above; the endpoint is kept in a root-only file.';
+  host.append(service);
+  copyableCommand(host, 'Install the device-agent systemd service',
+    `sudo sh -c 'umask 077; echo DEVICE_AGENT_ENDPOINT=wss://${location.host}/devices/KEY > /etc/systemd/system/device-agent.env' && \\
+sudo tee /etc/systemd/system/device-agent.service > /dev/null <<'EOF'
+[Unit]
+Description=Codemowers device-agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/systemd/system/device-agent.env
+ExecStart=/usr/local/bin/device-agent --foreground --endpoint \${DEVICE_AGENT_ENDPOINT}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload && sudo systemctl enable --now device-agent`);
   return host;
 }
 
