@@ -336,7 +336,9 @@ func TestOtherBindingNotificationAndForgeCloseDoNotPrompt(t *testing.T) {
 			t.Fatalf("event %d: %v", i, err)
 		}
 	}
-	if len(broker.messages) != 1 || broker.messages[0].Body != "Disable it" {
+	want := "GitHub event issue_comment.created by lauri on " + key + ":\n\nDisable it\n\nRead the current issue or pull request at " + key +
+		" and post any reply there; its participants do not see this chat."
+	if len(broker.messages) != 1 || broker.messages[0].Body != want {
 		t.Fatalf("only the webhook comment should prompt: %+v", broker.messages)
 	}
 	if err := k8s.Get(ctx, client.ObjectKeyFromObject(task), task); err != nil {

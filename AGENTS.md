@@ -295,8 +295,12 @@ policy of the Agent with the longest matching `keyPrefix` and allowed
 `verify: forgeAssignment` checks with the Agent's credential that the issue or
 pull request is open and assigned to the Agent's account, reusing the current
 forge snapshot's login; `verify: none` creates directly but never for mail.
-Unknown keys go to the binding's fallback Task. The event that created a Task
-through a TaskPolicy is its objective and does not also wake it. Coalescing is upstream of
+Unknown keys go to the binding's fallback Task. The worker's prompt and the
+conversation bubble for an event name its source, type, actor and link before
+its text; for a forge issue or pull request they tell the worker to read it
+there and post replies there, since its participants do not see the chat. The
+event that created a Task through a TaskPolicy is its objective and does not
+also wake it. Coalescing is upstream of
 both transports and per routing key: the first event on a key wakes the Task
 at once and opens a window. Within it, an event from another binding, such as
 forge mail after its webhook, notifies of the same activity and is only

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -130,11 +131,8 @@ func (c *EventConsumer) routeEvent(ctx context.Context, agent *agentsv1alpha1.Ag
 	if matched == nil || taskHasDelivery(matched, ev.Receipt) {
 		return nil, nil
 	}
-	arrival := taskArrival{Key: ev.Key, Receipt: ev.Receipt, Source: ev.Source, Actor: ev.Actor, Text: ev.Text, URL: ev.URL,
+	arrival := taskArrival{Key: ev.Key, Receipt: ev.Receipt, Source: ev.Source, Actor: ev.Actor, Text: eventPrompt(ev), URL: ev.URL,
 		Binding: ev.Binding, Wake: true}
-	if arrival.Text == "" {
-		arrival.Text = "New " + ev.Source + " event: " + ev.Type
-	}
 	if arrival.Key == "" {
 		arrival.Key = ev.Source
 	}
@@ -153,6 +151,42 @@ func (c *EventConsumer) routeEvent(ctx context.Context, agent *agentsv1alpha1.Ag
 		return nil, nil
 	}
 	return matched, nil
+}
+
+var sourceNames = map[string]string{"github": "GitHub", "gitea": "Gitea", "slack": "Slack",
+	"alertmanager": "Alertmanager", "discord": "Discord", "imap": "Mail"}
+
+// forgeItemKey matches the canonical key of a forge issue or pull request.
+var forgeItemKey = regexp.MustCompile(`^https://[^/]+/[^/]+/[^/]+/issues/[0-9]+$`)
+
+// eventPrompt is what the worker reads and the conversation shows: what
+// happened, who did it and where, and for a forge issue or pull request that
+// replies belong there.
+func eventPrompt(ev intakeEvent) string {
+	prompt := sourceNames[ev.Source]
+	if prompt == "" {
+		prompt = ev.Source
+	}
+	prompt += " event"
+	if ev.Type != "" {
+		prompt += " " + ev.Type
+	}
+	if ev.Actor != "" {
+		prompt += " by " + ev.Actor
+	}
+	if ev.URL != "" {
+		prompt += " on " + ev.URL
+	} else if strings.HasPrefix(ev.Key, "https://") {
+		prompt += " on " + ev.Key
+	}
+	if text := strings.TrimSpace(ev.Text); text != "" {
+		prompt += ":\n\n" + text
+	}
+	if forgeItemKey.MatchString(ev.Key) {
+		prompt += "\n\nRead the current issue or pull request at " + ev.Key +
+			" and post any reply there; its participants do not see this chat."
+	}
+	return prompt
 }
 
 // closingEvents close the forge issue or pull request named by the event key.
