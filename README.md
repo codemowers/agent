@@ -157,3 +157,7 @@ skaffold dev
 Bug reports and pull requests are welcome. Target Kubernetes 1.36, include the
 tests you ran, and update [AGENTS.md](AGENTS.md) when behavior or architecture
 changes.
+
+## License
+
+[Apache License 2.0](LICENSE).
