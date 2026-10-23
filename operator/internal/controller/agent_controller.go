@@ -915,8 +915,13 @@ func (r *TaskReconciler) recordWorkerActivity(ctx context.Context, task *agentsv
 		return nil
 	}
 	patch := client.MergeFrom(task.DeepCopy())
-	changed := task.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: "worker-" + action + ":" + identity,
-		Role: "system", Source: "operator", Actor: "Operator", Content: content, CreatedAt: metav1.Now()})
+	// A clean exit after the operator stopped the worker repeats the stop line.
+	stopped := slices.ContainsFunc(task.Status.Conversation, func(m agentsv1alpha1.TaskMessage) bool { return m.ID == "worker-stop:"+identity })
+	changed := false
+	if action != "exit" || pod.Status.Phase == corev1.PodFailed || !stopped {
+		changed = task.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: "worker-" + action + ":" + identity,
+			Role: "system", Source: "operator", Actor: "Operator", Content: content, CreatedAt: metav1.Now()})
+	}
 	if action == "exit" {
 		task.Status.LastWorkerExit = identity
 		changed = true
@@ -927,11 +932,13 @@ func (r *TaskReconciler) recordWorkerActivity(ctx context.Context, task *agentsv
 	return r.Status().Patch(ctx, task, patch)
 }
 
+// workerExitDescription names a clean exit briefly and gives a failure's
+// reason and exit code.
 func workerExitDescription(pod *corev1.Pod) string {
-	verb := "completed"
-	if pod.Status.Phase == corev1.PodFailed {
-		verb = "stopped"
+	if pod.Status.Phase != corev1.PodFailed {
+		return "Worker " + pod.Name + " exited"
 	}
+	verb := "failed"
 	detail := pod.Status.Reason
 	for _, status := range pod.Status.ContainerStatuses {
 		if status.Name != "worker" || status.State.Terminated == nil {

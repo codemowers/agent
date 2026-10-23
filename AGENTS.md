@@ -230,8 +230,9 @@ in its configuration hash. Bumping it replaces all active worker Pods as the
 Task informer reconciles existing Tasks on operator startup. The replacement
 inherits the last result time for its idle deadline. Pod start, stop and
 terminal exit entries include actual Pod names in
-bounded Task conversation history. Terminal entries include OOMKilled and exit
-codes when reported by Kubernetes; failed Pods remain for diagnosis. The worker starts the idle clock
+bounded Task conversation history. A clean exit reads "exited" and adds no
+line after an operator stop; a failed exit gives its reason, such as
+OOMKilled, and exit code, and failed Pods remain for diagnosis. The worker starts the idle clock
 after a successful CLI turn, continues reading its RabbitMQ queue until that
 deadline, and exits when the queue stays empty. Zero means immediate exit.
 The operator Task API exposes a bounded chat display from

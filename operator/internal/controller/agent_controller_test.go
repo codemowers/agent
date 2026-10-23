@@ -414,8 +414,33 @@ func TestWorkerExitDescriptionIncludesOOMReason(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "agent-matmlazi-ab12"},
 		Status: corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{Name: "worker",
 			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}}}}}}
-	if got := workerExitDescription(pod); got != "Worker agent-matmlazi-ab12 stopped: OOMKilled (exit code 137)" {
+	if got := workerExitDescription(pod); got != "Worker agent-matmlazi-ab12 failed: OOMKilled (exit code 137)" {
 		t.Fatalf("unexpected exit activity: %s", got)
+	}
+	pod.Status = corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{Name: "worker",
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed"}}}}}
+	if got := workerExitDescription(pod); got != "Worker agent-matmlazi-ab12 exited" {
+		t.Fatalf("clean exit restates its status: %s", got)
+	}
+}
+
+func TestCleanExitAfterStopAddsNoLine(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
+	store := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(task).WithObjects(task).Build()
+	r := &TaskReconciler{Client: store}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "worker", UID: "pod-uid"}, Status: corev1.PodStatus{Phase: corev1.PodSucceeded}}
+	if err := r.recordWorkerActivity(context.Background(), task, pod, "stop", "Stopping worker worker"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.recordWorkerActivity(context.Background(), task, pod, "exit", workerExitDescription(pod)); err != nil {
+		t.Fatal(err)
+	}
+	if len(task.Status.Conversation) != 1 || task.Status.LastWorkerExit != "pod-uid" {
+		t.Fatalf("clean exit after a stop was restated: %+v", task.Status.Conversation)
 	}
 }
 
@@ -449,7 +474,7 @@ func TestFailedWorkerIsRetainedAndOOMRecordedOnce(t *testing.T) {
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &actual); err != nil {
 		t.Fatal(err)
 	}
-	if len(actual.Status.Conversation) != 1 || actual.Status.Conversation[0].Content != "Worker agent-developer-task-ab12 stopped: OOMKilled (exit code 137)" {
+	if len(actual.Status.Conversation) != 1 || actual.Status.Conversation[0].Content != "Worker agent-developer-task-ab12 failed: OOMKilled (exit code 137)" {
 		t.Fatalf("OOM exit missing or duplicated: %+v", actual.Status.Conversation)
 	}
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(pod), &corev1.Pod{}); err != nil {
