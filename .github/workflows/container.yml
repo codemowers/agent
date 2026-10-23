@@ -183,8 +183,11 @@ jobs:
             sed -i "/^imageDigests:$/a\\  $image: $digest" "$RUNNER_TEMP/chart/values.yaml"
           done
           helm lint "$RUNNER_TEMP/chart" --set operator.apiResource=https://example.test/api
+          # Optional components are off by default; render them so every
+          # pinned image reference is checked.
           helm template agent-ci "$RUNNER_TEMP/chart" \
-            --set operator.apiResource=https://example.test/api > "$RUNNER_TEMP/rendered.yaml"
+            --set operator.apiResource=https://example.test/api \
+            --set deviceBridge.enabled=true --set feeds.enabled=true > "$RUNNER_TEMP/rendered.yaml"
           for image in agent-worker agent-mailbox agent-operator agent-devices agent-feeds agent-webhook; do
             digest="$(cat "release-digests/$image")"
             grep -Fq "ghcr.io/$owner/$image@$digest" "$RUNNER_TEMP/rendered.yaml"
