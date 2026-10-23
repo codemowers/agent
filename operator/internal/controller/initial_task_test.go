@@ -11,12 +11,15 @@ import (
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
@@ -65,7 +68,15 @@ func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 			AgentRef: "developer", KeyPrefix: "https://forge.example.test/team/proj", Verify: "none"}},
 	}
 	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(append(policies, agent, secret)...).Build()
-	consumer := &EventConsumer{Client: k8s, APIReader: k8s, HTTPClient: &http.Client{Transport: transport}}
+	// The cached client has not seen the new Task yet; the status write must
+	// still record the creating delivery and window.
+	cached := interceptor.NewClient(k8s, interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if _, ok := obj.(*agentsv1alpha1.Task); ok {
+			return apierrors.NewNotFound(schema.GroupResource{Group: "codemowers.cloud", Resource: "tasks"}, key.Name)
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}})
+	consumer := &EventConsumer{Client: cached, APIReader: k8s, HTTPClient: &http.Client{Transport: transport}}
 	event := intakeEvent{Namespace: "team", Source: "github", Type: "issues.assigned", Key: "https://forge.example.test/team/project/issues/8", Receipt: "delivery-1"}
 	if created, err := consumer.createTaskByPolicy(context.Background(), agent, intakeEvent{Namespace: "team", Type: "issue_comment.created", Key: event.Key}); err != nil || created {
 		t.Fatalf("event type outside the policy created a Task: %v %v", created, err)

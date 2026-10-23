@@ -97,11 +97,12 @@ func (c *EventConsumer) createTaskByPolicy(ctx context.Context, agent *agentsv1a
 	if err := c.Client.Create(ctx, task); err != nil && !apierrors.IsAlreadyExists(err) {
 		return false, fmt.Errorf("create policy Task: %w", err)
 	}
-	// Status cannot be set on creation. A redelivery after a failed write
-	// finds the deterministically named Task and records it then.
+	// Status cannot be set on creation. The cache does not hold the new Task
+	// yet, so it is read back from the API server; a failed write would let
+	// the redelivered event wake the Task on top of its objective.
 	return true, retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current agentsv1alpha1.Task
-		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(task), &current); err != nil {
+		if err := c.APIReader.Get(ctx, client.ObjectKeyFromObject(task), &current); err != nil {
 			return err
 		}
 		if current.Status.Events.InitialDeliveryID != "" || !ownedByAgent(&current, agent.Name, agent.UID) {
