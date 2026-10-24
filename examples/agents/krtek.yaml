@@ -49,9 +49,13 @@ spec:
         resources:
           requests:
             storage: 1Gi
+  # A local model keeps cluster data away from hosted providers. The key is
+  # the llama.cpp server's --api-key.
   model:
-    backend: claude
-    credentialKeyRef: anthropic
+    backend: opencode
+    name: gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf
+    baseURL: http://llama.llm.svc.cluster.local:8080/v1
+    credentialKeyRef: llama
   gitProviders:
     - type: github
       serverURL: https://github.com

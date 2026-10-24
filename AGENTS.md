@@ -82,8 +82,8 @@ for diagnostics. Do not expand RBAC to silence inventory warnings.
 
 The Go operator runs the OIDC SPA, Task API, execution-bound Agent MCP,
 RabbitMQ routing and worker orchestration. A Go webhook service authenticates
-receivers, and a Node.js Mailbox Pod owns IMAP/SMTP. Claude and Codex run in
-separate coding worker Pods; the operator does not run a coding CLI or delegate
+receivers, and a Node.js Mailbox Pod owns IMAP/SMTP. Claude, Codex and
+OpenCode run in separate coding worker Pods; the operator does not run a coding CLI or delegate
 routing authority to an LLM.
 
 | Component | Responsibility |
@@ -645,7 +645,7 @@ preserve unrelated settings and add it to workspace `.gitignore`. Preserve user
 edits and avoid duplicate Task references. Attached draft/reference text is an
 immutable execution ConfigMap file, not an oversized CLI prompt argument.
 
-Retain native Claude/Codex session files on the PVC at stable paths and record the
+Retain native Claude/Codex/OpenCode session files on the PVC at stable paths and record the
 session ID early. Task status alone cannot restore a CLI session.
 Missing/incompatible state starts a fresh session from objective, checkout and
 prior outcomes, increments the epoch and records why. Changing CLI/model requires
@@ -659,7 +659,8 @@ tar, unzip, ripgrep, jq, curl, gh 2.102.0, tea 0.16.0, Helm 3.22.1, Python with
 venv/pip, make and C++ build tools. The forge CLIs and Helm are verified upstream
 static binaries copied into the runner image; their versions do not come from
 Helm values or Agent specs. Do not mount Alpine/musl tool images onto PATH. Preinstall
-both npm CLIs pinned in `runner/package.json`: Claude Code 2.1.306 and Codex 0.163.0. Install Skaffold
+the npm CLIs pinned in `runner/package.json`: Claude Code 2.1.306, Codex 0.163.0 and
+OpenCode 1.19.4, whose platform binary is linked directly. Install Skaffold
 v2.25.0 from its binary release. Workers do not apt-install tools at startup.
 
 Kubectl and Go come from OCI image volumes. Kubectl uses upstream
@@ -674,14 +675,22 @@ set GOROOT and PATH for that tree, keep Go caches under the Task PVC and disable
 automatic toolchain downloads. Python project dependencies belong in workspace
 virtual environments, not the read-only runner root filesystem.
 
-Tasks select hosted Claude or Codex in the UI. Freeze choices per execution.
-Use Anthropic credentials for Claude and OpenAI credentials for Codex; provider
-and CLI selection must agree.
+Agents select hosted Claude or Codex, or OpenCode against an OpenAI-compatible
+server named by `model.baseURL`, such as a llama.cpp server. Freeze choices per
+execution. Use Anthropic credentials for Claude, OpenAI credentials for Codex
+and the server's API key for OpenCode; provider and CLI selection must agree.
+OpenCode requires `baseURL` and a model name, other backends take no
+`baseURL`, and model discovery lists the server's `/models`. The worker passes
+OpenCode its whole configuration (provider `agent`, MCP servers, permissions)
+in `OPENCODE_CONFIG_CONTENT` with project configuration, plugins, autoupdate
+and model catalog fetches disabled, and keeps the key in
+`AGENT_MODEL_API_KEY`. A local server can read a long prompt for many minutes
+before its first byte, so the model's header timeout is three hours and its
+chunk timeout one hour; MCP requests get ten minutes. It names the session after the Task, which skips
+OpenCode's extra title request, and resumes it from OpenCode's SQLite store.
 Selected provider Secret references are optional for Pod creation. A worker
 without a usable API key for its selected CLI records a failure and exits
 nonzero before workspace setup; it never switches to the other provider.
-Local-model execution is a roadmap item only;
-there is no discovery, API adapter or compatibility proxy in this release.
 
 ### Namespace build contract
 
@@ -729,7 +738,7 @@ identity; worker bridges reread rotating tokens per request and preserve session
 Never copy personal OAuth credentials or tokens into CLI configuration.
 
 Harness-owned HTTP requests identify as `codemowers-agent (+https://github.com/codemowers/agent)`;
-native Claude/Codex and Kubernetes API requests retain their own user agents.
+native Claude/Codex/OpenCode and Kubernetes API requests retain their own user agents.
 
 | Operator Agent MCP tool (`agent_operator`) | Purpose |
 | --- | --- |

@@ -3,6 +3,7 @@ import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {mkdir, readFile, writeFile, appendFile, rename, glob} from 'node:fs/promises';
 import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
 import {createInterface} from 'node:readline';
 import {agentIdentity} from './identity.js';
 import {signalChild} from './child-signals.js';
@@ -169,6 +170,29 @@ export function codexMcpArgs(mcpServers) {
     ['-c', `mcp_servers.${name}.url=${JSON.stringify(server.url)}`]);
 }
 
+// OpenCode reaches the Agent's OpenAI-compatible model server, such as
+// llama.cpp, as provider "agent". The key stays in the environment. Project
+// configuration is disabled, so this is the whole configuration.
+// A local server on modest hardware reads a long prompt for many minutes
+// before its first byte, so model timeouts are hours rather than OpenCode's
+// five minutes; MCP calls such as log queries get ten minutes, not five seconds.
+const opencodeModelTimeouts = {headerTimeout: 3 * 3600000, chunkTimeout: 3600000};
+const opencodeMcpTimeout = 600000;
+export function opencodeConfig(mcpServers, model, baseURL) {
+  return {
+    $schema: 'https://opencode.ai/config.json',
+    autoupdate: false,
+    share: 'disabled',
+    permission: {'*': 'allow'},
+    model: `agent/${model}`,
+    provider: {agent: {npm: '@ai-sdk/openai-compatible', name: 'Agent model',
+      options: {baseURL, apiKey: '{env:AGENT_MODEL_API_KEY}', ...opencodeModelTimeouts},
+      models: {[model]: {name: model, tool_call: true}}}},
+    mcp: Object.fromEntries(Object.entries(mcpServers).map(([name, server]) =>
+      [name, {type: 'remote', url: server.url, enabled: true, timeout: opencodeMcpTimeout}])),
+  };
+}
+
 const secretArgument = /token|secret|password|passwd|credential|authorization|api[-_]?key|private[-_]?key/i;
 
 // toolArguments renders a call's arguments for open Task views: compact,
@@ -179,8 +203,10 @@ export function toolArguments(input) {
 }
 
 // mcpToolCalls tracks the main agent's MCP calls from CLI events. Claude names
-// them mcp__<server>__<tool>; Codex reports mcp_tool_call items.
-export function mcpToolCalls(backend) {
+// them mcp__<server>__<tool>; Codex reports mcp_tool_call items; OpenCode
+// names them <server>_<tool>, resolved against the configured server names.
+export function mcpToolCalls(backend, servers = []) {
+  const byLength = [...servers].sort((a, b) => b.length - a.length);
   const calls = new Map();
   const update = event => {
     let changed = false;
@@ -202,6 +228,15 @@ export function mcpToolCalls(backend) {
       calls.set(item.id, {server: item.server, tool: item.tool, args: toolArguments(item.arguments),
         status: item.status === 'completed' && !item.error ? 'done' : item.status === 'failed' || item.error ? 'failed' : 'running'});
       changed = true;
+    }
+    if (backend === 'opencode' && event.type === 'tool_use' && event.part?.tool) {
+      const server = byLength.find(name => event.part.tool.startsWith(`${name}_`));
+      if (server) {
+        const state = event.part.state || {};
+        calls.set(event.part.callID || event.part.id, {server, tool: event.part.tool.slice(server.length + 1), args: toolArguments(state.input),
+          status: state.status === 'completed' ? 'done' : state.status === 'error' ? 'failed' : 'running'});
+        changed = true;
+      }
     }
     return changed;
   };
@@ -230,9 +265,7 @@ export function runtimeConfig(message, currentGeneration) {
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {stdio: ['ignore', 'pipe', 'pipe'], ...options});
-    // The model the CLI reports using; without a configured one it is the CLI's default.
-  let usedModel = model;
-  let stderr = '';
+    let stderr = '';
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
     child.on('error', reject);
     child.on('close', code => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}: ${stderr}`)));
@@ -319,6 +352,14 @@ export async function codexSessionModel(root, sessionId) {
 export async function nativeSessionExists(root, backend, sessionId) {
   if (!sessionId) return false;
   const home = join(root, 'home');
+  if (backend === 'opencode') {
+    let db;
+    try {
+      db = new DatabaseSync(join(home, '.local', 'share', 'opencode', 'opencode.db'), {readOnly: true});
+      return Boolean(db.prepare('SELECT 1 FROM session WHERE id = ?').get(sessionId));
+    } catch { return false; }
+    finally { db?.close(); }
+  }
   const pattern = backend === 'claude' ? `${home}/.claude/projects/*/${sessionId}.jsonl`
     : `${home}/.codex/sessions/**/*${sessionId}*.jsonl`;
   for await (const _file of glob(pattern)) return true;
@@ -362,6 +403,11 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
     if (model) args.push('--model', model);
     args.push(state.sessionId ? '--resume' : '--session-id', sessionId);
     await recordSession(sessionId);
+  } else if (backend === 'opencode') {
+    // An explicit title skips OpenCode's extra title-generation request.
+    args = ['run', '--format', 'json', '--pure', '--title', required('TASK_NAME'), '--model', `agent/${model}`];
+    if (state.sessionId) args.push('--session', state.sessionId);
+    args.push(prompt);
   } else {
     args = ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'];
     if (model) args.push('--model', model);
@@ -373,6 +419,11 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
   // A headless turn ends at the CLI's result; background agents would die with it.
   if (backend === 'claude') cliEnv.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1';
   if (backend === 'codex') cliEnv.CODEX_API_KEY = process.env.OPENAI_API_KEY;
+  if (backend === 'opencode') {
+    Object.assign(cliEnv, {OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig(mcp.mcpServers, model, required('AGENT_MODEL_BASE_URL'))),
+      OPENCODE_DISABLE_PROJECT_CONFIG: '1', OPENCODE_DISABLE_CLAUDE_CODE: '1', OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_DISABLE_LSP_DOWNLOAD: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1'});
+  }
   const child = spawn(backend, args, {cwd: repo, env: cliEnv, detached: true, stdio: ['ignore', 'pipe', 'pipe']});
   const interrupt = () => { if (child.exitCode === null) signalChild(child, 'SIGTERM'); };
   signal.addEventListener('abort', interrupt, {once: true});
@@ -385,7 +436,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
   // stores the same full text in the conversation.
   // MCP calls with their arguments travel the same way and are never stored.
   let streamed = '', streaming = Promise.resolve(), streamQueued = false;
-  const tools = mcpToolCalls(backend);
+  const tools = mcpToolCalls(backend, Object.keys(mcp.mcpServers));
   const send = () => {
     if (streamQueued) return;
     streamQueued = true;
@@ -433,6 +484,24 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
           usage = event.usage;
           apiDurationMs = event.duration_api_ms;
         }
+      } else if (backend === 'opencode') {
+        if (event.sessionID && event.sessionID !== reportedSession) {
+          reportedSession = event.sessionID;
+          await recordSession(reportedSession);
+        }
+        if (event.type === 'text' && event.part?.text) {
+          summary = event.part.text;
+          stream(summary);
+        }
+        // Each model request in the turn finishes a step with its own usage.
+        if (event.type === 'step_finish' && event.part?.tokens) {
+          const step = event.part.tokens;
+          usage = {input_tokens: (usage?.input_tokens || 0) + (step.input || 0),
+            output_tokens: (usage?.output_tokens || 0) + (step.output || 0) + (step.reasoning || 0),
+            cache_read_input_tokens: (usage?.cache_read_input_tokens || 0) + (step.cache?.read || 0),
+            cache_creation_input_tokens: (usage?.cache_creation_input_tokens || 0) + (step.cache?.write || 0)};
+        }
+        if (event.type === 'error') nativeFailure = true;
       } else {
         if (event.type === 'thread.started' && event.thread_id) {
           reportedSession = event.thread_id;
@@ -462,9 +531,10 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
 
 export async function taskWorker() {
   const backend = required('AGENT_BACKEND');
-  if (!['claude', 'codex'].includes(backend)) throw new Error('Unsupported backend');
-  const credential = backend === 'claude' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+  const credential = {claude: 'ANTHROPIC_API_KEY', codex: 'OPENAI_API_KEY', opencode: 'AGENT_MODEL_API_KEY'}[backend];
+  if (!credential) throw new Error('Unsupported backend');
   required(credential);
+  if (backend === 'opencode') { required('AGENT_MODEL'); required('AGENT_MODEL_BASE_URL'); }
   const queue = required('TASK_QUEUE');
   let idleSeconds = Number(process.env.AGENT_IDLE_SECONDS ?? '3600');
   if (!Number.isInteger(idleSeconds) || idleSeconds < 0 || idleSeconds > 86400) {

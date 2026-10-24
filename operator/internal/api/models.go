@@ -114,7 +114,7 @@ func (h *Handler) listAgentModels(w http.ResponseWriter, r *http.Request) {
 		jsonOK(w, result)
 		return
 	}
-	models, err := discoverModels(r.Context(), agent.Spec.Model.Backend, string(secret.Data[agent.Spec.Model.CredentialKeyRef]), h.ModelHTTPClient)
+	models, err := discoverModels(r.Context(), agent.Spec.Model, string(secret.Data[agent.Spec.Model.CredentialKeyRef]), h.ModelHTTPClient)
 	if err != nil {
 		result.Warning = "Model discovery unavailable: " + err.Error()
 	} else {
@@ -123,14 +123,21 @@ func (h *Handler) listAgentModels(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, result)
 }
 
-func discoverModels(ctx context.Context, backend, token string, httpClient *http.Client) ([]modelChoice, error) {
+func discoverModels(ctx context.Context, model agentsv1alpha1.ModelSpec, token string, httpClient *http.Client) ([]modelChoice, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
-	endpoint := "https://api.anthropic.com/v1/models?limit=100"
-	if backend == "codex" {
+	backend := model.Backend
+	var endpoint string
+	switch backend {
+	case "claude":
+		endpoint = "https://api.anthropic.com/v1/models?limit=100"
+	case "codex":
 		endpoint = "https://api.openai.com/v1/models"
-	} else if backend != "claude" {
+	case "opencode":
+		// An OpenAI-compatible server such as llama.cpp lists what it serves.
+		endpoint = strings.TrimRight(model.BaseURL, "/") + "/models"
+	default:
 		return nil, fmt.Errorf("unknown backend")
 	}
 	seen := make(map[string]bool)
@@ -195,8 +202,11 @@ func discoverModels(ctx context.Context, backend, token string, httpClient *http
 }
 
 func codingModel(backend, id string) bool {
-	if backend == "claude" {
+	switch backend {
+	case "claude":
 		return strings.HasPrefix(id, "claude-")
+	case "opencode":
+		return true
 	}
 	if !strings.HasPrefix(id, "gpt-") && !strings.HasPrefix(id, "codex-") && !strings.HasPrefix(id, "o1") && !strings.HasPrefix(id, "o3") && !strings.HasPrefix(id, "o4") {
 		return false

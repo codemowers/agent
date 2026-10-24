@@ -58,3 +58,16 @@ func TestAgentModelsRequireAccessAndFilterProviderCatalog(t *testing.T) {
 		t.Fatalf("unauthenticated catalog: %d", missing.Code)
 	}
 }
+
+func TestOpenCodeModelsComeFromBaseURL(t *testing.T) {
+	model := agentsv1alpha1.ModelSpec{Backend: "opencode", Name: "gemma", BaseURL: "http://llama.llm.svc.cluster.local:8080/v1/"}
+	models, err := discoverModels(context.Background(), model, "private-token", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "http://llama.llm.svc.cluster.local:8080/v1/models" || request.Header.Get("Authorization") != "Bearer private-token" {
+			t.Errorf("unexpected model request: %s", request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"}]}`)), Header: make(http.Header)}, nil
+	})})
+	if err != nil || len(models) != 1 || models[0].Name != "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf" {
+		t.Fatalf("unexpected models: %v %v", models, err)
+	}
+}

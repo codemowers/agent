@@ -846,7 +846,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.ai/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "21"
+	WorkerPodVersion = "22"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -875,8 +875,9 @@ func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha
 		CheckoutEnv      []corev1.EnvVar              `json:"checkoutEnv"`
 		Backend          string                       `json:"backend"`
 		CredentialKeyRef string                       `json:"credentialKeyRef"`
+		BaseURL          string                       `json:"baseURL,omitempty"`
 		Template         corev1.PodTemplateSpec       `json:"template"`
-	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, agent.Spec.Template})
+	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, model.BaseURL, agent.Spec.Template})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -1152,15 +1153,15 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	if task.Spec.Model != nil {
 		model = *task.Spec.Model
 	}
-	credentialName := "ANTHROPIC_API_KEY"
-	if model.Backend == "codex" {
-		credentialName = "OPENAI_API_KEY"
-	}
+	credentialName := map[string]string{"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "opencode": "AGENT_MODEL_API_KEY"}[model.Backend]
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_BACKEND", Value: model.Backend},
 		corev1.EnvVar{Name: credentialName, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName}, Key: model.CredentialKeyRef}}})
 	if model.Name != "" {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MODEL", Value: model.Name})
+	}
+	if model.BaseURL != "" {
+		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MODEL_BASE_URL", Value: model.BaseURL})
 	}
 	opEnv = append(opEnv, forgeCredentialEnv(agent.Spec.GitProviders)...)
 	opEnv = append(opEnv, checkoutEnvironment(task, agent)...)

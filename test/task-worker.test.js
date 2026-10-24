@@ -4,7 +4,8 @@ import {mkdtemp, mkdir, readFile, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {EventEmitter} from 'node:events';
-import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs, mcpToolCalls, toolArguments, codexSessionModel} from '../src/task-worker.js';
+import {DatabaseSync} from 'node:sqlite';
+import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs, mcpToolCalls, toolArguments, opencodeConfig, codexSessionModel} from '../src/task-worker.js';
 
 test('Turn text keeps its end within the byte bound', () => {
   assert.equal(boundedTail('short'), 'short');
@@ -81,7 +82,36 @@ test('MCP calls are tracked from both CLIs with masked, bounded arguments', () =
   codex.update({type: 'item.started', item: {id: 'i1', type: 'mcp_tool_call', server: 'agent_operator', tool: 'set_task_title', arguments: {title: 'Watch'}, status: 'in_progress'}});
   codex.update({type: 'item.completed', item: {id: 'i1', type: 'mcp_tool_call', server: 'agent_operator', tool: 'set_task_title', arguments: {title: 'Watch'}, status: 'completed'}});
   assert.deepEqual(codex.list(), [{server: 'agent_operator', tool: 'set_task_title', args: '{"title":"Watch"}', status: 'done'}]);
+  const opencode = mcpToolCalls('opencode', ['agent', 'agent_operator']);
+  assert.equal(opencode.update({type: 'tool_use', part: {type: 'tool', tool: 'bash', callID: 'c0', state: {status: 'completed', input: {command: 'ls'}}}}), false);
+  opencode.update({type: 'tool_use', part: {type: 'tool', tool: 'agent_operator_set_task_title', callID: 'c1', state: {status: 'completed', input: {title: 'Watch'}}}});
+  assert.deepEqual(opencode.list(), [{server: 'agent_operator', tool: 'set_task_title', args: '{"title":"Watch"}', status: 'done'}]);
   assert.equal(toolArguments({text: 'x'.repeat(600)}).length, 500);
+});
+
+test('OpenCode gets the model server and MCPs without the key', () => {
+  const config = opencodeConfig({agent_operator: {type: 'http', url: 'http://127.0.0.1:1234/mcp'}}, 'gemma.gguf', 'http://llama:8080/v1');
+  assert.equal(config.model, 'agent/gemma.gguf');
+  assert.deepEqual(config.provider.agent.options, {baseURL: 'http://llama:8080/v1', apiKey: '{env:AGENT_MODEL_API_KEY}',
+    headerTimeout: 10800000, chunkTimeout: 3600000});
+  assert.deepEqual(config.mcp, {agent_operator: {type: 'remote', url: 'http://127.0.0.1:1234/mcp', enabled: true, timeout: 600000}});
+});
+
+test('OpenCode sessions are found in its database', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-opencode-'));
+  try {
+    assert.equal(await nativeSessionExists(root, 'opencode', 'ses_1'), false);
+    const dir = join(root, 'home', '.local', 'share', 'opencode');
+    await mkdir(dir, {recursive: true});
+    const db = new DatabaseSync(join(dir, 'opencode.db'));
+    db.exec('CREATE TABLE session (id TEXT PRIMARY KEY)');
+    db.prepare('INSERT INTO session (id) VALUES (?)').run('ses_1');
+    db.close();
+    assert.equal(await nativeSessionExists(root, 'opencode', 'ses_1'), true);
+    assert.equal(await nativeSessionExists(root, 'opencode', 'ses_2'), false);
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
 });
 
 test('Codex reports the model of its latest turn from the session file', async () => {

@@ -4,6 +4,7 @@
   "description": "Coding CLIs preinstalled in the worker image",
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.306",
-    "@openai/codex": "0.163.0"
+    "@openai/codex": "0.163.0",
+    "opencode-ai": "1.19.4"
   }
 }

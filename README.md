@@ -3,7 +3,7 @@
 Always thought that having an agent run commands on your personal laptop was nuts?
 Give it a workspace in Kubernetes.
 
-`codemowers/agent` runs Claude Code or Codex in Kubernetes worker Pods. Each
+`codemowers/agent` runs Claude Code, Codex or OpenCode in Kubernetes worker Pods. Each
 Task gets a persistent workspace for its Git checkout, build artifacts and CLI
 session. Tasks keep working while your laptop is closed: forge events, mail and
 alerts wake them, and you or a colleague can pick up the conversation from any
@@ -21,8 +21,10 @@ trial.codemowers.cloud](https://trial.codemowers.cloud).
 
 ## Features
 
-- **Claude or Codex.** Each Agent picks a CLI and provider credential. A Task
-  can switch to another model from that provider and keep its workspace.
+- **Claude, Codex or OpenCode.** Each Agent picks a CLI and provider
+  credential; OpenCode reaches an OpenAI-compatible server such as llama.cpp
+  for local models. A Task can switch to another model from that provider and
+  keep its workspace.
 - **Persistent Tasks.** Follow progress and queue prompts in the browser. The
   worker stays up for the Agent's idle timeout after each reply. Suspend stops
   it and keeps the workspace, session and queued messages; Stop interrupts the
@@ -107,7 +109,7 @@ Agent.
 ## Workspaces and builds
 
 Workers run Ubuntu 26.04 with Node.js, Git, ripgrep, Python, build tools, gh,
-tea, Helm, Skaffold and the Claude Code and Codex CLIs pinned in
+tea, Helm, Skaffold and the Claude Code, Codex and OpenCode CLIs pinned in
 [runner/package.json](runner/package.json). Downloaded tools are verified
 against [runner/checksums.sha256](runner/checksums.sha256). kubectl and Go
 are mounted from their upstream images. Install Python packages into a virtual
@@ -141,15 +143,13 @@ skaffold dev
 - **Mail:** search, and tie sent messages to their Task so replies return to it.
 - **Worker placement:** run workers outside their Agent's namespace, so a hosted
   tenant's worker memory counts against its own quota.
-- **Local models:** run llama.cpp with reliable tool calls, streaming and
-  session resumption, for the kube-admin profile.
 - **Separate repositories:** these components could run without the operator:
   - `mailbox/`: an IMAP and SMTP MCP server, with a pluggable bearer-token
     check in place of TokenReview.
   - `webhook/`: a signed-webhook-to-AMQP gateway with CEL protocols loaded from
     files instead of custom resources.
   - `operator/devicebridge/`: a shell and file MCP server for `device-agent`.
-  - `runner/` and `src/`: an image wrapping the Claude and Codex CLIs with
+  - `runner/` and `src/`: an image wrapping the Claude, Codex and OpenCode CLIs with
     session persistence.
 
 ## Contributing

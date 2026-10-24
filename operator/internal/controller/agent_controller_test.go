@@ -47,6 +47,13 @@ func TestRuntimeSettingsUseQueueWithoutReplacingPod(t *testing.T) {
 	if workerConfigHash(task, agent) == workerConfigHash(initial, agent) {
 		t.Fatal("backend change would leave stale worker credentials")
 	}
+	opencode := task.DeepCopy()
+	opencode.Spec.Model = &agentsv1alpha1.ModelSpec{Backend: "opencode", Name: "gemma", BaseURL: "http://llama-a/v1", CredentialKeyRef: "key"}
+	moved := opencode.DeepCopy()
+	moved.Spec.Model.BaseURL = "http://llama-b/v1"
+	if workerConfigHash(opencode, agent) == workerConfigHash(moved, agent) {
+		t.Fatal("model server change would leave a stale worker environment")
+	}
 	store := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(task).WithObjects(task).Build()
 	broker := &coalesceBroker{}
 	r := &TaskReconciler{Client: store, AMQP: broker}

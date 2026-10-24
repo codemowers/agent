@@ -132,12 +132,16 @@ type VolumeClaimTemplateMetadata struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="self.backend == 'opencode' ? has(self.baseURL) && has(self.name) : !has(self.baseURL)",message="opencode requires baseURL and name; other backends take no baseURL"
 type ModelSpec struct {
-	// Backend is claude or codex.
-	// +kubebuilder:validation:Enum=claude;codex
+	// Backend is claude, codex or opencode.
+	// +kubebuilder:validation:Enum=claude;codex;opencode
 	Backend string `json:"backend"`
 	// Name is the provider model identifier. Empty uses the CLI default.
 	Name string `json:"name,omitempty"`
+	// BaseURL is the OpenAI-compatible API, ending in /v1, that the opencode
+	// backend calls, such as a llama.cpp server.
+	BaseURL string `json:"baseURL,omitempty"`
 
 	// CredentialKeyRef selects an API key in the namespace's provider-token Secret.
 	CredentialKeyRef string `json:"credentialKeyRef"`

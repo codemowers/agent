@@ -26,11 +26,16 @@ RUN set -e; arch="$(dpkg --print-architecture)"; cd /tmp; \
     fetch "https://storage.googleapis.com/skaffold/releases/v2.25.0/skaffold-linux-${arch}" "skaffold-v2.25.0-linux-${arch}"; \
     install -m 0755 "skaffold-v2.25.0-linux-${arch}" /usr/local/bin/skaffold; \
     rm -rf /tmp/*
-# Claude Code and Codex are pinned in runner/package.json so dependency
-# tooling can update them.
+# Claude Code, Codex and OpenCode are pinned in runner/package.json so
+# dependency tooling can update them. OpenCode's own binary is linked
+# directly rather than through its install script; the x64 baseline build
+# also runs on hosts without AVX2.
 COPY runner/package.json runner/package-lock.json /opt/agent-clis/
 RUN cd /opt/agent-clis && npm ci --omit=dev && npm cache clean --force \
-    && ln -s /opt/agent-clis/node_modules/.bin/claude /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/
+    && ln -s /opt/agent-clis/node_modules/.bin/claude /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/ \
+    && case "$(dpkg --print-architecture)" in amd64) opencode=linux-x64-baseline ;; arm64) opencode=linux-arm64 ;; esac \
+    && ln -s "/opt/agent-clis/node_modules/opencode-${opencode}/bin/opencode" /usr/local/bin/opencode \
+    && opencode --version
 
 FROM toolchain AS runtime
 WORKDIR /app
@@ -55,4 +60,3 @@ WORKDIR /app
 COPY --from=runtime /app /app
 EXPOSE 8080
 CMD ["node", "/app/src/task-worker-main.js"]
-

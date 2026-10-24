@@ -193,7 +193,7 @@ Three Agents separated by trust level, in any of the namespace layouts above.
 | --- | --- | --- | --- |
 | Kubernetes access | Cluster-admin | Cluster-wide operational reads; build and deploy in its namespace | No ServiceAccount token |
 | GitHub access | Read reviewed `main` | Pull, push topic branches, manage issues, open PRs | Issues in selected support repositories |
-| Model | Local model (planned) | Claude or Codex | A cheaper Claude or Codex model |
+| Model | Local model through OpenCode | Claude or Codex | A cheaper Claude or Codex model |
 | People reach it through | Dashboard, limited to DevOps by OIDC group | GitHub issues and PR reviews | Email, GitHub issues, Slack |
 | Events | Critical alerts | GitHub events, critical and warning alerts | GitHub issue events, external webhooks |
 | Main risk | Sensitive-data disclosure | Supply-chain attack and privilege escalation | Prompt injection |

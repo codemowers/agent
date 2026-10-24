@@ -151,11 +151,18 @@ spec:
                 description: Model selects the AI backend and its credential secret.
                 properties:
                   backend:
-                    description: Backend is claude or codex.
+                    description: Backend is claude, codex or opencode.
                     enum:
                     - claude
                     - codex
+                    - opencode
                     type: string
+                  baseURL:
+                    description: BaseURL is the OpenAI-compatible API, ending in /v1,
+                      that the opencode backend calls, such as a llama.cpp server.
+                    type: string
+                    maxLength: 2048
+                    pattern: '^https?://[^/?#@]+(/[^?#]*)?$'
                   credentialKeyRef:
                     pattern: '^[A-Za-z0-9._-]{1,253}$'
                     description: CredentialKeyRef selects an API key in the namespace's
@@ -168,6 +175,9 @@ spec:
                 - backend
                 - credentialKeyRef
                 type: object
+                x-kubernetes-validations:
+                - message: opencode requires baseURL and name; other backends take no baseURL
+                  rule: "self.backend == 'opencode' ? has(self.baseURL) && has(self.name) : !has(self.baseURL)"
               template:
                 description: |-
                   Template is the pod template for worker pods, identical in structure to
