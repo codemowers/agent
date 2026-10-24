@@ -75,6 +75,21 @@ subjects:
   - {kind: ServiceAccount, name: agent-worker-matmlazi, namespace: agents}
   - {kind: ServiceAccount, name: agent-worker-laurivosandi, namespace: agents}
 ---
+# The driftmower-operator chart advertises its live inventory as the
+# driftmower-operator server with a use ClusterRole; bind the same Agents.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-mcp-driftmower-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: driftmower-operator-mcp-use
+subjects:
+  - {kind: ServiceAccount, name: agent-worker-krtek, namespace: agents}
+  - {kind: ServiceAccount, name: agent-worker-matmlazi, namespace: agents}
+  - {kind: ServiceAccount, name: agent-worker-laurivosandi, namespace: agents}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
