@@ -30,7 +30,7 @@ func githubUsername(value string) string {
 }
 
 func agentGitHubUsername(agent *agentsv1alpha1.Agent) string {
-	if value := githubUsername(agent.Annotations["codemowers.cloud/github-username"]); value != "" {
+	if value := githubUsername(agent.Annotations["codemowers.ai/github-username"]); value != "" {
 		return value
 	}
 	for _, provider := range agent.Spec.GitProviders {

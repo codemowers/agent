@@ -2,14 +2,14 @@
 # worker whose ServiceAccount holds the custom verb "use" on it and projects a
 # token for its audience: spec.audience, else <service>.<namespace> of an
 # in-cluster URL. The chart advertises the Devices and feeds servers.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: ClusterMCPServer
 metadata:
   name: codemowers
 spec:
   url: https://mcp.codemowers.io/mcp
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: ClusterMCPServer
 metadata:
   name: driftmower
@@ -19,7 +19,7 @@ spec:
   audience: http://driftmower-mcp.driftmower.svc.cluster.local:3000/mcp
 ---
 # The developer's shared browser in demo; see ../browser/README.md.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: MCPServer
 metadata:
   name: browser
@@ -33,7 +33,7 @@ kind: ClusterRole
 metadata:
   name: agent-mcp-codemowers
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [clustermcpservers]
     resourceNames: [codemowers]
     verbs: [use]
@@ -57,7 +57,7 @@ kind: ClusterRole
 metadata:
   name: agent-mcp-driftmower
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [clustermcpservers]
     resourceNames: [driftmower]
     verbs: [use]
@@ -81,7 +81,7 @@ metadata:
   name: agent-mcp-browser
   namespace: agents
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [mcpservers]
     resourceNames: [browser]
     verbs: [use]

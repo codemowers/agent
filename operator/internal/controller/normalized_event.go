@@ -94,7 +94,7 @@ func (c *EventConsumer) routeEvent(ctx context.Context, agent *agentsv1alpha1.Ag
 		return nil, nil
 	}
 	var tasks agentsv1alpha1.TaskList
-	if err := c.APIReader.List(ctx, &tasks, client.InNamespace(ev.Namespace), client.MatchingLabels{"codemowers.cloud/agent": agent.Name}); err != nil {
+	if err := c.APIReader.List(ctx, &tasks, client.InNamespace(ev.Namespace), client.MatchingLabels{"codemowers.ai/agent": agent.Name}); err != nil {
 		return nil, err
 	}
 	var matched *agentsv1alpha1.Task

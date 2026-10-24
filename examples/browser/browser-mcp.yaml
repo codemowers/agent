@@ -117,7 +117,7 @@ spec:
               kubernetes.io/metadata.name: agents
           podSelector:
             matchLabels:
-              codemowers.cloud/agent: matmlazi
+              codemowers.ai/agent: matmlazi
       ports:
         - port: mcp
 ---

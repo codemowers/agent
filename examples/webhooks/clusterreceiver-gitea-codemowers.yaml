@@ -1,5 +1,5 @@
 # The codemowers hook on git.codemowers.io posts to /hooks/gitea-codemowers.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: ClusterWebhookReceiver
 metadata:
   name: gitea-codemowers

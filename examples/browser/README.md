@@ -10,7 +10,7 @@ Apply it with the developer's or worker's own access to `demo`. The
 [../mcp/servers.yaml](../mcp/servers.yaml).
 
 Access control is the ingress NetworkPolicy, which admits only Pods labelled
-`codemowers.cloud/agent: matmlazi` in `agents`. The browser has no bearer
+`codemowers.ai/agent: matmlazi` in `agents`. The browser has no bearer
 authentication, so anyone who can create such a Pod in `agents` can use it.
 Its egress reaches `demo` Pods, cluster DNS and non-private addresses, not
 the harness, the Kubernetes API or other namespaces. Files the browser saves

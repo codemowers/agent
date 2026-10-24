@@ -1,7 +1,7 @@
 # Public feeds for the platform watch Task. Enable the crawler with the
 # chart's feeds.enabled; each FeedBinding wakes krtek-platform-watch once per
 # poll that finds new items, with their titles and links.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Feed
 metadata:
   name: lwkd
@@ -9,7 +9,7 @@ metadata:
 spec:
   url: https://lwkd.info/feed.xml
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: FeedBinding
 metadata:
   name: lwkd-platform-watch
@@ -18,7 +18,7 @@ spec:
   feedRef: lwkd
   taskRef: krtek-platform-watch
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Feed
 metadata:
   name: kubernetes-blog
@@ -26,7 +26,7 @@ metadata:
 spec:
   url: https://kubernetes.io/feed.xml
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: FeedBinding
 metadata:
   name: kubernetes-blog-platform-watch
@@ -35,7 +35,7 @@ spec:
   feedRef: kubernetes-blog
   taskRef: krtek-platform-watch
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Feed
 metadata:
   name: kubernetes-cves
@@ -43,7 +43,7 @@ metadata:
 spec:
   url: https://kubernetes.io/docs/reference/issues-security/official-cve-feed/feed.xml
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: FeedBinding
 metadata:
   name: kubernetes-cves-platform-watch
@@ -52,7 +52,7 @@ spec:
   feedRef: kubernetes-cves
   taskRef: krtek-platform-watch
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Feed
 metadata:
   name: kubernetes-releases
@@ -60,7 +60,7 @@ metadata:
 spec:
   url: https://github.com/kubernetes/kubernetes/releases.atom
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: FeedBinding
 metadata:
   name: kubernetes-releases-platform-watch
@@ -69,7 +69,7 @@ spec:
   feedRef: kubernetes-releases
   taskRef: krtek-platform-watch
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Feed
 metadata:
   name: kubernetes-enhancements
@@ -77,7 +77,7 @@ metadata:
 spec:
   url: https://github.com/kubernetes/enhancements/commits/master.atom
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: FeedBinding
 metadata:
   name: kubernetes-enhancements-platform-watch
@@ -86,7 +86,7 @@ spec:
   feedRef: kubernetes-enhancements
   taskRef: krtek-platform-watch
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Feed
 metadata:
   name: ubuntu-security-notices
@@ -96,7 +96,7 @@ spec:
   # Keeps only its latest 10 notices, about a day.
   interval: 15m
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: FeedBinding
 metadata:
   name: ubuntu-security-notices-platform-watch

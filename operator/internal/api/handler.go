@@ -555,7 +555,7 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 			Name:      taskName,
 			Namespace: agent.Namespace,
 			Labels: map[string]string{
-				"codemowers.cloud/agent": agent.Name,
+				"codemowers.ai/agent": agent.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         agentsv1alpha1.GroupVersion.String(),

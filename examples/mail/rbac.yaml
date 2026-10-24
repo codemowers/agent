@@ -27,7 +27,7 @@ metadata:
   name: mailbox-matmlazi-mail
   namespace: agents
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [mailboxes]
     resourceNames: [matmlazi-mail]
     verbs: [send, read]
@@ -52,7 +52,7 @@ metadata:
   name: mailbox-patpalouk-mail
   namespace: agents
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [mailboxes]
     resourceNames: [patpalouk-mail]
     verbs: [send, read]

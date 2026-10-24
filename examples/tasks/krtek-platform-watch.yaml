@@ -1,7 +1,7 @@
 # A durable watch of upstream Kubernetes and the components this cluster
 # runs. examples/feeds/platform-watch.yaml wakes it with new feed items and
 # krtek-platform-watch-schedule.yaml weekly; the workspace keeps the cut-off.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Task
 metadata:
   name: krtek-platform-watch

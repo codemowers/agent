@@ -55,7 +55,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	var taskList agentsv1alpha1.TaskList
 	if err := r.List(ctx, &taskList,
 		client.InNamespace(agent.Namespace),
-		client.MatchingLabels{"codemowers.cloud/agent": agent.Name},
+		client.MatchingLabels{"codemowers.ai/agent": agent.Name},
 	); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list tasks: %w", err)
 	}
@@ -196,7 +196,7 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	return result, err
 }
 
-const taskQueueFinalizer = "codemowers.cloud/task-queue"
+const taskQueueFinalizer = "codemowers.ai/task-queue"
 
 // trackTaskQueue records a Task queue before it is declared, so deleting the
 // Task deletes the queue too.
@@ -338,7 +338,7 @@ func (r *TaskReconciler) reconcileSuspended(ctx context.Context, task *agentsv1a
 	}
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(task.Namespace),
-		client.MatchingLabels{"codemowers.cloud/task": task.Name}); err != nil {
+		client.MatchingLabels{"codemowers.ai/task": task.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 	stopping := false
@@ -563,7 +563,7 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 	// against the same workspace.
 	var candidates corev1.PodList
 	if err := r.List(ctx, &candidates, client.InNamespace(task.Namespace),
-		client.MatchingLabels{"codemowers.cloud/task": task.Name}); err != nil {
+		client.MatchingLabels{"codemowers.ai/task": task.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 	var existing *corev1.Pod
@@ -810,7 +810,7 @@ func (r *TaskReconciler) ensureTaskAgentOwnership(ctx context.Context, task *age
 		}
 		matchingRef = i
 	}
-	if owner != nil && task.Labels["codemowers.cloud/agent"] == agent.Name {
+	if owner != nil && task.Labels["codemowers.ai/agent"] == agent.Name {
 		return false, nil
 	}
 	patch := client.MergeFrom(task.DeepCopy())
@@ -826,7 +826,7 @@ func (r *TaskReconciler) ensureTaskAgentOwnership(ctx context.Context, task *age
 	if task.Labels == nil {
 		task.Labels = make(map[string]string)
 	}
-	task.Labels["codemowers.cloud/agent"] = agent.Name
+	task.Labels["codemowers.ai/agent"] = agent.Name
 	if err := r.Patch(ctx, task, patch); err != nil {
 		return false, fmt.Errorf("set Task Agent ownership: %w", err)
 	}
@@ -841,12 +841,12 @@ func taskIdleSeconds(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) int
 }
 
 const (
-	workerConfigHashAnnotation        = "codemowers.cloud/worker-config-hash"
-	workerVersionAnnotation           = "codemowers.cloud/operator-worker-version"
-	workerRuntimeGenerationAnnotation = "codemowers.cloud/worker-runtime-generation"
+	workerConfigHashAnnotation        = "codemowers.ai/worker-config-hash"
+	workerVersionAnnotation           = "codemowers.ai/operator-worker-version"
+	workerRuntimeGenerationAnnotation = "codemowers.ai/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "18"
+	WorkerPodVersion = "19"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -1220,8 +1220,8 @@ func mergeManagedLabels(labels map[string]string, task *agentsv1alpha1.Task, age
 	for key, value := range labels {
 		out[key] = value
 	}
-	out["codemowers.cloud/task"] = task.Name
-	out["codemowers.cloud/agent"] = agent.Name
+	out["codemowers.ai/task"] = task.Name
+	out["codemowers.ai/agent"] = agent.Name
 	return out
 }
 
@@ -1241,7 +1241,7 @@ func (r *TaskReconciler) tasksForAgent(ctx context.Context, object client.Object
 		return nil
 	}
 	var tasks agentsv1alpha1.TaskList
-	if err := r.List(ctx, &tasks, client.InNamespace(agent.Namespace), client.MatchingLabels{"codemowers.cloud/agent": agent.Name}); err != nil {
+	if err := r.List(ctx, &tasks, client.InNamespace(agent.Namespace), client.MatchingLabels{"codemowers.ai/agent": agent.Name}); err != nil {
 		log.FromContext(ctx).Error(err, "list Agent tasks for worker configuration update", "agent", agent.Name)
 		return nil
 	}

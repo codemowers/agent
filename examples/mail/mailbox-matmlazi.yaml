@@ -1,6 +1,6 @@
 # The IMAP and SMTP credential Secrets are copies of the previous controller's
 # mail settings in codemowers-agent-system.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Mailbox
 metadata:
   name: matmlazi-mail

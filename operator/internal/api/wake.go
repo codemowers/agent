@@ -53,7 +53,7 @@ func (h *Handler) wakeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	access, err := h.AccessReviews.SubjectAccessReviews().Create(r.Context(), &authv1.SubjectAccessReview{
 		Spec: authv1.SubjectAccessReviewSpec{User: user.Username, UID: user.UID, Groups: user.Groups, Extra: extra,
-			ResourceAttributes: &authv1.ResourceAttributes{Group: "codemowers.cloud", Resource: "tasks", Verb: "wake", Namespace: namespace, Name: name}},
+			ResourceAttributes: &authv1.ResourceAttributes{Group: "codemowers.ai", Resource: "tasks", Verb: "wake", Namespace: namespace, Name: name}},
 	}, metav1.CreateOptions{})
 	if err != nil || access.Status.EvaluationError != "" {
 		jsonError(w, errors.New("access review unavailable"), http.StatusServiceUnavailable)

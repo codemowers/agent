@@ -152,7 +152,7 @@ func (k *kubeHookResolver) Protocol(ctx context.Context, name string) (receiverP
 	if !validKubernetesName(name) {
 		return v, fmt.Errorf("invalid protocol name")
 	}
-	err := k.get(ctx, "/apis/codemowers.cloud/v1alpha1/webhookprotocols/"+url.PathEscape(name), &v)
+	err := k.get(ctx, "/apis/codemowers.ai/v1alpha1/webhookprotocols/"+url.PathEscape(name), &v)
 	return v, err
 }
 
@@ -163,9 +163,9 @@ func (k *kubeHookResolver) Receiver(ctx context.Context, namespace, name string)
 	if !validKubernetesName(name) || (namespace != "" && !validKubernetesName(namespace)) {
 		return v, fmt.Errorf("invalid receiver path")
 	}
-	path := "/apis/codemowers.cloud/v1alpha1/clusterwebhookreceivers/" + url.PathEscape(name)
+	path := "/apis/codemowers.ai/v1alpha1/clusterwebhookreceivers/" + url.PathEscape(name)
 	if namespace != "" {
-		path = "/apis/codemowers.cloud/v1alpha1/namespaces/" + url.PathEscape(namespace) + "/webhookreceivers/" + url.PathEscape(name)
+		path = "/apis/codemowers.ai/v1alpha1/namespaces/" + url.PathEscape(namespace) + "/webhookreceivers/" + url.PathEscape(name)
 	}
 	err := k.get(ctx, path, &v)
 	return v, err
@@ -201,9 +201,9 @@ func (k *kubeHookResolver) ReceiverKey(ctx context.Context, r webhookReceiver) (
 // Bindings lists the WebhookBindings subscribed to a receiver: of every
 // namespace for a ClusterWebhookReceiver, of its own for a WebhookReceiver.
 func (k *kubeHookResolver) Bindings(ctx context.Context, r webhookReceiver) ([]receiverBinding, error) {
-	base := "/apis/codemowers.cloud/v1alpha1/webhookbindings"
+	base := "/apis/codemowers.ai/v1alpha1/webhookbindings"
 	if r.Metadata.Namespace != "" {
-		base = "/apis/codemowers.cloud/v1alpha1/namespaces/" + url.PathEscape(r.Metadata.Namespace) + "/webhookbindings"
+		base = "/apis/codemowers.ai/v1alpha1/namespaces/" + url.PathEscape(r.Metadata.Namespace) + "/webhookbindings"
 	}
 	var out []receiverBinding
 	path := base + "?limit=500"

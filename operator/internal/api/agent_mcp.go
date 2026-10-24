@@ -482,7 +482,7 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		return mcpText(map[string]any{"recorded": true})
 	case "list_tasks":
 		var list agentsv1alpha1.TaskList
-		if err := h.mcpReader().List(ctx, &list, client.InNamespace(scope.Task.Namespace), client.MatchingLabels{"codemowers.cloud/agent": scope.Agent.Name}); err != nil {
+		if err := h.mcpReader().List(ctx, &list, client.InNamespace(scope.Task.Namespace), client.MatchingLabels{"codemowers.ai/agent": scope.Agent.Name}); err != nil {
 			return nil, err
 		}
 		out := make([]map[string]any, 0, min(len(list.Items), 100))
@@ -529,7 +529,7 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			arg.RoutingKey = key
 			name = agentsv1alpha1.TaskNameForKey(scope.Agent.UID, key)
 			var tasks agentsv1alpha1.TaskList
-			if err := h.mcpReader().List(ctx, &tasks, client.InNamespace(scope.Task.Namespace), client.MatchingLabels{"codemowers.cloud/agent": scope.Agent.Name}); err != nil {
+			if err := h.mcpReader().List(ctx, &tasks, client.InNamespace(scope.Task.Namespace), client.MatchingLabels{"codemowers.ai/agent": scope.Agent.Name}); err != nil {
 				return nil, err
 			}
 			for i := range tasks.Items {
@@ -543,7 +543,7 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		controller := true
 		task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: scope.Task.Namespace,
-			Labels: map[string]string{"codemowers.cloud/agent": scope.Agent.Name},
+			Labels: map[string]string{"codemowers.ai/agent": scope.Agent.Name},
 			OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent",
 				Name: scope.Agent.Name, UID: scope.Agent.UID, Controller: &controller, BlockOwnerDeletion: &controller}}},
 			Spec: agentsv1alpha1.TaskSpec{AgentRef: scope.Agent.Name, Objective: arg.Objective,

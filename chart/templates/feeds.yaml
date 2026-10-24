@@ -13,13 +13,13 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Namespace }}-agent-feeds
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [feeds, feedbindings]
     verbs: [get, list, watch]
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [feeds/status]
     verbs: [update]
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [tasks]
     verbs: [wake]
   - apiGroups: [authentication.k8s.io]
@@ -33,7 +33,7 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Namespace }}-agent-feeds-mcp
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [clustermcpservers]
     resourceNames: [feeds]
     verbs: [use]
@@ -130,7 +130,7 @@ spec:
                   expirationSeconds: 3600
                   path: token
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: ClusterMCPServer
 metadata:
   name: feeds
@@ -164,9 +164,9 @@ spec:
         - namespaceSelector: {}
           podSelector:
             matchExpressions:
-              - key: codemowers.cloud/task
+              - key: codemowers.ai/task
                 operator: Exists
-              - key: codemowers.cloud/agent
+              - key: codemowers.ai/agent
                 operator: Exists
       ports:
         - protocol: TCP

@@ -26,9 +26,9 @@ spec:
         - namespaceSelector: {}
           podSelector:
             matchExpressions:
-              - key: codemowers.cloud/task
+              - key: codemowers.ai/task
                 operator: Exists
-              - key: codemowers.cloud/agent
+              - key: codemowers.ai/agent
                 operator: Exists
       ports:
         - protocol: TCP

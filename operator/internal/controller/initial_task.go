@@ -60,7 +60,7 @@ func (c *EventConsumer) createTaskByPolicy(ctx context.Context, agent *agentsv1a
 	task := &agentsv1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: agentsv1alpha1.TaskNameForKey(agent.UID, ev.Key), Namespace: ev.Namespace,
-			Labels: map[string]string{"codemowers.cloud/agent": agent.Name},
+			Labels: map[string]string{"codemowers.ai/agent": agent.Name},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name,
 				UID: agent.UID, Controller: boolPtr(true), BlockOwnerDeletion: boolPtr(true),

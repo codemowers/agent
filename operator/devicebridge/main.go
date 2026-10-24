@@ -354,7 +354,7 @@ func (b *bridge) authorized(ctx context.Context, c caller, namespace, name, verb
 	user := c.user
 	review, err := b.kube.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authzv1.SubjectAccessReview{Spec: authzv1.SubjectAccessReviewSpec{
 		User: user.Username, UID: user.UID, Groups: user.Groups, Extra: convertExtra(user.Extra),
-		ResourceAttributes: &authzv1.ResourceAttributes{Namespace: namespace, Verb: verb, Group: "codemowers.cloud", Resource: "devices", Name: name},
+		ResourceAttributes: &authzv1.ResourceAttributes{Namespace: namespace, Verb: verb, Group: "codemowers.ai", Resource: "devices", Name: name},
 	}}, metav1.CreateOptions{})
 	return err == nil && review.Status.Allowed && !review.Status.Denied && review.Status.EvaluationError == ""
 }

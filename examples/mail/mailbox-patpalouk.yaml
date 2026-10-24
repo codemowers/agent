@@ -1,5 +1,5 @@
 # One account serves IMAP and SMTP through the patpalouk-mail Secret.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Mailbox
 metadata:
   name: patpalouk-mail

@@ -46,7 +46,7 @@ export function createMailboxMcpServer({namespace, mailbox, audience, address = 
   const allowed = async (user, verb) => {
     const review = await kube('/apis/authorization.k8s.io/v1/subjectaccessreviews', {apiVersion: 'authorization.k8s.io/v1',
       kind: 'SubjectAccessReview', spec: {user: user.username, uid: user.uid, groups: user.groups, extra: user.extra,
-        resourceAttributes: {namespace, verb, group: 'codemowers.cloud', resource: 'mailboxes', name: mailbox}}});
+        resourceAttributes: {namespace, verb, group: 'codemowers.ai', resource: 'mailboxes', name: mailbox}}});
     return Boolean(review?.status?.allowed && !review.status.denied && !review.status.evaluationError);
   };
   const local = async (url, body, timeout) => {

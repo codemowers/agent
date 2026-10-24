@@ -153,8 +153,8 @@ or internal listener; in-cluster DNS and network position are not
 authentication. Keep sender namespace, Pod selectors and Alertmanager routing
 out of Helm values; the sender-side egress policy is an example manifest. Sender verification is separate from the
 RabbitMQ publisher identity described below.
-Agent and Task CRDs use `codemowers.cloud/v1alpha1` directly, with resource names
-`agents.codemowers.cloud` and `tasks.codemowers.cloud`.
+Agent and Task CRDs use `codemowers.ai/v1alpha1` directly, with resource names
+`agents.codemowers.ai` and `tasks.codemowers.ai`.
 This checkout deploys the Go operator as `agent-operator` and the webhook
 receiver as `agent-operator-webhook` in the existing
 `codemowers-agent-system` namespace. An Agent and its workers may live in the
@@ -174,10 +174,10 @@ removal. The operator retries an event in place, waiting out API server and
 broker outages; after six other failures it rejects the event, which a Policy
 dead-letters to the retained `agent.intake.dead` queue so the shared intake
 queue keeps flowing. Controllers and the event consumer run only on the holder
-of the `agent-operator.codemowers.cloud` Lease; the API and Agent MCP serve on
+of the `agent-operator.codemowers.ai` Lease; the API and Agent MCP serve on
 every replica, though streamed turn text reaches only browsers connected to the
 replica the worker calls. A Task records its queue in `Task.status.queue`
-under the `codemowers.cloud/task-queue` finalizer, which deletes the queue
+under the `codemowers.ai/task-queue` finalizer, which deletes the queue
 with the Task even after its Agent is gone.
 The Device bridge is a separate Go Deployment and image named `agent-devices`.
 The chart enables the webhook receiver by default and the Device bridge only
@@ -877,7 +877,7 @@ OIDC authentication and Agent `get` access.
 Use the current [developer](examples/agents/matmlazi.yaml),
 [customer support](examples/agents/patpalouk.yaml) and
 [admin](examples/agents/krtek.yaml) Agent examples and the
-[`codemowers.cloud/v1alpha1` CRD schemas](crd/) as the executable contract.
+[`codemowers.ai/v1alpha1` CRD schemas](crd/) as the executable contract.
 Namespace administrators supply the two fixed Secrets described above and
 select individual keys in Agent specs. The operator creates Tasks and owns
 Task specs; worker observations are validated and written to Task status by

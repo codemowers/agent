@@ -77,13 +77,13 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Name }}-{{ .Release.Namespace }}-webhook
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources:
       - webhookbindings
     verbs:
       - list
       - get
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources:
       - webhookprotocols
       - webhookreceivers

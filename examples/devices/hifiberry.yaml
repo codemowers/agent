@@ -10,7 +10,7 @@ spec:
       encoding: hex
       length: "32"
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Device
 metadata:
   name: hifiberry
@@ -27,7 +27,7 @@ metadata:
   name: agent-device-hifiberry
   namespace: agents
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [devices]
     resourceNames: [hifiberry]
     verbs: [exec, read, write]

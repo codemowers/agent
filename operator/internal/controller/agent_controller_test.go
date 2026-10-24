@@ -113,7 +113,7 @@ func TestDirectTaskCopiesAgentIdleTimeoutBeforeStartingWorker(t *testing.T) {
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &actual); err != nil {
 		t.Fatal(err)
 	}
-	if owner := metav1.GetControllerOf(&actual); owner == nil || owner.Name != agent.Name || owner.UID != agent.UID || actual.Labels["codemowers.cloud/agent"] != agent.Name {
+	if owner := metav1.GetControllerOf(&actual); owner == nil || owner.Name != agent.Name || owner.UID != agent.UID || actual.Labels["codemowers.ai/agent"] != agent.Name {
 		t.Fatalf("declarative Task did not acquire Agent ownership: %+v, labels: %+v", owner, actual.Labels)
 	}
 	if actual.Spec.IdleSeconds == nil || *actual.Spec.IdleSeconds != 45 {
@@ -304,9 +304,9 @@ func TestAgentChangeEnqueuesOwnedTasks(t *testing.T) {
 	}
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: types.UID("agent-uid")}}
 	owned := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "owned", Namespace: "team",
-		Labels: map[string]string{"codemowers.cloud/agent": agent.Name}, OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID}}}}
+		Labels: map[string]string{"codemowers.ai/agent": agent.Name}, OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID}}}}
 	unowned := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "unowned", Namespace: "team",
-		Labels: map[string]string{"codemowers.cloud/agent": agent.Name}}}
+		Labels: map[string]string{"codemowers.ai/agent": agent.Name}}}
 	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owned, unowned).Build()
 	requests := (&TaskReconciler{Client: store}).tasksForAgent(context.Background(), agent)
 	if len(requests) != 1 || requests[0].NamespacedName != client.ObjectKeyFromObject(owned) {

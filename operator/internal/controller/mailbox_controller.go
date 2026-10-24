@@ -100,7 +100,7 @@ func (r *MailboxReconciler) imapPod(mailbox *agentsv1alpha1.Mailbox) (*corev1.Po
 	uid := int64(1000)
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name: mailboxPodName(mailbox), Namespace: mailbox.Namespace,
-		Labels: map[string]string{"app": "agent-mailbox", "codemowers.cloud/mailbox": mailbox.Name},
+		Labels: map[string]string{"app": "agent-mailbox", "codemowers.ai/mailbox": mailbox.Name},
 	}, Spec: corev1.PodSpec{
 		AutomountServiceAccountToken: &no,
 		RestartPolicy:                corev1.RestartPolicyAlways,
@@ -161,7 +161,7 @@ func (r *MailboxReconciler) smtpPod(mailbox *agentsv1alpha1.Mailbox) (*corev1.Po
 	}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name: mailboxPodName(mailbox), Namespace: mailbox.Namespace,
-		Labels: map[string]string{"app": "agent-mailbox", "codemowers.cloud/mailbox": mailbox.Name},
+		Labels: map[string]string{"app": "agent-mailbox", "codemowers.ai/mailbox": mailbox.Name},
 	}, Spec: corev1.PodSpec{
 		AutomountServiceAccountToken: &no,
 		RestartPolicy:                corev1.RestartPolicyAlways, HostUsers: &no,
@@ -228,7 +228,7 @@ func (r *MailboxReconciler) mailboxPod(mailbox *agentsv1alpha1.Mailbox, caller s
 		}
 	}
 	if pod != nil {
-		pod.Annotations = map[string]string{"codemowers.cloud/mailbox-config-hash": mailboxConfigHash(mailbox, r.Image, r.AMQPURL, caller)}
+		pod.Annotations = map[string]string{"codemowers.ai/mailbox-config-hash": mailboxConfigHash(mailbox, r.Image, r.AMQPURL, caller)}
 		pod.Spec.ServiceAccountName = MailboxServiceAccount
 		pod.Spec.Containers = append(pod.Spec.Containers, r.mcpContainer(mailbox, caller))
 		// The token reaches only the mcp container, unlike automounting.
@@ -269,8 +269,8 @@ func (r *MailboxReconciler) ensureService(ctx context.Context, mailbox *agentsv1
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: agentsv1alpha1.MailboxResourceName(mailbox.Name), Namespace: mailbox.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
 		if service.CreationTimestamp.IsZero() || metav1.IsControlledBy(service, mailbox) {
-			service.Labels = map[string]string{"app": "agent-mailbox", "codemowers.cloud/mailbox": mailbox.Name}
-			service.Spec.Selector = map[string]string{"app": "agent-mailbox", "codemowers.cloud/mailbox": mailbox.Name}
+			service.Labels = map[string]string{"app": "agent-mailbox", "codemowers.ai/mailbox": mailbox.Name}
+			service.Spec.Selector = map[string]string{"app": "agent-mailbox", "codemowers.ai/mailbox": mailbox.Name}
 			service.Spec.Ports = []corev1.ServicePort{{Name: "mcp", Port: 8080, TargetPort: intstr.FromString("mcp"), Protocol: corev1.ProtocolTCP}}
 			return controllerutil.SetControllerReference(mailbox, service, r.Scheme)
 		}
@@ -313,7 +313,7 @@ func (r *MailboxReconciler) ensurePod(ctx context.Context, mailbox *agentsv1alph
 	if !metav1.IsControlledBy(&existing, mailbox) {
 		return ctrl.Result{}, fmt.Errorf("mailbox Pod %s/%s has another owner", mailbox.Namespace, name)
 	}
-	if existing.Annotations["codemowers.cloud/mailbox-config-hash"] != desired.Annotations["codemowers.cloud/mailbox-config-hash"] || existing.Status.Phase == corev1.PodFailed || existing.Status.Phase == corev1.PodSucceeded {
+	if existing.Annotations["codemowers.ai/mailbox-config-hash"] != desired.Annotations["codemowers.ai/mailbox-config-hash"] || existing.Status.Phase == corev1.PodFailed || existing.Status.Phase == corev1.PodSucceeded {
 		if existing.DeletionTimestamp == nil {
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, r.Delete(ctx, &existing)
 		}

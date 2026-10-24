@@ -118,7 +118,7 @@ func TestNormalizedEventRoutesOnlyOwnedTask(t *testing.T) {
 		uid := types.UID(item.agent + "-uid")
 		objects = append(objects, &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: item.agent, Namespace: item.namespace, UID: uid, Generation: 1},
 			Status: agentsv1alpha1.AgentStatus{ForgesObservedGeneration: 1, Forges: []agentsv1alpha1.ForgeCapability{{Type: "github", ServerURL: "https://github.com", Status: "available", Login: item.agent}}}})
-		objects = append(objects, &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "issue-8", Namespace: item.namespace, Labels: map[string]string{"codemowers.cloud/agent": item.agent}, OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: item.agent, UID: uid}}}, Spec: agentsv1alpha1.TaskSpec{RoutingKeys: []string{"https://github.com/codemowers/agent/issues/8"}}})
+		objects = append(objects, &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "issue-8", Namespace: item.namespace, Labels: map[string]string{"codemowers.ai/agent": item.agent}, OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: item.agent, UID: uid}}}, Spec: agentsv1alpha1.TaskSpec{RoutingKeys: []string{"https://github.com/codemowers/agent/issues/8"}}})
 	}
 	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(objects...).Build()
 	consumer := &EventConsumer{Client: k8s, APIReader: k8s, WebhookPublisher: testWebhookPublisher}
@@ -318,7 +318,7 @@ func TestOtherBindingNotificationAndForgeCloseDoNotPrompt(t *testing.T) {
 	const key = "https://github.com/team/repo/issues/1"
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: "agent-uid"}}
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "issue-1", Namespace: "team", UID: "task-uid",
-		Labels:          map[string]string{"codemowers.cloud/agent": agent.Name},
+		Labels:          map[string]string{"codemowers.ai/agent": agent.Name},
 		OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID}}},
 		Spec: agentsv1alpha1.TaskSpec{AgentRef: agent.Name, RoutingKeys: []string{key}}}
 	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(agent, task).Build()

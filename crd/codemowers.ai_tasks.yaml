@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.0
-  name: tasks.codemowers.cloud
+  name: tasks.codemowers.ai
 spec:
-  group: codemowers.cloud
+  group: codemowers.ai
   names:
     kind: Task
     listKind: TaskList

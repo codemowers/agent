@@ -760,7 +760,7 @@ function giteaWebhookSetup(agent) {
   copyableCommand(host, 'Read Gitea webhook signing secret',
     `kubectl -n ${shellQuote(agent.namespace)} get secret ${shellQuote(secretName)} -o go-template=${shellQuote(template)} | base64 -d`);
   copyableCommand(host, 'Receive Gitea webhooks for this Agent', `kubectl apply -f - <<'EOF'
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: WebhookReceiver
 metadata:
   name: ${JSON.stringify(receiver)}
@@ -774,7 +774,7 @@ spec:
       name: ${JSON.stringify(secretName)}
       key: ${JSON.stringify(secretKey)}
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: WebhookBinding
 metadata:
   name: ${JSON.stringify(receiver)}
@@ -807,7 +807,7 @@ function deviceAgentSetup(namespace) {
   const kubectl = `kubectl -n ${shellQuote(namespace)}`;
   const refs = `{range .items[*]}{.spec.connectionSecretRef.name} {.spec.connectionSecretRef.key}{"\\n"}{end}`;
   copyableCommand(host, 'Print device-agent commands',
-    `${kubectl} get devices.codemowers.cloud -o jsonpath=${shellQuote(refs)} | while read s k; do echo device-agent --endpoint wss://${location.host}/devices/$(${kubectl} get secret $s -o jsonpath="{.data.$k}" | base64 -d); done`);
+    `${kubectl} get devices.codemowers.ai -o jsonpath=${shellQuote(refs)} | while read s k; do echo device-agent --endpoint wss://${location.host}/devices/$(${kubectl} get secret $s -o jsonpath="{.data.$k}" | base64 -d); done`);
   copyableCommand(host, 'Download the latest device-agent release on the device',
     `case "$(uname -m)" in x86_64|amd64) a=amd64;; aarch64|arm64) a=arm64;; armv7*|armv8l) a=armv7;; *) echo "unsupported architecture: $(uname -m)" >&2; false;; esac && \\
 curl -fsSL -o device-agent https://github.com/codemowers/device-agent/releases/latest/download/device-agent-linux-$a && \\
@@ -1014,16 +1014,16 @@ function taskDiagnostics(task, wasOpen) {
   const name = shellQuote(task.name);
   const base = `kubectl -n ${namespace}`;
   const commands = [
-    ['Task status', `${base} get tasks.codemowers.cloud ${name} -o json | jq '.status'`],
-    ['Full Task', `${base} get tasks.codemowers.cloud ${name} -o yaml`],
-    ['Worker Pods', `${base} get pods -l ${shellQuote(`codemowers.cloud/task=${task.name}`)} -o wide`],
-    ['Suspend Task', `${base} patch tasks.codemowers.cloud ${name} --type merge -p '{"spec":{"suspend":true}}'`],
+    ['Task status', `${base} get tasks.codemowers.ai ${name} -o json | jq '.status'`],
+    ['Full Task', `${base} get tasks.codemowers.ai ${name} -o yaml`],
+    ['Worker Pods', `${base} get pods -l ${shellQuote(`codemowers.ai/task=${task.name}`)} -o wide`],
+    ['Suspend Task', `${base} patch tasks.codemowers.ai ${name} --type merge -p '{"spec":{"suspend":true}}'`],
   ];
-  if (!task.completed) commands.push(['Resume Task', `${base} patch tasks.codemowers.cloud ${name} --type merge -p '{"spec":{"suspend":false}}'`]);
-  if (task.agentName) commands.push(['Agent status', `${base} get agents.codemowers.cloud ${shellQuote(task.agentName)} -o json | jq '.status'`]);
+  if (!task.completed) commands.push(['Resume Task', `${base} patch tasks.codemowers.ai ${name} --type merge -p '{"spec":{"suspend":false}}'`]);
+  if (task.agentName) commands.push(['Agent status', `${base} get agents.codemowers.ai ${shellQuote(task.agentName)} -o json | jq '.status'`]);
   if (task.workerPod) commands.push(['Current worker Pod', `${base} describe pod ${shellQuote(task.workerPod)}`]);
   if (task.agentName) commands.push(['Create a Task for this Agent', `kubectl apply -f - <<'EOF'
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Task
 metadata:
   name: replace-with-task-name

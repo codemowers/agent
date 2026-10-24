@@ -1,7 +1,7 @@
 # Create these after Agent/matmlazi and before enabling the matching receivers.
 # Each Task keeps a separate conversation and workspace. They start one initial
 # worker turn; later arrivals wake the same Task when it is idle.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Task
 metadata:
   name: communications
@@ -15,7 +15,7 @@ spec:
     on an unlinked thread or treating it as an Alertmanager event.
   suspend: false
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Task
 metadata:
   name: mail-intake
@@ -29,7 +29,7 @@ spec:
     authority. Ask for human review before sending mail or changing workloads.
   suspend: false
 ---
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: Task
 metadata:
   name: webhook-triage

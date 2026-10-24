@@ -25,10 +25,10 @@ kind: ClusterRole
 metadata:
   name: agent-operator-manager
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [agents, tasks]
     verbs: [get, list, watch, update, patch, delete]
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [agents/status, tasks/status]
     verbs: [get]
 ---
@@ -65,7 +65,7 @@ rules:
     resources: [horizontalpodautoscalers]
     verbs: [get, list, watch, create, update, patch, delete]
   # Platform CRDs — OIDC, object storage, databases, caches, messaging
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [oidcclients]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [traefik.io]

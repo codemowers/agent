@@ -42,7 +42,7 @@ type subjectAccessReviewer struct {
 func (s subjectAccessReviewer) Allowed(ctx context.Context, user caller, namespace, name string) (bool, error) {
 	review, err := s.client.SubjectAccessReviews().Create(ctx, &authv1.SubjectAccessReview{
 		Spec: authv1.SubjectAccessReviewSpec{User: user.user, Groups: user.groups,
-			ResourceAttributes: &authv1.ResourceAttributes{Group: "codemowers.cloud", Resource: "agents", Verb: "get", Namespace: namespace, Name: name}},
+			ResourceAttributes: &authv1.ResourceAttributes{Group: "codemowers.ai", Resource: "agents", Verb: "get", Namespace: namespace, Name: name}},
 	}, metav1.CreateOptions{})
 	if err != nil {
 		return false, err

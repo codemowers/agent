@@ -96,7 +96,7 @@ func main() {
 		// Controllers and the event consumer run only on the Lease holder, so a
 		// rollout never runs two reconcilers; the API serves on every replica.
 		LeaderElection:                true,
-		LeaderElectionID:              "agent-operator.codemowers.cloud",
+		LeaderElectionID:              "agent-operator.codemowers.ai",
 		LeaderElectionNamespace:       os.Getenv("POD_NAMESPACE"),
 		LeaderElectionReleaseOnCancel: true,
 	})

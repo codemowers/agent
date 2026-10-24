@@ -1,4 +1,4 @@
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: WebhookBinding
 metadata:
   name: discord-app

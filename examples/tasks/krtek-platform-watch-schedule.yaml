@@ -13,7 +13,7 @@ metadata:
   name: platform-watch-schedule
   namespace: agents
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources: [tasks]
     resourceNames: [krtek-platform-watch]
     verbs: [wake]

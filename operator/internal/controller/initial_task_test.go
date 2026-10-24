@@ -72,7 +72,7 @@ func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 	// still record the creating delivery and window.
 	cached := interceptor.NewClient(k8s, interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 		if _, ok := obj.(*agentsv1alpha1.Task); ok {
-			return apierrors.NewNotFound(schema.GroupResource{Group: "codemowers.cloud", Resource: "tasks"}, key.Name)
+			return apierrors.NewNotFound(schema.GroupResource{Group: "codemowers.ai", Resource: "tasks"}, key.Name)
 		}
 		return c.Get(ctx, key, obj, opts...)
 	}})

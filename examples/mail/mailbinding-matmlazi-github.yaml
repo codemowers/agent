@@ -3,7 +3,7 @@
 # GitHub's DKIM signature covers References but not Message-ID or the
 # X-GitHub-* headers, so only References selects the issue. X-GitHub-Sender is
 # display-only; the operator drops mail whose actor is the Agent's own login.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: MailBinding
 metadata:
   name: matmlazi-github-notifications

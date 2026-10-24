@@ -1,9 +1,9 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: clusterwebhookreceivers.codemowers.cloud
+  name: clusterwebhookreceivers.codemowers.ai
 spec:
-  group: codemowers.cloud
+  group: codemowers.ai
   scope: Cluster
   names:
     plural: clusterwebhookreceivers

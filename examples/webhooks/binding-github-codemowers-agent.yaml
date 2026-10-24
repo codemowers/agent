@@ -1,6 +1,6 @@
 # Events of the codemowers org from the shared GitHub hook. A narrower prefix
 # such as https://github.com/codemowers/agent selects one repository.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: WebhookBinding
 metadata:
   name: github-codemowers-agent

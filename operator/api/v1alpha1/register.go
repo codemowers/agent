@@ -1,4 +1,4 @@
-// +groupName=codemowers.cloud
+// +groupName=codemowers.ai
 package v1alpha1
 
 import (

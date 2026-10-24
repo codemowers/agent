@@ -6,7 +6,7 @@ installation.
 
 ## Resource kinds
 
-All kinds are in the `codemowers.cloud/v1alpha1` API group. Namespace
+All kinds are in the `codemowers.ai/v1alpha1` API group. Namespace
 administrators are humans: no automation gets RBAC to create or change Agents,
 and workers never read or write these resources through the Kubernetes API.
 

@@ -2,7 +2,7 @@
 # A retried notification has the same body and therefore the same deliveryID.
 # The key is the sending Alertmanager's external URL. Alertmanager signs
 # nothing; its receiver authenticates it by a projected ServiceAccount token.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: WebhookProtocol
 metadata:
   name: alertmanager

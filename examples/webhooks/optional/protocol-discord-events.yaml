@@ -1,6 +1,6 @@
 # Discord webhook events are one-way. Interaction commands need a different
 # synchronous response preset and are outside this example.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: WebhookProtocol
 metadata:
   name: discord-events

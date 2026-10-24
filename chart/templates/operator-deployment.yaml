@@ -9,20 +9,20 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Name }}-{{ .Release.Namespace }}-operator
 rules:
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources:
       - agents
     verbs:
       - get
       - list
       - watch
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources:
       - taskpolicies
       - mailbindings
     verbs:
       - list
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources:
       - mailboxes
       - clustermcpservers
@@ -31,7 +31,7 @@ rules:
       - get
       - list
       - watch
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources:
       - tasks
     verbs:
@@ -42,7 +42,7 @@ rules:
       - update
       - patch
       - delete
-  - apiGroups: [codemowers.cloud]
+  - apiGroups: [codemowers.ai]
     resources:
       - agents/status
       - tasks/status

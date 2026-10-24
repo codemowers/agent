@@ -9,12 +9,12 @@ metadata:
 spec:
   selector:
     matchExpressions:
-      - key: codemowers.cloud/task
+      - key: codemowers.ai/task
         operator: Exists
   podMetricsEndpoints:
     - port: metrics
       relabelings:
-        - sourceLabels: [__meta_kubernetes_pod_label_codemowers_cloud_agent]
+        - sourceLabels: [__meta_kubernetes_pod_label_codemowers_ai_agent]
           targetLabel: agent
-        - sourceLabels: [__meta_kubernetes_pod_label_codemowers_cloud_task]
+        - sourceLabels: [__meta_kubernetes_pod_label_codemowers_ai_task]
           targetLabel: task

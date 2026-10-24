@@ -1,7 +1,7 @@
 # One hook per GitHub org or repository posts to /hooks/github. Bindings in
 # any namespace subscribe by key prefix; the secret stays with this receiver.
 # githubMeta additionally limits deliveries to GitHub's hooks addresses.
-apiVersion: codemowers.cloud/v1alpha1
+apiVersion: codemowers.ai/v1alpha1
 kind: ClusterWebhookReceiver
 metadata:
   name: github

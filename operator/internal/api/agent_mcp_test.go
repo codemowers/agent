@@ -37,10 +37,10 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	owner := func(a *agentsv1alpha1.Agent) []metav1.OwnerReference {
 		return []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: a.Name, UID: a.UID, Controller: &controller}}
 	}
-	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "own", Namespace: "team", UID: types.UID("task-uid"), Labels: map[string]string{"codemowers.cloud/agent": agent.Name}, OwnerReferences: owner(agent)},
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "own", Namespace: "team", UID: types.UID("task-uid"), Labels: map[string]string{"codemowers.ai/agent": agent.Name}, OwnerReferences: owner(agent)},
 		Spec: agentsv1alpha1.TaskSpec{AgentRef: agent.Name, Objective: "Work"}, Status: agentsv1alpha1.TaskStatus{WorkerPodName: "worker", WorkerPodUID: "pod-uid"}}
-	peer := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "peer", Namespace: "team", UID: types.UID("peer-uid"), Labels: map[string]string{"codemowers.cloud/agent": agent.Name}, OwnerReferences: owner(agent)}, Spec: agentsv1alpha1.TaskSpec{AgentRef: agent.Name, Objective: "Peer"}}
-	foreign := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "foreign", Namespace: "team", UID: types.UID("foreign-uid"), Labels: map[string]string{"codemowers.cloud/agent": other.Name}, OwnerReferences: owner(other)}, Spec: agentsv1alpha1.TaskSpec{AgentRef: other.Name}}
+	peer := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "peer", Namespace: "team", UID: types.UID("peer-uid"), Labels: map[string]string{"codemowers.ai/agent": agent.Name}, OwnerReferences: owner(agent)}, Spec: agentsv1alpha1.TaskSpec{AgentRef: agent.Name, Objective: "Peer"}}
+	foreign := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "foreign", Namespace: "team", UID: types.UID("foreign-uid"), Labels: map[string]string{"codemowers.ai/agent": other.Name}, OwnerReferences: owner(other)}, Spec: agentsv1alpha1.TaskSpec{AgentRef: other.Name}}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "worker", Namespace: "team", UID: types.UID("pod-uid"), CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)), OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Task", Name: task.Name, UID: task.UID, Controller: &controller}}},
 		Spec: corev1.PodSpec{ServiceAccountName: "worker-sa", Containers: []corev1.Container{{Name: "worker", Env: []corev1.EnvVar{
 			{Name: "AGENT_MCP_ENDPOINTS", Value: `[{"name":"agent_operator"},{"name":"mailbox-shared"}]`}}}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
