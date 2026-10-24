@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {EventEmitter} from 'node:events';
 import {DatabaseSync} from 'node:sqlite';
-import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs, mcpToolCalls, toolArguments, opencodeConfig, codexSessionModel} from '../src/task-worker.js';
+import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs, mcpToolCalls, toolArguments, opencodeConfig, codexSessionModel, creditExhausted} from '../src/task-worker.js';
 
 test('Turn text keeps its end within the byte bound', () => {
   assert.equal(boundedTail('short'), 'short');
@@ -130,4 +130,9 @@ test('Codex reports the model of its latest turn from the session file', async (
   } finally {
     await rm(root, {recursive: true, force: true});
   }
+});
+
+test('Provider credit failures exclude transient limits and connectivity errors', () => {
+  for (const message of ['Credit balance is too low', 'insufficient_quota', 'insufficient credits', 'billing_hard_limit_reached', 'You exceeded your current quota']) assert.equal(creditExhausted(message), true, message);
+  for (const message of ['rate_limit_error', 'Too many requests', 'Connection timed out', 'overloaded_error', 'invalid_api_key']) assert.equal(creditExhausted(message), false, message);
 });

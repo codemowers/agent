@@ -65,9 +65,14 @@ export function boundedTail(text, limit = 8000) {
   return `…${bytes.subarray(bytes.length - limit + 3).toString('utf8').replace(/^\uFFFD+/, '')}`;
 }
 
+// Inspect native CLI failure diagnostics only, never successful model prose.
+export function creditExhausted(error) {
+  return /credit balance is too low|insufficient[_ ](?:credits|quota)|(?:credits?|credit balance) (?:exhausted|depleted)|billing[_ ]hard[_ ]limit[_ ]reached|exceeded your current quota/i.test(String(error));
+}
+
 const reportTurnResult = result => callAgentOperator('report_turn_result',
   {id: result.id, summary: result.summary, completedAt: result.completedAt,
-    backend: result.backend, model: result.model, metrics: result.metrics});
+    backend: result.backend, model: result.model, metrics: result.metrics, failureReason: result.failureReason});
 
 // Bounded, plain-text server context shown on the UI's MCP buttons.
 export function mcpProbeContext(init, tools) {
@@ -430,7 +435,8 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
   let summary = '', reportedSession = sessionId, nativeFailure = false, usage, apiDurationMs;
   // The model the CLI reports using; without a configured one it is the CLI's default.
   let usedModel = model;
-  let stderr = '';
+  let stderr = '', failureReason;
+  const failure = error => { if (creditExhausted(error)) failureReason = 'credits_exhausted'; };
   // Stream the turn's text so far to open Task views; a send in flight
   // coalesces later text, and failures only cost the live view. The result
   // stores the same full text in the conversation.
@@ -481,6 +487,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
         if (event.type === 'result') {
           summary = event.result || '';
           nativeFailure = Boolean(event.is_error);
+          if (nativeFailure) failure(JSON.stringify(event));
           usage = event.usage;
           apiDurationMs = event.duration_api_ms;
         }
@@ -501,7 +508,11 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
             cache_read_input_tokens: (usage?.cache_read_input_tokens || 0) + (step.cache?.read || 0),
             cache_creation_input_tokens: (usage?.cache_creation_input_tokens || 0) + (step.cache?.write || 0)};
         }
-        if (event.type === 'error') nativeFailure = true;
+        if (event.type === 'error') {
+          nativeFailure = true;
+          failure(JSON.stringify(event.error || event));
+          if (failureReason) summary = 'Provider credits exhausted; Task suspended. Restore provider credits and resume the Task.';
+        }
       } else {
         if (event.type === 'thread.started' && event.thread_id) {
           reportedSession = event.thread_id;
@@ -512,13 +523,14 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
           stream(summary);
         }
         if (event.type === 'turn.completed') usage = event.usage;
-        if (event.type === 'turn.failed') nativeFailure = true;
+        if (event.type === 'turn.failed') { nativeFailure = true; failure(JSON.stringify(event.error || event)); }
       }
     }
     const exitCode = await exited;
     await streaming;
+    if (exitCode !== 0 || nativeFailure) failure(stderr);
     if (backend === 'codex' && !model) usedModel = await codexSessionModel(root, reportedSession).catch(() => '') || usedModel;
-    const result = {id, messageId: message.messageId, startedAt, completedAt: new Date().toISOString(), backend, model: usedModel || '', exitCode: exitCode || (nativeFailure ? 1 : 0),
+    const result = {id, messageId: message.messageId, startedAt, completedAt: new Date().toISOString(), backend, model: usedModel || '', failureReason, exitCode: exitCode || (nativeFailure ? 1 : 0),
       metrics: turnMetrics(Math.round(performance.now() - turnStarted), usage, apiDurationMs),
       sessionId: reportedSession, summary: (nativeFailure && summary ? boundedTail(summary) : streamed || boundedTail(summary)) || (stderr ? 'CLI failed; see private worker stderr.' : 'No final report')};
     await writeFile(join(root, 'executions', `${id}.result.json`), JSON.stringify(result), {mode: 0o600});
@@ -652,6 +664,7 @@ export async function taskWorker() {
         // Keep the native session and resident Pod; the next prompt resumes it.
         const partial = ['No final report', 'CLI failed; see private worker stderr.'].includes(result.summary) ? '' : `\n\n${result.summary}`;
         result.summary = `Turn stopped on user request.${partial}`.slice(0, 8000);
+        delete result.failureReason;
         state = {sessionId: result.sessionId, backend, model, epoch: state.epoch || 0};
         await writeFile(statePath, JSON.stringify(state), {mode: 0o600});
         await reportTurnResult(result);
@@ -672,7 +685,8 @@ export async function taskWorker() {
       }
       await reportTurnResult(result);
       if (result.exitCode !== 0) {
-        channel.nack(delivery, false, false);
+        // Keep the failed instruction queued for resume after billing is restored.
+        channel.nack(delivery, false, result.failureReason === 'credits_exhausted');
         process.exitCode = result.exitCode;
         finished = true;
       } else {

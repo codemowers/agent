@@ -181,7 +181,8 @@ func agentTools() []map[string]any {
 			"backend": map[string]string{"type": "string"}, "model": map[string]string{"type": "string"}}, "id"),
 		mcpTool("report_turn_result", "Report the current worker Pod's completed turn to its own Task.", map[string]any{
 			"id": map[string]string{"type": "string"}, "summary": map[string]string{"type": "string"},
-			"completedAt": map[string]string{"type": "string"}, "backend": map[string]string{"type": "string"},
+			"failureReason": map[string]any{"type": "string", "enum": []string{"credits_exhausted"}},
+			"completedAt":   map[string]string{"type": "string"}, "backend": map[string]string{"type": "string"},
 			"model": map[string]string{"type": "string"},
 			"metrics": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 				"durationMs":       map[string]any{"type": "integer", "minimum": 0},
@@ -447,11 +448,11 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		return mcpText(map[string]any{"streamed": true})
 	case "report_turn_result":
 		var arg struct {
-			ID, Summary, CompletedAt, Backend, Model string
-			Metrics                                  *agentsv1alpha1.TurnMetrics
+			ID, Summary, CompletedAt, Backend, Model, FailureReason string
+			Metrics                                                 *agentsv1alpha1.TurnMetrics
 		}
 		if err := decodeToolArgs(raw, &arg); err != nil || arg.ID == "" || arg.Summary == "" || len(arg.Summary) > 8000 || len(arg.ID) > 160 ||
-			!validBackend(arg.Backend) || len(arg.Model) > 200 || !validTurnMetrics(arg.Metrics) {
+			(arg.FailureReason != "" && arg.FailureReason != "credits_exhausted") || !validBackend(arg.Backend) || len(arg.Model) > 200 || !validTurnMetrics(arg.Metrics) {
 			return nil, errors.New("invalid turn result")
 		}
 		// A replacement worker replays the receipt of a turn its predecessor
@@ -479,6 +480,36 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		})
 		if err != nil {
 			return nil, err
+		}
+		if arg.FailureReason == "credits_exhausted" {
+			if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				var current agentsv1alpha1.Task
+				if err := h.Client.Get(ctx, client.ObjectKeyFromObject(&scope.Task), &current); err != nil {
+					return err
+				}
+				if current.Status.WorkerPodUID != string(scope.Pod.UID) {
+					return errors.New("worker is no longer current")
+				}
+				if current.Spec.Suspend {
+					return nil
+				}
+				current.Spec.Suspend = true
+				return h.Client.Update(ctx, &current)
+			}); err != nil {
+				return nil, err
+			}
+			if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				var current agentsv1alpha1.Task
+				if err := h.Client.Get(ctx, client.ObjectKeyFromObject(&scope.Task), &current); err != nil {
+					return err
+				}
+				if !current.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: arg.ID + "-credits", Role: "system", Source: "worker", Content: "Task suspended: provider credits exhausted. Restore provider credits and resume the Task.", CreatedAt: metav1.NewTime(at)}) {
+					return nil
+				}
+				return h.Client.Status().Update(ctx, &current)
+			}); err != nil {
+				return nil, err
+			}
 		}
 		if err := h.finishRequestedCompletion(ctx, scope.Task.Namespace, scope.Task.Name); err != nil {
 			return nil, err

@@ -209,3 +209,35 @@ func histogramCount(t *testing.T, histogram prometheus.Histogram) uint64 {
 	}
 	return metric.GetHistogram().GetSampleCount()
 }
+
+func TestCreditExhaustionSuspendsOnlyOwningTask(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "own", Namespace: "team", UID: "task", CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour))}, Status: agentsv1alpha1.TaskStatus{WorkerPodUID: "pod"}}
+	peer := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "peer", Namespace: "team"}}
+	store := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(task, peer).WithObjects(task, peer).Build()
+	h := &Handler{Client: store}
+	scope := &workerScope{Task: *task, Pod: corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "pod"}}}
+	arg, _ := json.Marshal(map[string]any{"id": "credit-turn", "summary": "Credit balance is too low", "completedAt": time.Now().UTC().Format(time.RFC3339Nano), "backend": "claude", "failureReason": "credits_exhausted"})
+	for range 2 {
+		if _, err := h.callAgentTool(context.Background(), scope, "report_turn_result", arg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var current agentsv1alpha1.Task
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &current); err != nil {
+		t.Fatal(err)
+	}
+	if !current.Spec.Suspend || current.Status.Completed() || len(current.Status.Conversation) != 2 {
+		t.Fatalf("credit suspension lost or duplicated history: %+v", current)
+	}
+	current = agentsv1alpha1.Task{}
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(peer), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Spec.Suspend {
+		t.Fatal("peer suspended")
+	}
+}

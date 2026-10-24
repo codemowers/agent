@@ -256,7 +256,12 @@ MCP calls: server, tool, running/done/failed and arguments as compact JSON of
 at most 500 characters with secret-looking keys masked. The live bubble lists
 them while the turn runs; call results are never streamed or stored. The turn result stores that full text. Claude turns run with background tasks disabled because
 a headless turn's exit would kill background subagents and lose their results. A terminal Pod's
-termination message remains a fallback summary. The Task view links structured
+termination message remains a fallback summary. Native CLI credit exhaustion
+is reported as `failureReason: credits_exhausted` through the execution-bound
+result tool. The operator suspends only the owning Task, records the reason,
+and retains its workspace, queued instruction and history for manual resume
+after credits are restored. Transient rate limits and network failures do not
+trigger this suspension. The Task view links structured
 GitHub and Gitea references. Prometheus Task gauges are rebuilt from Task
 status at scrape time with namespace, phase and activity labels. Each replica
 also records `agent_operator_` histograms of the requests it serves: MCP check
