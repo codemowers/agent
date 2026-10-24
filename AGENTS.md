@@ -685,8 +685,9 @@ Workers reach the Kubernetes API with their own ServiceAccount. When its token
 is mounted, the worker writes an in-cluster kubeconfig (context `in-cluster`,
 rotating `tokenFile`) and sets `SKAFFOLD_KUBE_CONTEXT`. It does not set
 `SKAFFOLD_NAMESPACE`: RBAC decides which workload namespaces it may deploy into,
-the Driftmower MCP lists them, and each project sets its namespace in its
-`skaffold.env`. If it can read `zot-registry-cluster-push-kaniko` in its own
+the Driftmower MCP lists them, and the Agent's Pod template environment sets it.
+Process environment overrides a project's `skaffold.env`, whose context names a
+workstation's kubeconfig. If it can read `zot-registry-cluster-push-kaniko` in its own
 namespace, it sets `SKAFFOLD_DEFAULT_REPO` to that Secret's single registry
 host followed by the Agent name, without exposing the credential; otherwise
 the Agent's Pod template sets it. Values from the Agent's Pod template

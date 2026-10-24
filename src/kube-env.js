@@ -38,8 +38,9 @@ function getSecret(namespace, name, dir) {
 }
 
 // Lets kubectl and Skaffold use the worker's own ServiceAccount. RBAC decides
-// which namespaces it may deploy into; each project sets SKAFFOLD_NAMESPACE in
-// its skaffold.env. Values the Agent's Pod template sets are kept. Workers
+// which namespaces it may deploy into; the Agent's Pod template sets
+// SKAFFOLD_NAMESPACE. Values the Agent's Pod template sets are kept, and all of
+// them override a project's skaffold.env. Workers
 // without an API token, such as unprivileged support agents, are left alone.
 export async function prepareKubeEnv(home, env = process.env, dir = serviceAccountDir) {
   let namespace;

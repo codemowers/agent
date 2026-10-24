@@ -33,6 +33,10 @@ spec:
           # worker's own namespace.
           - name: SKAFFOLD_DEFAULT_REPO
             value: zot.registry.ee-lte-1.codemowers.io/matmlazi
+          # Overrides the project's skaffold.env; the worker sets
+          # SKAFFOLD_KUBE_CONTEXT=in-cluster itself.
+          - name: SKAFFOLD_NAMESPACE
+            value: demo
         volumeMounts:
           - name: workspace
             mountPath: /workspace
