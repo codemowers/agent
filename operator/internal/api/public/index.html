@@ -280,6 +280,7 @@ let idleCountdownTimer = null;
 const turnTexts = new Map();
 const wakePrompt = 'Review the Task objective and recent context, then continue with the next useful step.';
 const status = message => { document.getElementById('authStatus').textContent = message; };
+const backendLabel = backend => ({claude: 'Claude', codex: 'Codex', opencode: 'OpenCode'})[backend] || backend;
 function taskFromURL() {
   const query = new URLSearchParams(location.search);
   const namespace = query.get('namespace'), name = query.get('task');
@@ -573,7 +574,7 @@ async function loadModels() {
     const catalog = await response.json();
     if (selector.value !== selected) return;
     discoveredModels = catalog.models.filter(model => model.name);
-    note.textContent = (catalog.backend === 'codex' ? 'Codex' : 'Claude') +
+    note.textContent = backendLabel(catalog.backend) +
       (catalog.warning ? ' · ' + catalog.warning + ' · enter a model ID manually' : ' · choose a discovered model or enter its ID') +
       ' · leave blank for the Agent default';
   } catch (error) {
@@ -706,7 +707,8 @@ function showTurnText(data) {
   try { text = JSON.parse(data); } catch { return; }
   if (typeof text?.namespace !== 'string' || typeof text.task !== 'string' || typeof text.content !== 'string') return;
   const key = text.namespace + '/' + text.task;
-  turnTexts.set(key, {turn: text.turn, content: text.content, tools: Array.isArray(text.tools) ? text.tools : []});
+  turnTexts.set(key, {turn: text.turn, content: text.content, tools: Array.isArray(text.tools) ? text.tools : [],
+    backend: typeof text.backend === 'string' ? text.backend : '', model: typeof text.model === 'string' ? text.model : ''});
   if (selectedDetail && selectedDetail.namespace + '/' + selectedDetail.name === key && taskBusy(selectedDetail) === 'Working') {
     renderDetail(selectedDetail);
   }
@@ -1262,7 +1264,7 @@ function renderDetail(task) {
       } else if (message.source === 'wake') sourceLabel = ' via wake request';
     }
     const modelLabel = message.role === 'agent' && message.backend
-      ? ' · ' + (message.backend === 'claude' ? 'Claude' : message.backend === 'codex' ? 'Codex' : message.backend)
+      ? ' · ' + backendLabel(message.backend)
         + ' · ' + (message.model || 'CLI default') : '';
     const metrics = message.role === 'agent' ? message.metrics : null;
     const count = value => Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : null;
@@ -1319,7 +1321,8 @@ function renderDetail(task) {
       }
       body.append(calls);
     }
-    meta.append(author, document.createTextNode(' · working')); bubble.append(meta, body); history.append(bubble);
+    const liveModel = live.backend ? ' · ' + backendLabel(live.backend) + (live.model ? ' · ' + live.model : '') : '';
+    meta.append(author, document.createTextNode(' · working' + liveModel)); bubble.append(meta, body); history.append(bubble);
   }
   if (busy === 'Working') {
     const typing = document.createElement('div'); typing.className = 'message agent typing';

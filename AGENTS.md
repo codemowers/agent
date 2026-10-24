@@ -242,10 +242,14 @@ authorized Task detail endpoint and updates it on Kubernetes watch events.
 The worker reports turn start and result through the operator's Agent MCP on
 internal port 8083. The operator verifies a rotating audience-bound Pod token,
 live Pod UID and current Task/Agent ownership. Result writes update only the
-owning Task's status, including the backend, configured model ID, turn duration
+owning Task's status, including the backend, the model ID the CLI reports
+using (its default when none is configured: Claude stream events, Codex's
+session file, OpenCode's configured model), turn duration
 and available input, output and cache token counts on its conversation bubble;
 there is no live worker log polling. During a turn the worker sends the main
-agent's text so far, bounded to its last 8000 bytes, through `report_turn_progress`;
+agent's text so far, bounded to its last 8000 bytes, through `report_turn_progress`,
+with the backend and model from the turn's start, so the live bubble names
+them before a slow model's first words;
 the operator forwards it only to authorized open event streams as a live agent
 bubble and writes no status. The same call carries the main agent's last 30
 MCP calls: server, tool, running/done/failed and arguments as compact JSON of

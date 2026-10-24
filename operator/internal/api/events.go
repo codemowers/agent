@@ -41,6 +41,9 @@ type turnText struct {
 	Content   string `json:"content"`
 	// Tools are the turn's MCP calls with bounded, masked arguments.
 	Tools []turnTool `json:"tools,omitempty"`
+	// Backend and Model name what is answering, as the CLI reports it.
+	Backend string `json:"backend,omitempty"`
+	Model   string `json:"model,omitempty"`
 }
 
 type turnTool struct {
@@ -48,6 +51,11 @@ type turnTool struct {
 	Tool   string `json:"tool"`
 	Args   string `json:"args,omitempty"`
 	Status string `json:"status"`
+}
+
+// validBackend accepts a worker-reported CLI backend; empty means unknown.
+func validBackend(backend string) bool {
+	return backend == "" || backend == "claude" || backend == "codex" || backend == "opencode"
 }
 
 func validTurnTools(tools []turnTool) bool {

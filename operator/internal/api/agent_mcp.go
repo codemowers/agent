@@ -177,7 +177,8 @@ func agentTools() []map[string]any {
 			"id": map[string]string{"type": "string"}, "content": map[string]string{"type": "string"},
 			"tools": map[string]any{"type": "array", "maxItems": 30, "items": map[string]any{"type": "object", "properties": map[string]any{
 				"server": map[string]string{"type": "string"}, "tool": map[string]string{"type": "string"},
-				"args": map[string]string{"type": "string"}, "status": map[string]any{"type": "string", "enum": []string{"running", "done", "failed"}}}}}}, "id"),
+				"args": map[string]string{"type": "string"}, "status": map[string]any{"type": "string", "enum": []string{"running", "done", "failed"}}}}},
+			"backend": map[string]string{"type": "string"}, "model": map[string]string{"type": "string"}}, "id"),
 		mcpTool("report_turn_result", "Report the current worker Pod's completed turn to its own Task.", map[string]any{
 			"id": map[string]string{"type": "string"}, "summary": map[string]string{"type": "string"},
 			"completedAt": map[string]string{"type": "string"}, "backend": map[string]string{"type": "string"},
@@ -429,17 +430,18 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		// Streamed text goes only to open browsers; the conversation stores the
 		// turn's full text once its result arrives.
 		var arg struct {
-			ID, Content string
-			Tools       []turnTool
+			ID, Content, Backend, Model string
+			Tools                       []turnTool
 		}
 		if decodeToolArgs(raw, &arg) != nil || arg.ID == "" || len(arg.ID) > 160 || len(arg.Content) > 8000 ||
-			strings.TrimSpace(arg.Content) == "" && len(arg.Tools) == 0 || !validTurnTools(arg.Tools) {
+			strings.TrimSpace(arg.Content) == "" && len(arg.Tools) == 0 && arg.Model == "" || !validTurnTools(arg.Tools) ||
+			!validBackend(arg.Backend) || len(arg.Model) > 200 {
 			return nil, errors.New("invalid turn progress")
 		}
 		if scope.Task.Status.Activity == "working" && h.Events != nil {
 			if topic := taskAgentTopic(&scope.Task); topic != "" {
 				h.Events.publishTurn(topic, turnText{Namespace: scope.Task.Namespace, Task: scope.Task.Name, Turn: arg.ID,
-					Content: arg.Content, Tools: arg.Tools})
+					Content: arg.Content, Tools: arg.Tools, Backend: arg.Backend, Model: arg.Model})
 			}
 		}
 		return mcpText(map[string]any{"streamed": true})
@@ -449,7 +451,7 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			Metrics                                  *agentsv1alpha1.TurnMetrics
 		}
 		if err := decodeToolArgs(raw, &arg); err != nil || arg.ID == "" || arg.Summary == "" || len(arg.Summary) > 8000 || len(arg.ID) > 160 ||
-			(arg.Backend != "" && arg.Backend != "claude" && arg.Backend != "codex") || len(arg.Model) > 200 || !validTurnMetrics(arg.Metrics) {
+			!validBackend(arg.Backend) || len(arg.Model) > 200 || !validTurnMetrics(arg.Metrics) {
 			return nil, errors.New("invalid turn result")
 		}
 		// A replacement worker replays the receipt of a turn its predecessor

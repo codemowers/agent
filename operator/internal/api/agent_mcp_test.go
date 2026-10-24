@@ -101,6 +101,12 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	if response := call("valid", "report_progress", `{"id":"progress-1","content":"Reading files"}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
 		t.Fatalf("own progress rejected: %s", response.Body.String())
 	}
+	if response := call("valid", "report_turn_progress", `{"id":"turn-1","content":"","backend":"claude","model":"claude-opus-test"}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatalf("model-only turn progress rejected: %s", response.Body.String())
+	}
+	if response := call("valid", "report_turn_progress", `{"id":"turn-1","content":"x","backend":"gemini"}`); !strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatalf("unknown backend accepted: %s", response.Body.String())
+	}
 	if response := call("valid", "report_turn_progress", `{"id":"turn-1","content":"Reading the operator"}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
 		t.Fatalf("turn progress rejected: %s", response.Body.String())
 	}

@@ -230,7 +230,9 @@ export function runtimeConfig(message, currentGeneration) {
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {stdio: ['ignore', 'pipe', 'pipe'], ...options});
-    let stderr = '';
+    // The model the CLI reports using; without a configured one it is the CLI's default.
+  let usedModel = model;
+  let stderr = '';
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
     child.on('error', reject);
     child.on('close', code => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}: ${stderr}`)));
@@ -298,6 +300,22 @@ export async function seedTaskContext(repo, message) {
   });
 }
 
+// Codex records each turn's model in its session file, not in exec events.
+export async function codexSessionModel(root, sessionId) {
+  if (!sessionId || !/^[\w-]+$/.test(sessionId)) return '';
+  let model = '';
+  for await (const file of glob(`${join(root, 'home')}/.codex/sessions/**/*${sessionId}*.jsonl`)) {
+    for (const line of (await readFile(file, 'utf8')).split('\n')) {
+      if (!line.includes('"turn_context"')) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === 'turn_context' && typeof entry.payload?.model === 'string') model = entry.payload.model;
+      } catch {}
+    }
+  }
+  return model.slice(0, 200);
+}
+
 export async function nativeSessionExists(root, backend, sessionId) {
   if (!sessionId) return false;
   const home = join(root, 'home');
@@ -359,6 +377,8 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
   const interrupt = () => { if (child.exitCode === null) signalChild(child, 'SIGTERM'); };
   signal.addEventListener('abort', interrupt, {once: true});
   let summary = '', reportedSession = sessionId, nativeFailure = false, usage, apiDurationMs;
+  // The model the CLI reports using; without a configured one it is the CLI's default.
+  let usedModel = model;
   let stderr = '';
   // Stream the turn's text so far to open Task views; a send in flight
   // coalesces later text, and failures only cost the live view. The result
@@ -371,7 +391,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
     streamQueued = true;
     streaming = streaming.then(() => {
       streamQueued = false;
-      return callAgentOperator('report_turn_progress', {id, content: streamed, tools: tools.list()});
+      return callAgentOperator('report_turn_progress', {id, content: streamed, tools: tools.list(), backend, model: usedModel});
     }).catch(() => {});
   };
   const stream = text => {
@@ -380,6 +400,9 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
     send();
   };
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
+  // Open views name the model before its first words, which a local model
+  // may take many minutes to produce.
+  if (usedModel) send();
   const exited = new Promise((resolve, reject) => {
     child.on('error', reject);
     child.on('close', (code, reason) => resolve(code ?? (reason ? 143 : 1)));
@@ -394,6 +417,12 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
         if (event.session_id && event.session_id !== reportedSession) {
           reportedSession = event.session_id;
           await recordSession(reportedSession);
+        }
+        const reported = event.type === 'system' && event.subtype === 'init' ? event.model
+          : event.type === 'assistant' && !event.parent_tool_use_id ? event.message?.model : undefined;
+        if (typeof reported === 'string' && reported && reported !== usedModel) {
+          usedModel = reported.slice(0, 200);
+          send();
         }
         if (event.type === 'assistant' && !event.parent_tool_use_id) {
           stream((event.message?.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n'));
@@ -419,7 +448,8 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
     }
     const exitCode = await exited;
     await streaming;
-    const result = {id, messageId: message.messageId, startedAt, completedAt: new Date().toISOString(), backend, model: model || '', exitCode: exitCode || (nativeFailure ? 1 : 0),
+    if (backend === 'codex' && !model) usedModel = await codexSessionModel(root, reportedSession).catch(() => '') || usedModel;
+    const result = {id, messageId: message.messageId, startedAt, completedAt: new Date().toISOString(), backend, model: usedModel || '', exitCode: exitCode || (nativeFailure ? 1 : 0),
       metrics: turnMetrics(Math.round(performance.now() - turnStarted), usage, apiDurationMs),
       sessionId: reportedSession, summary: (nativeFailure && summary ? boundedTail(summary) : streamed || boundedTail(summary)) || (stderr ? 'CLI failed; see private worker stderr.' : 'No final report')};
     await writeFile(join(root, 'executions', `${id}.result.json`), JSON.stringify(result), {mode: 0o600});

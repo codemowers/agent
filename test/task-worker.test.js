@@ -4,7 +4,7 @@ import {mkdtemp, mkdir, readFile, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {EventEmitter} from 'node:events';
-import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs, mcpToolCalls, toolArguments} from '../src/task-worker.js';
+import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs, mcpToolCalls, toolArguments, codexSessionModel} from '../src/task-worker.js';
 
 test('Turn text keeps its end within the byte bound', () => {
   assert.equal(boundedTail('short'), 'short');
@@ -82,4 +82,22 @@ test('MCP calls are tracked from both CLIs with masked, bounded arguments', () =
   codex.update({type: 'item.completed', item: {id: 'i1', type: 'mcp_tool_call', server: 'agent_operator', tool: 'set_task_title', arguments: {title: 'Watch'}, status: 'completed'}});
   assert.deepEqual(codex.list(), [{server: 'agent_operator', tool: 'set_task_title', args: '{"title":"Watch"}', status: 'done'}]);
   assert.equal(toolArguments({text: 'x'.repeat(600)}).length, 500);
+});
+
+test('Codex reports the model of its latest turn from the session file', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-codex-'));
+  try {
+    const dir = join(root, 'home', '.codex', 'sessions', '2026', '10', '24');
+    await mkdir(dir, {recursive: true});
+    await writeFile(join(dir, 'rollout-2026-10-24T10-00-00-thread-1.jsonl'), [
+      {type: 'session_meta', payload: {id: 'thread-1'}},
+      {type: 'turn_context', payload: {model: 'gpt-old'}},
+      {type: 'turn_context', payload: {model: 'gpt-new'}},
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    assert.equal(await codexSessionModel(root, 'thread-1'), 'gpt-new');
+    assert.equal(await codexSessionModel(root, 'missing'), '');
+    assert.equal(await codexSessionModel(root, '../x'), '');
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
 });
