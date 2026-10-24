@@ -752,6 +752,9 @@ binding, not model arguments. The controller verifies actual worker termination,
 results and external evidence. MCP progress or a model completion claim does not
 own lifecycle. Missing final reports must remain recoverable from worker output
 and observed exit state; successful exit does not establish acceptance criteria.
+A replacement worker reports a turn its predecessor finished but did not report
+from the PVC receipt, so the operator accepts result times back to the Task's
+creation rather than the Pod's.
 
 Agents may also share a namespace with the harness. The developer role has no
 Secret access apart from `get` on the Kaniko push Secret, which Skaffold checks

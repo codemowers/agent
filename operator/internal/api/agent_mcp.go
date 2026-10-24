@@ -452,8 +452,10 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			(arg.Backend != "" && arg.Backend != "claude" && arg.Backend != "codex") || len(arg.Model) > 200 || !validTurnMetrics(arg.Metrics) {
 			return nil, errors.New("invalid turn result")
 		}
+		// A replacement worker replays the receipt of a turn its predecessor
+		// finished but could not report, so a result may predate this Pod.
 		at, err := time.Parse(time.RFC3339Nano, arg.CompletedAt)
-		if err != nil || at.After(time.Now().Add(5*time.Minute)) || at.Before(scope.Pod.CreationTimestamp.Time.Add(-time.Minute)) {
+		if err != nil || at.After(time.Now().Add(5*time.Minute)) || at.Before(scope.Task.CreationTimestamp.Time.Add(-time.Minute)) {
 			return nil, errors.New("invalid completion time")
 		}
 		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {

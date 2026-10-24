@@ -846,7 +846,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.ai/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "19"
+	WorkerPodVersion = "20"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
