@@ -51,3 +51,9 @@ Outside these files:
 `task-quota.yaml` caps the namespace at 1000 Tasks and alerts before that.
 `task-maintain-agent.yaml` is a long-running maintenance Task for this
 repository.
+
+## Proposed API designs
+
+[Shared Knowledge and Draft examples](knowledge/README.md) describe a proposed
+API for reusable findings and evolving designs. Their CRDs and Agent selectors
+are not implemented; these examples are not part of the Apply steps above.

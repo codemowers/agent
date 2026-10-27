@@ -1,0 +1,32 @@
+# Proposed API example. Knowledge CRDs and Agent selectors are not implemented.
+apiVersion: codemowers.ai/v1alpha1
+kind: Knowledge
+metadata:
+  name: containerd-apparmor-signals
+  namespace: agents
+  labels:
+    topic: kubernetes
+    region: ee-lte-1
+spec:
+  title: AppArmor stacked profiles can block signals
+  summary: Containerd signal rules may not match stacked AppArmor peers.
+  content: |
+    Processes may fail to signal their same-user children with EACCES.
+    Check host kernel audit logs for AppArmor signal denials involving
+    cri-containerd.apparmor.d//&unconfined.
+
+    A reported host workaround adds the following rule to the full enforced
+    cri-containerd.apparmor.d profile, preserving its other restrictions:
+
+      signal (send,receive) peer=cri-containerd.apparmor.d//&*,
+
+    Validate and reload the profile with apparmor_parser. Verify that signals
+    succeed and new audit denials stop before declaring a host fixed.
+    Persist the profile and load it before k3s starts after a reboot.
+    A finding about the workaround does not establish its deployment status.
+  references:
+    - https://github.com/containerd/containerd/issues/12886
+  # Optional: expired entries need rechecking before use.
+  validUntil: "2027-01-25T00:00:00Z"
+# status.provenance would be written by the operator from authenticated identity:
+#   agentRef, taskRef, recordedAt. Agents cannot supply their own attribution.

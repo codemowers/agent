@@ -1,0 +1,48 @@
+# Proposed API example. Draft and Knowledge CRDs are not implemented.
+apiVersion: codemowers.ai/v1alpha1
+kind: Draft
+metadata:
+  name: shared-agent-knowledge
+  namespace: agents
+  labels:
+    topic: agent-platform
+    region: shared
+spec:
+  title: Share learned knowledge and evolving designs between agents
+  summary: Store reusable findings as Knowledge and ideas as Draft resources.
+  motivation: |
+    Agents should reuse findings across tasks without rediscovering them.
+    Design ideas also need a durable home before implementation is authorized.
+  proposal: |
+    Introduce namespaced Knowledge and Draft resources, independent of Agent
+    and Task ownership so those resources can be deleted without losing them.
+
+    Knowledge contains established findings and procedures. Its required fields
+    are title, summary and content; references and validUntil are optional.
+    Limit content to 32 KiB per entry. The operator records authenticated
+    agentRef, taskRef and recordedAt in status.provenance.
+
+    Draft contains an evolving idea or design: title, summary, motivation,
+    proposal, openQuestions and phase. Use phases idea, ready, accepted,
+    rejected and implemented. A Draft's phase does not authorize execution.
+    An explicitly authorized Task references the Draft when work begins.
+
+    Add knowledgeSelector and draftSelector to Agent.spec using standard
+    Kubernetes LabelSelector semantics within the Agent's namespace.
+    An omitted selector selects nothing; an empty selector selects everything.
+    Selectors filter relevance and never grant access.
+
+    Include selected titles and summaries in turn context and retrieve full
+    entries through Agent MCP. Bound the context listing and paginate retrieval.
+    Expose read and contribution tools under explicit access controls, with
+    operator-owned attribution and resourceVersion checks for concurrent edits.
+
+    Selecting a Draft provides context; it does not instruct the agent to build
+    it. Do not treat speculative Draft content as established Knowledge.
+  openQuestions:
+    - Who may create or update shared entries, and who may change Draft phases?
+    - How should conflicting, duplicate or outdated Knowledge be handled?
+    - Should Draft references on Tasks use a dedicated typed field?
+    - Should the existing bundled UI product drafts become Draft resources?
+    - How should provenance and revisions be retained as entries evolve?
+  phase: idea
