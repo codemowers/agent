@@ -422,7 +422,12 @@ func (s *TaskStatus) Completed() bool {
 }
 
 type TaskStatus struct {
-	Phase TaskPhase `json:"phase,omitempty"`
+	// DeliveredMessageIDs preserves bounded input receipts across publish/status races.
+	DeliveredMessageIDs []string `json:"deliveredMessageIds,omitempty"`
+	// TurnID and TurnStartedAt identify the current model turn, not Pod uptime.
+	TurnID        string       `json:"turnId,omitempty"`
+	TurnStartedAt *metav1.Time `json:"turnStartedAt,omitempty"`
+	Phase         TaskPhase    `json:"phase,omitempty"`
 	// Activity is reported by the current worker and reconciled on Pod exit.
 	// +kubebuilder:validation:Enum=starting;working;idle;stopped
 	Activity       string            `json:"activity,omitempty"`
@@ -487,16 +492,19 @@ type MCPEndpointStatus struct {
 
 // TaskMessage is one bounded, displayable turn in a Task conversation.
 type TaskMessage struct {
-	ID        string       `json:"id"`
-	Role      string       `json:"role"`
-	Source    string       `json:"source,omitempty"`
-	Actor     string       `json:"actor,omitempty"`
-	Backend   string       `json:"backend,omitempty"`
-	Model     string       `json:"model,omitempty"`
-	Metrics   *TurnMetrics `json:"metrics,omitempty"`
-	Content   string       `json:"content"`
-	URL       string       `json:"url,omitempty"`
-	CreatedAt metav1.Time  `json:"createdAt"`
+	// DeliveryState is queued until the worker starts the turn containing this input.
+	// +kubebuilder:validation:Enum=queued;delivered
+	DeliveryState string       `json:"deliveryState,omitempty"`
+	ID            string       `json:"id"`
+	Role          string       `json:"role"`
+	Source        string       `json:"source,omitempty"`
+	Actor         string       `json:"actor,omitempty"`
+	Backend       string       `json:"backend,omitempty"`
+	Model         string       `json:"model,omitempty"`
+	Metrics       *TurnMetrics `json:"metrics,omitempty"`
+	Content       string       `json:"content"`
+	URL           string       `json:"url,omitempty"`
+	CreatedAt     metav1.Time  `json:"createdAt"`
 }
 
 // TurnMetrics contains measurements for one completed CLI turn.

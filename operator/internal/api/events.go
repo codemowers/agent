@@ -39,6 +39,7 @@ type turnText struct {
 	Task      string `json:"task"`
 	Turn      string `json:"turn"`
 	Content   string `json:"content"`
+	Thinking  string `json:"thinking,omitempty"`
 	// Tools are the turn's MCP calls with bounded, masked arguments.
 	Tools []turnTool `json:"tools,omitempty"`
 	// Backend and Model name what is answering, as the CLI reports it.
@@ -188,6 +189,9 @@ func taskDisplay(task *agentsv1alpha1.Task) taskItem {
 		DisabledMCPs: task.Spec.DisabledMCPs}
 	if task.Status.MCPProbe != nil {
 		item.MCPProbeAt = task.Status.MCPProbe.UpdatedAt.Time.Format(time.RFC3339Nano)
+	}
+	if task.Status.TurnStartedAt != nil {
+		item.TurnStartedAt = task.Status.TurnStartedAt.Time.Format(time.RFC3339Nano)
 	}
 	if task.Status.LastResultAt != nil {
 		item.LastResultAt = task.Status.LastResultAt.Time.Format(time.RFC3339Nano)

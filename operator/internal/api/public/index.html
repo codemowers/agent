@@ -70,8 +70,7 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
 .spinner { display: inline-block; width: 10px; height: 10px; margin-right: 7px; vertical-align: -1px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { opacity: .3; } }
-@keyframes typing { 0%, 60%, 100% { opacity: .25; transform: none; } 30% { opacity: 1; transform: translateY(-3px); } }
-@media (prefers-reduced-motion: reduce) { .dot.busy, .spinner, .message.typing .message-body span { animation-duration: 3s; } }
+@media (prefers-reduced-motion: reduce) { .dot.busy, .spinner { animation-duration: 3s; } }
 .empty { margin: 64px auto; max-width: 32rem; padding: 0 24px; text-align: center; color: var(--muted); }
 
 /* New Task */
@@ -166,17 +165,13 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
 .message-body { white-space: pre-wrap; overflow-wrap: anywhere; padding: 13px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); line-height: 1.6; }
 .message.agent .message-body { background: #20372b; border-color: #4a7858; }
 /* The agent avatar sits beside the bubble, in the space the right-aligned bubble leaves. */
-.message.agent.typing { width: auto; }
+
 .tool-calls { list-style: none; margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid #4a7858; font-size: 12px; white-space: normal; }
 .tool-call { margin: 2px 0; overflow-wrap: anywhere; }
 .tool-call::before { content: "✓ "; color: var(--accent); }
 .tool-call.running::before { content: "… "; color: var(--muted); }
 .tool-call.failed::before { content: "✗ "; color: #f3b5b5; }
 .tool-args { color: var(--muted); font-family: ui-monospace, monospace; }
-.message.typing .message-body { display: flex; gap: 5px; padding: 14px 16px; }
-.message.typing .message-body span { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: typing 1.2s ease-in-out infinite; }
-.message.typing .message-body span:nth-child(2) { animation-delay: .15s; }
-.message.typing .message-body span:nth-child(3) { animation-delay: .3s; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
 .markdown p, .markdown ul, .markdown ol, .markdown pre, .markdown blockquote { margin: 0 0 10px; }
@@ -189,7 +184,11 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
 .markdown td, .markdown th { border: 1px solid var(--line); padding: 4px 8px; }
 .chat-compose { border-top: 1px solid var(--line); padding: 16px 24px; background: var(--surface); }
 .chat-compose textarea { min-height: 72px; max-height: 40vh; margin: 0; }
-.compose-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.compose-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.working-status { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; color: var(--muted); }
+.message-queued { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; color: var(--muted); }
+.live-thinking { margin-bottom: 12px; color: var(--muted); }
+.live-thinking summary { cursor: pointer; }
 .compose-hint { color: var(--muted); font-size: 11px; }
 
 @media (max-width: 900px) {
@@ -708,6 +707,7 @@ function showTurnText(data) {
   if (typeof text?.namespace !== 'string' || typeof text.task !== 'string' || typeof text.content !== 'string') return;
   const key = text.namespace + '/' + text.task;
   turnTexts.set(key, {turn: text.turn, content: text.content, tools: Array.isArray(text.tools) ? text.tools : [],
+    thinking: typeof text.thinking === 'string' ? text.thinking : '',
     backend: typeof text.backend === 'string' ? text.backend : '', model: typeof text.model === 'string' ? text.model : ''});
   if (selectedDetail && selectedDetail.namespace + '/' + selectedDetail.name === key && taskBusy(selectedDetail) === 'Working') {
     renderDetail(selectedDetail);
@@ -1295,19 +1295,30 @@ function renderDetail(task) {
       + (usage.length ? ' · ' + usage.join(' · ') : '') + (time ? ' · ' + time : '')));
     const body = document.createElement('div'); body.className = 'message-body';
     body.append(window.renderAgentMarkdown(message.content));
+    if (message.deliveryState === 'queued') {
+      const queued = document.createElement('span'); queued.className = 'message-queued';
+      queued.setAttribute('role', 'status'); queued.append(spinner(), 'Queued'); meta.append(queued);
+    }
     bubble.append(meta, body); history.append(bubble);
   }
   const busy = taskBusy(task);
   if (busy !== 'Working') turnTexts.delete(currentKey);
   const live = turnTexts.get(currentKey);
-  if (busy === 'Working' && live) {
+  if (busy === 'Working') {
     const bubble = document.createElement('article'); bubble.className = 'message agent';
     const meta = document.createElement('div'); meta.className = 'message-meta';
     const author = document.createElement('span'); author.className = 'message-author'; author.textContent = task.agentName;
     const body = document.createElement('div'); body.className = 'message-body';
-    if (live.content.trim()) body.append(window.renderAgentMarkdown(live.content));
+    if (live?.thinking?.trim()) {
+      const thinking = document.createElement('details'); thinking.className = 'live-thinking';
+      thinking.open = existing?.querySelector('.live-thinking')?.open ?? true;
+      const label = document.createElement('summary'); label.textContent = 'Thinking';
+      const text = document.createElement('div'); text.append(window.renderAgentMarkdown(live.thinking));
+      thinking.append(label, text); body.append(thinking);
+    }
+    if (live?.content.trim()) body.append(window.renderAgentMarkdown(live.content));
     // MCP calls of this turn, shown only while it runs: server · tool and arguments.
-    if (live.tools.length) {
+    if (live?.tools.length) {
       const calls = document.createElement('ul'); calls.className = 'tool-calls';
       for (const call of live.tools) {
         const item = document.createElement('li'); item.className = 'tool-call ' + call.status;
@@ -1321,15 +1332,18 @@ function renderDetail(task) {
       }
       body.append(calls);
     }
-    const liveModel = live.backend ? ' · ' + backendLabel(live.backend) + (live.model ? ' · ' + live.model : '') : '';
+    const liveModel = live?.backend ? ' · ' + backendLabel(live.backend) + (live.model ? ' · ' + live.model : '') : '';
+    const working = document.createElement('div'); working.className = 'working-status';
+    working.setAttribute('role', 'status');
+    const elapsed = document.createElement('span');
+    const updateWorking = () => {
+      const start = Date.parse(task.turnStartedAt || '');
+      const seconds = Number.isFinite(start) ? Math.max(0, Math.floor((Date.now() - start) / 1000)) : null;
+      elapsed.textContent = seconds === null ? 'Working' : `Working · ${Math.floor(seconds / 60)} min ${seconds % 60}s`;
+    };
+    updateWorking(); idleCountdownTimer = setInterval(updateWorking, 1000);
+    working.append(spinner(), elapsed); body.append(working);
     meta.append(author, document.createTextNode(' · working' + liveModel)); bubble.append(meta, body); history.append(bubble);
-  }
-  if (busy === 'Working') {
-    const typing = document.createElement('div'); typing.className = 'message agent typing';
-    typing.setAttribute('role', 'status'); typing.setAttribute('aria-label', 'Agent is working');
-    const dots = document.createElement('div'); dots.className = 'message-body';
-    dots.append(document.createElement('span'), document.createElement('span'), document.createElement('span'));
-    typing.append(dots); history.append(typing);
   } else if (busy) {
     // The operator's own lifecycle line (such as "Starting worker <Pod>") gets
     // the spinner; a separate line appears only when none ends the timeline.
@@ -1352,13 +1366,19 @@ function renderDetail(task) {
   }
   const compose = document.createElement('div'); compose.className = 'chat-compose';
   const input = document.createElement('textarea'); input.id = 'promptInput'; input.placeholder = wakePrompt;
-  input.value = draft; input.disabled = task.phase === 'Paused' || task.suspended;
-  input.onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendPrompt(task.namespace, task.name); } };
+  input.value = draft; input.disabled = task.completed;
+  input.onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendPrompt(task.namespace, task.name, busy === 'Working'); } };
   const actions = document.createElement('div'); actions.className = 'compose-actions';
-  const hint = document.createElement('span'); hint.className = 'compose-hint'; hint.textContent = 'Enter to send · Shift+Enter for a new line';
-  const send = document.createElement('button'); send.className = 'btn-send'; send.textContent = 'Send'; send.disabled = input.disabled;
-  send.onclick = () => sendPrompt(task.namespace, task.name);
-  actions.append(hint, send); compose.append(input, actions);
+  const hint = document.createElement('span'); hint.className = 'compose-hint'; hint.textContent = task.suspended ? 'Messages stay queued until you Resume' : busy === 'Working' ? 'Enter interrupts and sends · Queue for later waits' : 'Enter to send · Shift+Enter for a new line';
+  const send = document.createElement('button'); send.className = 'btn-send'; send.textContent = busy === 'Working' ? 'Interrupt and send' : task.suspended ? 'Queue message' : 'Send'; send.disabled = input.disabled;
+  send.onclick = () => sendPrompt(task.namespace, task.name, busy === 'Working');
+  actions.append(hint, send);
+  if (busy === 'Working') {
+    const interrupt = document.createElement('button'); interrupt.className = 'btn-interrupt';
+    interrupt.textContent = 'Queue for later'; interrupt.title = 'Wait until the current turn finishes';
+    interrupt.onclick = () => sendPrompt(task.namespace, task.name, false); actions.append(interrupt);
+  }
+  compose.append(input, actions);
   chat.append(head, history, compose); host.replaceChildren(chat);
   history.scrollTop = stick ? history.scrollHeight : scroll;
   if (focused) input.focus();
@@ -1380,22 +1400,27 @@ async function createTask() {
   select(t.namespace, t.name);
 }
 
-async function sendPrompt(ns, name) {
+async function sendPrompt(ns, name, interrupt = false) {
   const input = document.getElementById('promptInput');
   const body = input.value.trim() || wakePrompt;
   const send = document.querySelector('.btn-send');
+  const buttons = document.querySelectorAll('.compose-actions button');
+  buttons.forEach(button => { button.disabled = true; });
   input.disabled = true;
   if (send) { send.disabled = true; send.prepend(spinner()); }
   let res;
   try {
     res = await apiFetch('/api/tasks/'+ns+'/'+name+'/prompts', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({body})});
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({body, interrupt})});
   } catch (error) { return alert(error.message); }
   finally {
     input.disabled = false;
+    buttons.forEach(button => { button.disabled = false; });
     if (send) { send.disabled = false; send.querySelector('.spinner')?.remove(); }
   }
   if (!res.ok) return alert(await apiError(res));
+  const result = await res.json();
+  if (result.interruptError) alert(result.interruptError);
   if (input.value.trim() === body) input.value = '';
   await load('tasks');
 }

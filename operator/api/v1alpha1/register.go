@@ -202,6 +202,10 @@ func (in *TaskSpec) DeepCopyInto(out *TaskSpec) {
 
 func (in *TaskStatus) DeepCopyInto(out *TaskStatus) {
 	*out = *in
+	if in.TurnStartedAt != nil {
+		out.TurnStartedAt = in.TurnStartedAt.DeepCopy()
+	}
+	out.DeliveredMessageIDs = append([]string(nil), in.DeliveredMessageIDs...)
 	if in.MCPProbe != nil {
 		probe := *in.MCPProbe
 		probe.Endpoints = append([]MCPEndpointStatus(nil), in.MCPProbe.Endpoints...)

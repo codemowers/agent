@@ -232,7 +232,13 @@ inherits the last result time for its idle deadline. Pod start, stop and
 terminal exit entries include actual Pod names in
 bounded Task conversation history. A clean exit reads "exited" and adds no
 line after an operator stop; a failed exit gives its reason, such as
-OOMKilled, and exit code, and failed Pods remain for diagnosis. The worker starts the idle clock
+OOMKilled, and exit code, and failed Pods remain for diagnosis. Before starting each model turn, the worker collects the broker queue snapshot,
+including any redelivered interrupted input, and presents all pending instructions
+together in delivery order. Later steering takes precedence over conflicting older
+instructions. Inputs stay unacknowledged until their combined turn has a durable
+receipt; replacements skip completed inputs and include newly queued steering.
+Messages arriving during a turn remain queued for the next turn.
+The worker starts the idle clock
 after a successful CLI turn, continues reading its RabbitMQ queue until that
 deadline, and exits when the queue stays empty. Zero means immediate exit.
 The operator Task API exposes a bounded chat display from
@@ -254,7 +260,10 @@ the operator forwards it only to authorized open event streams as a live agent
 bubble and writes no status. The same call carries the main agent's last 30
 MCP calls: server, tool, running/done/failed and arguments as compact JSON of
 at most 500 characters with secret-looking keys masked. The live bubble lists
-them while the turn runs; call results are never streamed or stored. The turn result stores that full text. Claude turns run with background tasks disabled because
+them while the turn runs; call results are never streamed or stored. Backend-exposed thinking/reasoning text is streamed separately, bounded to 8000
+bytes, and shown in a collapsible Thinking section of the single live bubble.
+Thinking and tool activity are ephemeral SSE data, never CRD conversation fields.
+The turn result stores only the ordinary full response text. Claude turns run with background tasks disabled because
 a headless turn's exit would kill background subagents and lose their results. A terminal Pod's
 termination message remains a fallback summary. Native CLI credit exhaustion
 is reported as `failureReason: credits_exhausted` through the execution-bound
@@ -455,10 +464,25 @@ The chat composer shows a wakeup instruction as its placeholder and submits
 that instruction when Send is clicked with an empty input.
 The Task header offers Suspend/Resume, which sets `Task.spec.suspend`; the
 operator stops the worker and keeps the PVC, native session and queued
-messages. A completed Task cannot be resumed from the UI. Stop is shown during
+messages. A completed Task cannot be resumed from the UI.
+Unexpected worker failure or disappearance sets `Task.spec.suspend: true`; queued
+messages cannot restart it. Only explicit Resume permits execution again.
+Suspended Tasks accept web prompts into their durable queue, with the composer
+labelled Queue message and a reminder that Resume is required. Operator-initiated
+worker replacements continue through their existing RetryWorker authorization.
+ Stop is shown during
 a working turn and sends a `stop` message on the worker Pod's control queue;
 the worker interrupts only a turn started before the request, reports it as
-stopped and stays resident. Each action adds an attributed system line.
+stopped and stays resident. The composer offers Queue message and Interrupt and send during a turn. Interrupt
+and send queues steering before requesting Stop, with the stop timestamp captured
+before publishing so it cannot interrupt a later turn. Each action adds an attributed system line.
+The live bubble centers a spinner and Working with elapsed time from the current
+turn's server-recorded start, updated every second. Pod age is not turn duration.
+Web prompts record deliveryState queued and show a spinner with Queued until
+report_turn_start acknowledges their message IDs as delivered. While working,
+Enter and the primary Interrupt and send action deliver steering immediately by
+stopping the current turn and resuming the native session with queued inputs.
+Queue for later explicitly retains the wait-until-next-turn behavior.
 On desktop, the Task header offers a collapsible list of copyable kubectl
 commands for Task and Agent status, the full Task and worker Pods. It also
 includes a `kubectl apply -f - <<'EOF'` Task manifest template using the

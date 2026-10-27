@@ -171,6 +171,7 @@ type taskItem struct {
 	Suspended           bool     `json:"suspended,omitempty"`
 	Completed           bool     `json:"completed,omitempty"`
 	DisabledMCPs        []string `json:"disabledMcps,omitempty"`
+	TurnStartedAt       string   `json:"turnStartedAt,omitempty"`
 	LastResultAt        string   `json:"lastResultAt,omitempty"`
 	CreatedAt           string   `json:"createdAt,omitempty"`
 	ObjectiveSource     string   `json:"objectiveSource,omitempty"`
@@ -199,7 +200,8 @@ type createTaskReq struct {
 }
 
 type sendPromptReq struct {
-	Body string `json:"body"`
+	Body      string `json:"body"`
+	Interrupt bool   `json:"interrupt,omitempty"`
 }
 
 type mcpToggleReq struct {
@@ -589,6 +591,7 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
+	requestedAt := time.Now().UnixMilli()
 	identity, ok := h.authenticatedCaller(w, r)
 	if !ok {
 		return
@@ -622,11 +625,7 @@ func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, fmt.Errorf("access to Task denied"), http.StatusForbidden)
 		return
 	}
-	if task.Spec.Suspend {
-		jsonError(w, fmt.Errorf("task is suspended"), http.StatusConflict)
-		return
-	}
-
+	// Suspended Tasks accept durable steering without resuming their worker.
 	queue, err := h.taskQueue(r.Context(), &task)
 	if err != nil {
 		jsonError(w, err, http.StatusServiceUnavailable)
@@ -648,8 +647,12 @@ func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
 		if err := h.Client.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: name}, &current); err != nil {
 			return err
 		}
+		deliveryState := "queued"
+		if slices.Contains(current.Status.DeliveredMessageIDs, msg.MessageID) {
+			deliveryState = "delivered"
+		}
 		current.Status.AppendMessage(agentsv1alpha1.TaskMessage{ID: msg.MessageID, Role: "user", Source: "web", Actor: identity.user,
-			Content: req.Body, CreatedAt: metav1.Now()})
+			Content: req.Body, DeliveryState: deliveryState, CreatedAt: metav1.Now()})
 		// The TaskReconciler ensures a worker Pod is running.
 		current.Status.Events.WakePending = true
 		return h.Client.Status().Update(r.Context(), &current)
@@ -657,7 +660,22 @@ func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, http.StatusServiceUnavailable)
 		return
 	}
-	jsonOK(w, map[string]string{"status": "published"})
+	result := map[string]string{"status": "published"}
+	if req.Interrupt && !task.Spec.Suspend && task.Status.Phase == agentsv1alpha1.TaskPhaseRunning && task.Status.Activity == "working" && task.Status.WorkerPodUID != "" {
+		controlQueue := rabbitmq.ProbeQueue(queue, task.Status.WorkerPodUID)
+		stop := rabbitmq.PromptMessage{Type: "stop", MessageID: randHex(16), PodUID: task.Status.WorkerPodUID, ReceivedAt: requestedAt}
+		err := h.AMQP.DeclareProbeQueue(controlQueue)
+		if err == nil {
+			err = h.AMQP.Publish(r.Context(), controlQueue, stop)
+		}
+		if err != nil {
+			// The prompt is already durable; do not invite a duplicate submission.
+			result["interruptError"] = "Message queued, but interrupt failed. Use Stop to interrupt the current turn."
+		} else {
+			h.recordUserAction(r, &task, identity, "Interrupt requested; steering queued")
+		}
+	}
+	jsonOK(w, result)
 }
 
 // authorizedTask authenticates the caller and loads a Task it may access.

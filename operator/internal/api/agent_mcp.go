@@ -162,7 +162,10 @@ func knownAgentTool(name string) bool {
 
 func agentTools() []map[string]any {
 	return []map[string]any{
-		mcpTool("report_turn_start", "Mark the current worker Pod as working on its own Task.", map[string]any{}),
+		mcpTool("report_turn_start", "Mark the current turn and acknowledge its queued input messages.", map[string]any{
+			"id":         map[string]any{"type": "string", "maxLength": 160},
+			"messageIds": map[string]any{"type": "array", "maxItems": 1000, "items": map[string]any{"type": "string", "maxLength": 160}},
+		}),
 		mcpTool("report_mcp_probe", "Report a requested MCP connectivity check from this worker Pod.", map[string]any{
 			"requestId": map[string]string{"type": "string"},
 			"endpoints": map[string]any{"type": "array", "maxItems": 32, "items": map[string]any{"type": "object",
@@ -175,6 +178,7 @@ func agentTools() []map[string]any {
 			"id": map[string]string{"type": "string"}, "content": map[string]string{"type": "string"}}, "id", "content"),
 		mcpTool("report_turn_progress", "Stream the current worker Pod's working turn text and MCP calls to open views of its own Task.", map[string]any{
 			"id": map[string]string{"type": "string"}, "content": map[string]string{"type": "string"},
+			"thinking": map[string]string{"type": "string"},
 			"tools": map[string]any{"type": "array", "maxItems": 30, "items": map[string]any{"type": "object", "properties": map[string]any{
 				"server": map[string]string{"type": "string"}, "tool": map[string]string{"type": "string"},
 				"args": map[string]string{"type": "string"}, "status": map[string]any{"type": "string", "enum": []string{"running", "done", "failed"}}}}},
@@ -384,6 +388,22 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		}
 		return mcpText(map[string]any{"title": title})
 	case "report_turn_start":
+		var arg struct {
+			ID         string
+			MessageIDs []string
+		}
+		if decodeToolArgs(raw, &arg) != nil || len(arg.ID) > 160 || len(arg.MessageIDs) > 1000 {
+			return nil, errors.New("invalid turn start")
+		}
+		for _, id := range arg.MessageIDs {
+			if len(id) > 160 {
+				return nil, errors.New("invalid input message ID")
+			}
+		}
+		inputs := make(map[string]bool, len(arg.MessageIDs))
+		for _, id := range arg.MessageIDs {
+			inputs[id] = true
+		}
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			var current agentsv1alpha1.Task
 			if err := h.Client.Get(ctx, client.ObjectKeyFromObject(&scope.Task), &current); err != nil {
@@ -392,8 +412,24 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			if current.Status.WorkerPodUID != string(scope.Pod.UID) || current.Spec.Suspend {
 				return errors.New("worker is no longer current")
 			}
-			if current.Status.Activity == "working" {
-				return nil
+			if current.Status.Activity != "working" || current.Status.TurnID != arg.ID || current.Status.TurnStartedAt == nil {
+				now := metav1.Now()
+				current.Status.TurnStartedAt = &now
+				current.Status.TurnID = arg.ID
+			}
+			for _, id := range arg.MessageIDs {
+				if !slices.Contains(current.Status.DeliveredMessageIDs, id) {
+					current.Status.DeliveredMessageIDs = append(current.Status.DeliveredMessageIDs, id)
+				}
+			}
+			if len(current.Status.DeliveredMessageIDs) > 128 {
+				current.Status.DeliveredMessageIDs = current.Status.DeliveredMessageIDs[len(current.Status.DeliveredMessageIDs)-128:]
+			}
+			for i := range current.Status.Conversation {
+				message := &current.Status.Conversation[i]
+				if inputs[message.ID] && message.DeliveryState == "queued" {
+					message.DeliveryState = "delivered"
+				}
 			}
 			current.Status.Activity = "working"
 			return h.Client.Status().Update(ctx, &current)
@@ -431,18 +467,18 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		// Streamed text goes only to open browsers; the conversation stores the
 		// turn's full text once its result arrives.
 		var arg struct {
-			ID, Content, Backend, Model string
-			Tools                       []turnTool
+			ID, Content, Thinking, Backend, Model string
+			Tools                                 []turnTool
 		}
-		if decodeToolArgs(raw, &arg) != nil || arg.ID == "" || len(arg.ID) > 160 || len(arg.Content) > 8000 ||
-			strings.TrimSpace(arg.Content) == "" && len(arg.Tools) == 0 && arg.Model == "" || !validTurnTools(arg.Tools) ||
+		if decodeToolArgs(raw, &arg) != nil || arg.ID == "" || len(arg.ID) > 160 || len(arg.Content) > 8000 || len(arg.Thinking) > 8000 ||
+			strings.TrimSpace(arg.Content) == "" && strings.TrimSpace(arg.Thinking) == "" && len(arg.Tools) == 0 && arg.Model == "" || !validTurnTools(arg.Tools) ||
 			!validBackend(arg.Backend) || len(arg.Model) > 200 {
 			return nil, errors.New("invalid turn progress")
 		}
 		if scope.Task.Status.Activity == "working" && h.Events != nil {
 			if topic := taskAgentTopic(&scope.Task); topic != "" {
 				h.Events.publishTurn(topic, turnText{Namespace: scope.Task.Namespace, Task: scope.Task.Name, Turn: arg.ID,
-					Content: arg.Content, Tools: arg.Tools, Backend: arg.Backend, Model: arg.Model})
+					Content: arg.Content, Thinking: arg.Thinking, Tools: arg.Tools, Backend: arg.Backend, Model: arg.Model})
 			}
 		}
 		return mcpText(map[string]any{"streamed": true})

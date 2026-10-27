@@ -41,7 +41,9 @@ FROM toolchain AS runtime
 WORKDIR /app
 COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY package.json ./
-COPY src/task-worker-main.js src/task-worker.js src/identity.js src/child-signals.js src/mcp-auth.js src/http.js src/kube-env.js src/metrics.js ./src/
+COPY src/ ./src/
+# Fail the image build if a worker module or its production dependency is missing.
+RUN node --input-type=module -e "await import('./src/task-worker.js')"
 RUN chmod -R a+rX /app
 EXPOSE 8080
 CMD ["node", "/app/src/task-worker-main.js"]

@@ -1,4 +1,5 @@
 import amqp from 'amqplib';
+import {queuedDeliveries, turnMessage} from './turn-queue.js';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {mkdir, readFile, writeFile, appendFile, rename, glob} from 'node:fs/promises';
@@ -388,7 +389,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
   const startedAt = new Date().toISOString();
   const turnStarted = performance.now();
   const id = randomUUID();
-  await callAgentOperator('report_turn_start');
+  await callAgentOperator('report_turn_start', {id, messageIds: message.messageIds || (message.messageId ? [message.messageId] : [])});
   const logPath = join(root, 'executions', `${id}.jsonl`);
   const prompt = `Task ${required('TASK_NAMESPACE')}/${required('TASK_NAME')} for Agent ${required('AGENT_NAME')}.\n`
     + (process.env.AGENT_INSTRUCTIONS ? `${process.env.AGENT_INSTRUCTIONS.trim()}\n` : '')
@@ -403,7 +404,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
   }), {mode: 0o600});
   let args;
   if (backend === 'claude') {
-    args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions',
+    args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--dangerously-skip-permissions',
       '--strict-mcp-config', '--mcp-config', JSON.stringify(mcp)];
     if (model) args.push('--model', model);
     args.push(state.sessionId ? '--resume' : '--session-id', sessionId);
@@ -441,6 +442,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
   // coalesces later text, and failures only cost the live view. The result
   // stores the same full text in the conversation.
   // MCP calls with their arguments travel the same way and are never stored.
+  let thinking = '';
   let streamed = '', streaming = Promise.resolve(), streamQueued = false;
   const tools = mcpToolCalls(backend, Object.keys(mcp.mcpServers));
   const send = () => {
@@ -448,7 +450,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
     streamQueued = true;
     streaming = streaming.then(() => {
       streamQueued = false;
-      return callAgentOperator('report_turn_progress', {id, content: streamed, tools: tools.list(), backend, model: usedModel});
+      return callAgentOperator('report_turn_progress', {id, content: streamed, thinking, tools: tools.list(), backend, model: usedModel});
     }).catch(() => {});
   };
   const stream = text => {
@@ -470,6 +472,13 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
       let event;
       try { event = JSON.parse(line); } catch { continue; }
       if (tools.update(event)) send();
+      const thought = backend === 'claude' && !event.parent_tool_use_id && event.type === 'stream_event' && event.event?.delta?.type === 'thinking_delta'
+        ? event.event.delta.thinking
+        : backend === 'codex' && event.type === 'item.completed' && event.item?.type === 'reasoning'
+          ? event.item.text
+          : backend === 'opencode' && event.type === 'reasoning' ? event.part?.text : '';
+      if (typeof thought === 'string' && thought) { thinking = boundedTail(thinking + thought); send(); }
+
       if (backend === 'claude') {
         if (event.session_id && event.session_id !== reportedSession) {
           reportedSession = event.session_id;
@@ -595,62 +604,69 @@ export async function taskWorker() {
   let idleUntil = completedTurn ? lastResultAt + idleSeconds * 1000 : 0;
   try {
     while (!controller.signal.aborted && !finished) {
-      const delivery = await channel.get(queue, {noAck: false});
-      if (!delivery) {
+      const deliveries = await queuedDeliveries(channel, queue);
+      if (!deliveries.length) {
         if (skippedCompletedReceipt || (completedTurn && Date.now() >= idleUntil)) break;
         const wait = completedTurn ? Math.min(2000, Math.max(1, idleUntil - Date.now())) : 2000;
         await new Promise(resolve => setTimeout(resolve, wait));
         continue;
       }
-      let message;
-      try { message = JSON.parse(delivery.content.toString('utf8')); }
-      catch { channel.nack(delivery, false, false); continue; }
-      if (!message || typeof message !== 'object' || Array.isArray(message)) {
-        channel.nack(delivery, false, false);
-        continue;
-      }
-      if (message.type === 'config') {
-        let update;
-        try { update = runtimeConfig(message, runtimeGeneration); }
-        catch {
+      const inputs = [];
+      for (const delivery of deliveries) {
+        let message;
+        try { message = JSON.parse(delivery.content.toString('utf8')); }
+        catch { channel.nack(delivery, false, false); continue; }
+        if (!message || typeof message !== 'object' || Array.isArray(message)) {
           channel.nack(delivery, false, false);
           continue;
         }
-        if (update) {
-          runtimeGeneration = update.generation;
-          idleSeconds = update.idleSeconds;
-          disabledMcps = update.disabledMcps;
-          idleUntil = completedTurn ? lastResultAt + idleSeconds * 1000 : 0;
-          if (model !== update.model) {
-            model = update.model;
-            state = {backend, model, epoch: (state.epoch || 0) + 1};
-            await writeFile(statePath, JSON.stringify(state), {mode: 0o600});
-            await appendFile(join(root, 'executions', 'session-resets.jsonl'), JSON.stringify({
-              at: new Date().toISOString(), reason: 'Task model changed', epoch: state.epoch,
-            }) + '\n', {mode: 0o600});
-          }
-        }
-        channel.ack(delivery);
-        continue;
-      }
-      if (typeof message.body !== 'string' || !['objective', 'prompt', 'event'].includes(message.type)) {
-        channel.nack(delivery, false, false);
-        continue;
-      }
-      const messageId = typeof message.messageId === 'string' && /^[a-zA-Z0-9:._-]{1,160}$/.test(message.messageId)
-        ? message.messageId : undefined;
-      const receiptPath = messageId && join(receipts, messageId + '.json');
-      if (receiptPath) {
-        try {
-          const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
-          if (receipt.messageId === messageId && receipt.exitCode === 0) {
-            if (receipt.result) await reportTurnResult(receipt.result);
-            channel.ack(delivery);
-            skippedCompletedReceipt = true;
+        if (message.type === 'config') {
+          let update;
+          try { update = runtimeConfig(message, runtimeGeneration); }
+          catch {
+            channel.nack(delivery, false, false);
             continue;
           }
-        } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
+          if (update) {
+            runtimeGeneration = update.generation;
+            idleSeconds = update.idleSeconds;
+            disabledMcps = update.disabledMcps;
+            idleUntil = completedTurn ? lastResultAt + idleSeconds * 1000 : 0;
+            if (model !== update.model) {
+              model = update.model;
+              state = {backend, model, epoch: (state.epoch || 0) + 1};
+              await writeFile(statePath, JSON.stringify(state), {mode: 0o600});
+              await appendFile(join(root, 'executions', 'session-resets.jsonl'), JSON.stringify({
+                at: new Date().toISOString(), reason: 'Task model changed', epoch: state.epoch,
+              }) + '\n', {mode: 0o600});
+            }
+          }
+          channel.ack(delivery);
+          continue;
+        }
+        if (typeof message.body !== 'string' || !['objective', 'prompt', 'event'].includes(message.type)) {
+          channel.nack(delivery, false, false);
+          continue;
+        }
+        const messageId = typeof message.messageId === 'string' && /^[a-zA-Z0-9:._-]{1,160}$/.test(message.messageId)
+          ? message.messageId : undefined;
+        const receiptPath = messageId && join(receipts, messageId + '.json');
+        if (receiptPath) {
+          try {
+            const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+            if (receipt.messageId === messageId && receipt.exitCode === 0) {
+              if (receipt.result) await reportTurnResult(receipt.result);
+              channel.ack(delivery);
+              skippedCompletedReceipt = true;
+              continue;
+            }
+          } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
+        }
+        inputs.push({delivery, message, messageId, receiptPath});
       }
+      if (!inputs.length) continue;
+      const message = turnMessage(inputs.map(input => input.message));
+      const acknowledge = () => { for (const input of inputs) channel.ack(input.delivery); };
       turn = {startedAt: Date.now(), controller: new AbortController()};
       const stopped = turn.controller.signal;
       let result;
@@ -667,8 +683,14 @@ export async function taskWorker() {
         delete result.failureReason;
         state = {sessionId: result.sessionId, backend, model, epoch: state.epoch || 0};
         await writeFile(statePath, JSON.stringify(state), {mode: 0o600});
+        for (const {messageId, receiptPath} of inputs) {
+          if (!receiptPath) continue;
+          const tmp = receiptPath + '.' + randomUUID();
+          await writeFile(tmp, JSON.stringify({messageId, exitCode: 0, result}), {mode: 0o600});
+          await rename(tmp, receiptPath);
+        }
         await reportTurnResult(result);
-        channel.ack(delivery);
+        acknowledge();
         completedTurn = true;
         lastResultAt = Date.parse(result.completedAt);
         idleUntil = lastResultAt + idleSeconds * 1000;
@@ -677,7 +699,8 @@ export async function taskWorker() {
       if (result.exitCode === 0) {
         state = {sessionId: result.sessionId, backend, model, epoch: state.epoch || 0};
         await writeFile(statePath, JSON.stringify(state), {mode: 0o600});
-        if (receiptPath) {
+        for (const {messageId, receiptPath} of inputs) {
+          if (!receiptPath) continue;
           const tmp = receiptPath + '.' + randomUUID();
           await writeFile(tmp, JSON.stringify({messageId, exitCode: 0, result}), {mode: 0o600});
           await rename(tmp, receiptPath);
@@ -686,11 +709,11 @@ export async function taskWorker() {
       await reportTurnResult(result);
       if (result.exitCode !== 0) {
         // Keep the failed instruction queued for resume after billing is restored.
-        channel.nack(delivery, false, result.failureReason === 'credits_exhausted');
+        for (const input of inputs) channel.nack(input.delivery, false, result.failureReason === 'credits_exhausted');
         process.exitCode = result.exitCode;
         finished = true;
       } else {
-        channel.ack(delivery);
+        acknowledge();
         completedTurn = true;
         lastResultAt = Date.parse(result.completedAt);
         idleUntil = lastResultAt + idleSeconds * 1000;

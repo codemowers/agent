@@ -43,8 +43,8 @@ func TestEventTopicsOnlyWakeSubscribedAgent(t *testing.T) {
 		t.Fatalf("expected Agent invalidation, got %q", event)
 	}
 	events.publishTurn("team/support", turnText{Task: "other", Content: "hidden"})
-	events.publishTurn("team/developer", turnText{Task: "own", Content: "Reading"})
-	if text := <-turns; text.Task != "own" || text.Content != "Reading" {
+	events.publishTurn("team/developer", turnText{Task: "own", Content: "Reading", Thinking: "Comparing approaches"})
+	if text := <-turns; text.Task != "own" || text.Content != "Reading" || text.Thinking != "Comparing approaches" {
 		t.Fatalf("expected own turn text, got %+v", text)
 	}
 	select {

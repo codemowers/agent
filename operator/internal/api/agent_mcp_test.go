@@ -110,11 +110,14 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	if response := call("valid", "report_turn_progress", `{"id":"turn-1","content":"Reading the operator"}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
 		t.Fatalf("turn progress rejected: %s", response.Body.String())
 	}
+	if response := call("valid", "report_turn_progress", `{"id":"turn-1","content":"","thinking":"Comparing approaches"}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatalf("thinking-only progress rejected: %s", response.Body.String())
+	}
 	var streamed agentsv1alpha1.Task
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &streamed); err != nil {
 		t.Fatal(err)
 	}
-	if streamed.Status.Progress.Summary == "Reading the operator" || len(streamed.Status.Conversation) != 1 {
+	if (streamed.Status.Progress.Summary == "Reading the operator" || streamed.Status.Progress.Summary == "Comparing approaches") || len(streamed.Status.Conversation) != 1 {
 		t.Fatalf("turn progress written to Task status: %+v", streamed.Status)
 	}
 	var foreignAfterProgress agentsv1alpha1.Task
@@ -189,6 +192,39 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	}
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &current); err != nil || current.Status.MCPProbe == nil || current.Status.MCPProbe.State != "complete" {
 		t.Fatalf("probe status was not saved: %v %+v", err, current.Status.MCPProbe)
+	}
+	current.Status.Conversation = append(current.Status.Conversation,
+		agentsv1alpha1.TaskMessage{ID: "queued-one", Role: "user", Content: "Steer", DeliveryState: "queued", CreatedAt: metav1.Now()},
+		agentsv1alpha1.TaskMessage{ID: "queued-two", Role: "user", Content: "Later", DeliveryState: "queued", CreatedAt: metav1.Now()})
+	if err := store.Status().Update(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if response := call("valid", "report_turn_start", `{"id":"turn-queue","messageIds":["queued-one"]}`); strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatal(response.Body.String())
+	}
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.TurnStartedAt == nil || current.Status.TurnID != "turn-queue" {
+		t.Fatal("missing current turn start")
+	}
+	for _, message := range current.Status.Conversation {
+		if message.ID == "queued-one" && message.DeliveryState != "delivered" {
+			t.Fatal("consumed prompt still queued")
+		}
+		if message.ID == "queued-two" && message.DeliveryState != "queued" {
+			t.Fatal("unconsumed prompt acknowledged")
+		}
+	}
+	started := current.Status.TurnStartedAt.DeepCopy()
+	if response := call("valid", "report_turn_start", `{"id":"turn-queue","messageIds":["queued-one"]}`); strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatal(response.Body.String())
+	}
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &current); err != nil {
+		t.Fatal(err)
+	}
+	if !current.Status.TurnStartedAt.Equal(started) {
+		t.Fatal("retry reset elapsed turn duration")
 	}
 	current.Status.WorkerPodUID = "replacement-pod-uid"
 	if err := store.Status().Update(context.Background(), &current); err != nil {

@@ -298,6 +298,9 @@ spec:
                     role:
                       type: string
                       enum: [user, agent, external, system]
+                    deliveryState:
+                      type: string
+                      enum: [queued, delivered]
                     source:
                       type: string
                     actor:
@@ -387,6 +390,18 @@ spec:
                 additionalProperties:
                   type: string
                 type: object
+              deliveredMessageIds:
+                type: array
+                maxItems: 128
+                items:
+                  type: string
+                  maxLength: 160
+              turnId:
+                type: string
+                maxLength: 160
+              turnStartedAt:
+                type: string
+                format: date-time
               lastResultAt:
                 type: string
                 format: date-time

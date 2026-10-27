@@ -504,6 +504,17 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 					return ctrl.Result{Requeue: true}, nil
 				}
 			}
+			if pod.Status.Phase == corev1.PodFailed && !task.Status.RetryWorker {
+				if changed, err := r.recordWorkerResults(ctx, task, &pod); err != nil {
+					return ctrl.Result{}, err
+				} else if changed {
+					return ctrl.Result{Requeue: true}, nil
+				}
+				if err := r.recordWorkerActivity(ctx, task, &pod, "exit", workerExitDescription(&pod)); err != nil {
+					return ctrl.Result{}, err
+				}
+				return r.suspendLostWorker(ctx, task, "WorkerFailed")
+			}
 			// If the pod completed and a new wake signal arrived (event consumer
 			// set status.events.wakePending), clear the pod name so we
 			// spawn a fresh worker below. The worker's AMQP queue already holds
@@ -544,10 +555,9 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 		} else if !errors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		} else {
-			// A vanished worker might still have an uncertain native result.
-			// A new prompt does not authorize replacing it against the same PVC.
+			// A vanished worker requires explicit Resume. Queued prompts stay pending.
 			if !task.Status.RetryWorker {
-				return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, "WorkerDisappeared")
+				return r.suspendLostWorker(ctx, task, "WorkerDisappeared")
 			}
 			patch := client.MergeFrom(task.DeepCopy())
 			task.Status.RetryWorker = false
@@ -703,6 +713,19 @@ func podReady(pod *corev1.Pod) bool {
 	return false
 }
 
+// Unexpected worker loss suspends the Task even when messages are queued.
+// Operator-authorized replacements retain their existing RetryWorker path.
+func (r *TaskReconciler) suspendLostWorker(ctx context.Context, task *agentsv1alpha1.Task, reason string) (ctrl.Result, error) {
+	if !task.Spec.Suspend {
+		patch := client.MergeFrom(task.DeepCopy())
+		task.Spec.Suspend = true
+		if err := r.Patch(ctx, task, patch); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, reason)
+}
+
 func (r *TaskReconciler) syncPhaseFromPod(ctx context.Context, task *agentsv1alpha1.Task, pod *corev1.Pod) (ctrl.Result, error) {
 	var phase agentsv1alpha1.TaskPhase
 	var reason string
@@ -846,7 +869,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.ai/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "23"
+	WorkerPodVersion = "27"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
