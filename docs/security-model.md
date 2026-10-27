@@ -48,7 +48,9 @@ and workers never read or write these resources through the Kubernetes API.
   its namespace with the feed's new items.
 - **ClusterMCPServer** and **MCPServer:** an MCP server advertised to workers.
   A worker token's audience is the server's `audience`, else its Service,
-  `<service>.<namespace>`, derived from an in-cluster URL.
+  `<service>.<namespace>`, derived from an in-cluster URL. A server with
+  `credentialKeyRef` gets that key of the worker namespace's
+  `agent-operator-provider-tokens` Secret instead.
 
 Dashboard users reach an Agent's Tasks if they are listed in its `spec.access`
 or, without that list, if they have `get` on the Agent.
@@ -66,7 +68,7 @@ grants such as cluster-admin include them all.
 | Device | `exec` | `device_shell` |
 | Device | `read` | `device_file_read` |
 | Device | `write` | `device_file_write`, which usually allows code execution too |
-| ClusterMCPServer, MCPServer | `use` | The server's endpoint and a token for its audience in the worker |
+| ClusterMCPServer, MCPServer | `use` | The server's endpoint and a token for its audience, or its credential key, in the worker |
 | Task | `wake` | Waking the Task through the operator's wake endpoint |
 
 ### MCP servers
@@ -79,11 +81,14 @@ a proxy such as kube-rbac-proxy or per-tool policies, decides who connects but
 not what the arguments reach, so it does not make such a server safe. Generic
 authless servers that proxy sensitive data are therefore of little use here.
 
-ClusterMCPServer and MCPServer advertise two kinds of server:
+ClusterMCPServer and MCPServer advertise three kinds of server:
 
 - **Kubernetes-native:** the server checks the worker's ServiceAccount token
   with TokenReview and authorizes each call with SubjectAccessReview on the
   exact object, as the Device bridge, Mailboxes and Driftmower do.
+- **Credentialed external:** a service such as Linear that authorizes each
+  call against the `credentialKeyRef` key. The worker can read the key, as it
+  can its Git provider keys, so scope it to what every grantee may do.
 - **Authless with nothing sensitive:** public advisory content such as the
   Codemowers MCP, or a tool whose reach any worker may have anyway.
 

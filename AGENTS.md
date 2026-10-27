@@ -385,16 +385,24 @@ own Service. Without `audience`, a server's audience is derived the same way
 from its in-cluster URL, and a server outside the cluster gets no token; an
 explicit audience serves servers with a contract of their own, such as
 Driftmower. Namespace administrators may set any audience: through the Agent
-Pod template they can already mint worker tokens for any audience. When it creates a worker Pod, the operator attaches every server on
+Pod template they can already mint worker tokens for any audience. A server
+with `credentialKeyRef` instead gets that key of the worker namespace's
+`agent-operator-provider-tokens` Secret as its bearer token and no
+ServiceAccount token, for external servers such as Linear that authorize each
+call with their own credentials; the CRD rejects it together with `audience`,
+and a missing key leaves only that server unavailable.
+Like Git provider keys, the worker can read it. When it creates a worker Pod, the operator attaches every server on
 which a SubjectAccessReview grants the worker ServiceAccount the custom verb
 `use`, a namespaced server overriding a cluster one of the same name. One
 projected volume at `/var/run/agent-tokens` holds every worker token:
-`agent_operator`, `rabbitmq`, `mcp/<name>` per server and
+`agent_operator`, `rabbitmq`, `mcp/<name>` per server with a token or
+credential and
 `mcp/mailbox-<name>` per Mailbox. Attachment stays out of the worker
 configuration hash, like Mailboxes, so RBAC changes reach the next worker Pod.
 Wildcard RBAC such as cluster-admin uses every server. The servers still
 authorize each call: advertise only Kubernetes-native servers, which check
-TokenReview and SubjectAccessReview per call, or authless servers with
+TokenReview and SubjectAccessReview per call, credentialed servers whose
+credential is scoped to what the grantees may do, or authless servers with
 nothing sensitive (see `docs/security-model.md`).
 Alertmanager notifications posted to Slack by a bot and human replies in that
 thread are separate arrivals. Ignore bot echoes, preserve a human reply's

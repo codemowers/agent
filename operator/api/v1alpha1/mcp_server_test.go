@@ -20,6 +20,7 @@ func TestServiceAudience(t *testing.T) {
 		{URL: "http://drift.team.svc/mcp", Audience: "http://drift.team.svc/mcp"}: "http://drift.team.svc/mcp",
 		{URL: "http://drift.team.svc/mcp"}:                                        "drift.team",
 		{URL: "https://mcp.codemowers.io/mcp"}:                                    "",
+		{URL: "http://drift.team.svc/mcp", CredentialKeyRef: "drift"}:             "",
 	} {
 		if got := spec.TokenAudience(); got != want {
 			t.Errorf("%+v: got %q, want %q", spec, got, want)

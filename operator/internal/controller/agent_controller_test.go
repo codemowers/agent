@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -165,7 +166,7 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 		},
 	}
 	pod := (&TaskReconciler{AMQPURL: "amqp://broker", WorkerImage: "registry/agent:build"}).buildWorkerPod("worker-pod", task, agent, "agent-worker", nil,
-		mcpServer{"driftmower", "http://driftmower-mcp/mcp", "driftmower-mcp.driftmower"})
+		mcpServer{"driftmower", "http://driftmower-mcp/mcp", "driftmower-mcp.driftmower", ""})
 	if probe := pod.Spec.Containers[0].ReadinessProbe; probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/readyz" ||
 		len(pod.Spec.Containers[0].Ports) != 1 || pod.Spec.Containers[0].Ports[0].ContainerPort != agentsv1alpha1.WorkerMetricsPort {
 		t.Fatal("worker lacks its metrics port and readiness probe")
@@ -534,8 +535,8 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 		}}).Build()
 	r := &TaskReconciler{Client: store, HarnessNamespace: "harness"}
 	servers := r.authorizedMCPServers(context.Background(), "team", "worker")
-	if len(servers) != 3 || servers[0] != (mcpServer{"codemowers", "https://mcp.codemowers.io/mcp", ""}) ||
-		servers[1].Audience != "agent-devices.harness" || servers[2] != (mcpServer{"driftmower", "http://drift.team.svc:3000/mcp", "drift.team"}) {
+	if len(servers) != 3 || servers[0] != (mcpServer{"codemowers", "https://mcp.codemowers.io/mcp", "", ""}) ||
+		servers[1].Audience != "agent-devices.harness" || servers[2] != (mcpServer{"driftmower", "http://drift.team.svc:3000/mcp", "drift.team", ""}) {
 		t.Fatalf("unexpected attachment: %+v", servers)
 	}
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
@@ -566,12 +567,58 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 
 // workerTokens maps each projected token path in the worker's token volume
 // to its audience.
+func TestCredentialedMCPServerGetsOnlyItsProviderKey(t *testing.T) {
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
+	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "worker"}}}}}}
+	pod := (&TaskReconciler{HarnessNamespace: "harness"}).buildWorkerPod("worker", task, agent, "worker", nil,
+		mcpServer{"linear", "https://mcp.linear.app/mcp", "", "linear"})
+	if _, ok := workerTokens(pod)["mcp/linear"]; ok {
+		t.Fatal("credentialed server also received a ServiceAccount token")
+	}
+	var projected []corev1.KeyToPath
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Name == "agent-tokens" {
+			for _, source := range volume.Projected.Sources {
+				if source.Secret != nil {
+					if source.Secret.Name != agentsv1alpha1.ProviderTokensSecretName || source.Secret.Optional == nil || !*source.Secret.Optional {
+						t.Fatalf("projected Secret %s", source.Secret.Name)
+					}
+					projected = append(projected, source.Secret.Items...)
+				}
+			}
+		}
+	}
+	if len(projected) != 1 || projected[0] != (corev1.KeyToPath{Key: "linear", Path: "mcp/linear"}) {
+		t.Fatalf("unexpected projected keys: %+v", projected)
+	}
+	var endpoints []agentsv1alpha1.MCPEndpoint
+	for _, env := range pod.Spec.Containers[0].Env {
+		if env.Name == "AGENT_MCP_ENDPOINTS" {
+			if err := json.Unmarshal([]byte(env.Value), &endpoints); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, endpoint := range endpoints {
+		if endpoint.Name == "linear" {
+			if endpoint.URL != "https://mcp.linear.app/mcp" || endpoint.TokenFile != agentsv1alpha1.WorkerTokenDir+"/mcp/linear" {
+				t.Fatalf("unexpected endpoint: %+v", endpoint)
+			}
+			return
+		}
+	}
+	t.Fatalf("linear endpoint missing: %+v", endpoints)
+}
+
 func workerTokens(pod *corev1.Pod) map[string]string {
 	tokens := map[string]string{}
 	for _, volume := range pod.Spec.Volumes {
 		if volume.Name == "agent-tokens" {
 			for _, source := range volume.Projected.Sources {
-				tokens[source.ServiceAccountToken.Path] = source.ServiceAccountToken.Audience
+				if source.ServiceAccountToken != nil {
+					tokens[source.ServiceAccountToken.Path] = source.ServiceAccountToken.Audience
+				}
 			}
 		}
 	}

@@ -1019,9 +1019,9 @@ func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv
 }
 
 // mcpServer is an advertised MCP server attached to a worker; a non-empty
-// Audience sends it a projected token.
+// Audience sends it a projected token, a CredentialKeyRef a provider token.
 type mcpServer struct {
-	Name, URL, Audience string
+	Name, URL, Audience, CredentialKeyRef string
 }
 
 // authorizedMCPServers lists the ClusterMCPServers and the namespace's
@@ -1050,7 +1050,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 	}
 	for _, server := range cluster.Items {
 		if allowed("", "clustermcpservers", server.Name) {
-			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience()}
+			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience(), server.Spec.CredentialKeyRef}
 		}
 	}
 	var local agentsv1alpha1.MCPServerList
@@ -1059,7 +1059,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 	}
 	for _, server := range local.Items {
 		if allowed(namespace, "mcpservers", server.Name) {
-			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience()}
+			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience(), server.Spec.CredentialKeyRef}
 		}
 	}
 	servers := make([]mcpServer, 0, len(byName))
@@ -1160,7 +1160,16 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	endpoints := make([]agentsv1alpha1.MCPEndpoint, len(servers))
 	for i, server := range servers {
 		endpoints[i] = agentsv1alpha1.MCPEndpoint{Name: server.Name, URL: server.URL}
-		if server.Audience != "" {
+		switch {
+		case server.CredentialKeyRef != "":
+			// Only the referenced key is projected, never the whole Secret. A
+			// missing key leaves this server unavailable, not the worker Pod.
+			endpoints[i].TokenFile = agentsv1alpha1.WorkerTokenDir + "/mcp/" + server.Name
+			tokens = append(tokens, corev1.VolumeProjection{Secret: &corev1.SecretProjection{
+				LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName},
+				Items:                []corev1.KeyToPath{{Key: server.CredentialKeyRef, Path: "mcp/" + server.Name}},
+				Optional:             boolPtr(true)}})
+		case server.Audience != "":
 			endpoints[i].TokenFile = agentsv1alpha1.WorkerTokenDir + "/mcp/" + server.Name
 			tokens = append(tokens, token(server.Audience, "mcp/"+server.Name))
 		}

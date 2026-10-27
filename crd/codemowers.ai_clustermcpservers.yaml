@@ -34,6 +34,9 @@ spec:
               type: object
               required:
                 - url
+              x-kubernetes-validations:
+                - rule: "!(has(self.audience) && has(self.credentialKeyRef))"
+                  message: audience and credentialKeyRef are mutually exclusive
               properties:
                 url:
                   type: string
@@ -43,3 +46,8 @@ spec:
                   description: Audience of the projected ServiceAccount token workers present. Defaults to <service>.<namespace> for an in-cluster URL http(s)://<service>.<namespace>.svc[.cluster.local]; other URLs get no token without it.
                   type: string
                   maxLength: 2048
+                credentialKeyRef:
+                  description: Key of the worker namespace's agent-operator-provider-tokens Secret that workers present as a bearer token instead of a ServiceAccount token, for servers that authorize each call with their own credentials. Workers can read the key.
+                  type: string
+                  pattern: ^[-._a-zA-Z0-9]+$
+                  maxLength: 253

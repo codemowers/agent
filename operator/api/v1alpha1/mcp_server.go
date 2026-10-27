@@ -36,12 +36,20 @@ type MCPServerSpec struct {
 	// Audience is the audience of the projected ServiceAccount token workers
 	// present, for servers with an audience contract of their own.
 	Audience string `json:"audience,omitempty"`
+	// CredentialKeyRef names a key of the worker namespace's provider tokens
+	// Secret that workers present as a bearer token instead of a
+	// ServiceAccount token, for servers such as Linear that authorize each
+	// call with their own credentials.
+	CredentialKeyRef string `json:"credentialKeyRef,omitempty"`
 }
 
 // TokenAudience is the explicit audience, else the <service>.<namespace> of
 // an in-cluster URL; a server outside the cluster without an audience gets
-// no token.
+// no token, and a server with a credential gets no ServiceAccount token.
 func (s MCPServerSpec) TokenAudience() string {
+	if s.CredentialKeyRef != "" {
+		return ""
+	}
 	if s.Audience != "" {
 		return s.Audience
 	}
