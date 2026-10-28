@@ -138,7 +138,7 @@ func (e *Events) Start(ctx context.Context) error {
 			before, okBefore := old.(*agentsv1alpha1.Agent)
 			after, okAfter := current.(*agentsv1alpha1.Agent)
 			if okBefore && okAfter && before.Spec.Model.Backend == after.Spec.Model.Backend &&
-				before.Spec.Suspended == after.Spec.Suspended {
+				before.Spec.Suspend == after.Spec.Suspend {
 				return
 			}
 			e.publish("agents", "")
@@ -288,7 +288,7 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, fmt.Errorf("Agent unavailable"), http.StatusForbidden)
 			return
 		}
-		allowed, err := h.canAccessAgent(r, identity, &agent)
+		allowed, err := h.canAccessAgent(r, identity, &agent, verbRead)
 		if err != nil {
 			jsonError(w, err, http.StatusServiceUnavailable)
 			return

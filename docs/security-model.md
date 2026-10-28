@@ -52,8 +52,11 @@ and workers never read or write these resources through the Kubernetes API.
   `credentialKeyRef` gets that key of the worker namespace's
   `agent-operator-provider-tokens` Secret instead.
 
-Dashboard users reach an Agent's Tasks if they are listed in its `spec.access`
-or, without that list, if they have `get` on the Agent.
+Dashboard users listed in an Agent's `spec.access` may do everything with its
+Tasks. Without that list, verbs on the Agent decide: `get` reads Tasks and
+conversations, `prompt` creates, prompts, stops and configures them, and
+`suspend` suspends and resumes the Agent and its Tasks, so observers can
+follow an Agent without steering it. Deleting a Task takes `delete` on it.
 
 Workers get a Mailbox, Device or MCP server, and callers wake a Task, through
 custom RBAC verbs on that object. Mailbox and Device verbs are checked by

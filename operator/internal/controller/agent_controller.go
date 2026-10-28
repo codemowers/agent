@@ -174,8 +174,8 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			return ctrl.Result{}, err
 		}
 	}
-	if task.Spec.Suspend {
-		return r.reconcileSuspended(ctx, &task)
+	if task.Spec.Suspend || agent.Spec.Suspend {
+		return r.reconcileSuspended(ctx, &task, agent.Spec.Suspend)
 	}
 	coalesceDelay, err := r.flushCoalescedWake(ctx, &task)
 	if err != nil {
@@ -320,7 +320,9 @@ func (r *TaskReconciler) flushCoalescedWake(ctx context.Context, task *agentsv1a
 	return next, nil
 }
 
-func (r *TaskReconciler) reconcileSuspended(ctx context.Context, task *agentsv1alpha1.Task) (ctrl.Result, error) {
+// reconcileSuspended stops the worker of a Task suspended by itself or, with
+// agentSuspended, by its Agent.
+func (r *TaskReconciler) reconcileSuspended(ctx context.Context, task *agentsv1alpha1.Task, agentSuspended bool) (ctrl.Result, error) {
 	// Check the recorded UID before touching a Pod with a reused name.
 	if task.Status.WorkerPodName != "" {
 		var pod corev1.Pod
@@ -383,6 +385,9 @@ func (r *TaskReconciler) reconcileSuspended(ctx context.Context, task *agentsv1a
 	}
 	if task.Status.Completed() {
 		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhaseCompleted, "CompletedByAgent")
+	}
+	if agentSuspended && !task.Spec.Suspend {
+		return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, "AgentSuspended")
 	}
 	return r.setPhase(ctx, task, agentsv1alpha1.TaskPhasePaused, "Suspended")
 }
@@ -885,7 +890,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.ai/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "28"
+	WorkerPodVersion = "29"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {

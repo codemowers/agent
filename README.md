@@ -28,7 +28,8 @@ trial.codemowers.cloud](https://trial.codemowers.cloud).
 - **Persistent Tasks.** Follow progress and queue prompts in the browser. The
   worker stays up for the Agent's idle timeout after each reply. Suspend stops
   it and keeps the workspace, session and queued messages; Stop interrupts the
-  current turn only.
+  current turn only. Suspending the Agent from the navbar stops all its Tasks.
+  RBAC can let observers read conversations without prompting.
 - **GitHub and Gitea.** Signed webhooks route issue and pull-request events to
   the Task that claims the issue URL. A TaskPolicy creates a Task when an issue
   is assigned to the Agent's forge account. Closing the issue completes the

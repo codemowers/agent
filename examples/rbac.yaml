@@ -5,8 +5,14 @@
 # RoleBindings need no Agent change.
 #
 # agent-operator-manager ClusterRole — grants manage access to Agent and Task CRs.
-# Bind this role to users/groups in each namespace. The operator checks each
-# caller's Agent get permission with a SubjectAccessReview; spec.access is ignored.
+# Bind this role to users/groups in each namespace.
+#
+# Dashboard access: unless an Agent sets spec.access, the operator checks a
+# SubjectAccessReview for the OIDC user "<issuer>#<sub>" and its groups on the
+# Agent: get to read its Tasks and conversations, the custom verb prompt to
+# create, prompt, interrupt and configure Tasks, and the custom verb suspend to
+# suspend and resume the Agent and its Tasks. Deleting a Task takes delete on
+# that Task. The agent-dashboard-* ClusterRoles below bundle these verbs.
 #
 # Worker ServiceAccounts:
 # One ServiceAccount per Agent, named agent-worker-<Agent>:
@@ -29,8 +35,70 @@ rules:
     resources: [agents, tasks]
     verbs: [get, list, watch, update, patch, delete]
   - apiGroups: [codemowers.ai]
+    resources: [agents]
+    verbs: [prompt, suspend]
+  - apiGroups: [codemowers.ai]
     resources: [agents/status, tasks/status]
     verbs: [get]
+---
+# ── Dashboard roles ───────────────────────────────────────────────────────────
+# Bind them with RoleBindings, or with a Role naming resourceNames to grant a
+# single Agent. get also lets kubectl read the Agent spec, which names Secret
+# keys but holds no Secret values.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-dashboard-viewer
+rules:
+  - apiGroups: [codemowers.ai]
+    resources: [agents]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-dashboard-prompter
+rules:
+  - apiGroups: [codemowers.ai]
+    resources: [agents]
+    verbs: [get, prompt]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-dashboard-suspender
+rules:
+  - apiGroups: [codemowers.ai]
+    resources: [agents]
+    verbs: [get, suspend]
+---
+# Observers read matmlazi's conversations without prompting or suspending it.
+# An Agent with spec.access ignores RBAC, so this works only for Agents
+# without it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-dashboard-matmlazi-viewer
+  namespace: agents
+rules:
+  - apiGroups: [codemowers.ai]
+    resources: [agents]
+    resourceNames: [matmlazi]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-dashboard-matmlazi-viewer
+  namespace: agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-dashboard-matmlazi-viewer
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: github.com:codemowers:developers
 ---
 # ── matmlazi: developer SA ────────────────────────────────────────────────────
 apiVersion: v1

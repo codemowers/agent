@@ -28,8 +28,11 @@ header { min-height: 68px; display: flex; align-items: center; gap: 14px; paddin
 .brand-details .tagline::before { content: '·' / ''; padding: 0 5px; }
 .active-agent { flex: 0 1 260px; min-width: 130px; margin-left: auto; }
 .active-agent select { width: 100%; padding: 7px 10px; font-size: 12px; }
+.agent-suspend { flex: 0 0 auto; margin-left: auto; padding: 6px 12px; }
+.active-agent ~ .agent-suspend { margin-left: 0; }
+.agent-suspend.suspended { border-color: #e5b454; color: #f1d08c; }
 .identity { margin-left: auto; display: flex; align-items: center; gap: 9px; min-width: 0; padding: 4px 7px; border-color: transparent; background: transparent; color: var(--bright); font-size: 12px; }
-.active-agent + .identity { margin-left: 0; }
+.active-agent ~ .identity, .agent-suspend:not([hidden]) ~ .identity { margin-left: 0; }
 .identity:hover { background: var(--hover); }
 .identity-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .avatar { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: var(--raised); border: 1px solid var(--line); }
@@ -190,6 +193,7 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
 .live-thinking { margin-bottom: 12px; color: var(--muted); }
 .live-thinking summary { cursor: pointer; }
 .compose-hint { color: var(--muted); font-size: 11px; }
+.chat-compose.read-only { color: var(--muted); font-size: 12px; }
 
 @media (max-width: 900px) {
   .task-diagnostics { display: none; }
@@ -197,6 +201,7 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
   .sidebar-agent-slot { display: block; margin-top: auto; padding: 16px 20px 20px; border-top: 1px solid var(--line); }
   .sidebar-agent-slot .active-agent { display: block; width: 100%; margin: 0; }
   .sidebar-agent-slot .active-agent select { font-size: 14px; }
+  .sidebar-agent-slot .agent-suspend { width: 100%; margin: 10px 0 0; }
   .nav-toggle { display: grid; place-items: center; flex: 0 0 38px; width: 38px; height: 38px; padding: 0; font-size: 22px; }
   main { display: block; }
   #sidebarResize { display: none; }
@@ -232,7 +237,7 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
 </style>
 </head>
 <body>
-<header><button id="sidebarToggle" class="nav-toggle" type="button" aria-label="Open task menu" aria-controls="taskSidebar" aria-expanded="false">☰</button><div class="brand"><div class="brand-name">codemowers<span>/agent</span></div><div class="brand-details"><small id="brandDescriptor">GitOps agent harness</small><small class="tagline" id="rotatingTagline"></small></div></div><label class="active-agent"><span class="visually-hidden">Active Agent</span><select id="activeAgentSelect" aria-label="Active Agent"><option value="">Loading agents…</option></select></label><button id="identity" class="identity" type="button" title="Sign out" hidden><img id="identityAvatar" class="avatar" alt=""><span id="identityName" class="identity-name"></span></button><span id="authStatus" role="status"></span></header>
+<header><button id="sidebarToggle" class="nav-toggle" type="button" aria-label="Open task menu" aria-controls="taskSidebar" aria-expanded="false">☰</button><div class="brand"><div class="brand-name">codemowers<span>/agent</span></div><div class="brand-details"><small id="brandDescriptor">GitOps agent harness</small><small class="tagline" id="rotatingTagline"></small></div></div><label class="active-agent"><span class="visually-hidden">Active Agent</span><select id="activeAgentSelect" aria-label="Active Agent"><option value="">Loading agents…</option></select></label><button id="agentSuspend" class="btn-control agent-suspend" type="button" hidden></button><button id="identity" class="identity" type="button" title="Sign out" hidden><img id="identityAvatar" class="avatar" alt=""><span id="identityName" class="identity-name"></span></button><span id="authStatus" role="status"></span></header>
 <main>
   <aside id="taskSidebar" aria-label="Task navigation">
     <div class="sidebar-head"><h2>Tasks</h2><div class="sidebar-actions"><button id="newTaskButton" class="btn-primary" type="button">＋ New</button><button id="sidebarClose" class="sidebar-close" type="button" aria-label="Close task menu">×</button></div></div>
@@ -257,7 +262,7 @@ section { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow: hi
       <p id="draftNote" class="draft-note"></p>
       <div id="agentCapabilities" class="agent-capabilities" aria-live="polite"></div>
       <div id="agentWebhookSetup" aria-live="polite"></div>
-      <div class="new-task-actions"><button class="btn-primary" type="button" onclick="createTask()">Start task →</button></div>
+      <div class="new-task-actions"><button id="createTaskButton" class="btn-primary" type="button" onclick="createTask()">Start task →</button></div>
     </div>
   </div></section>
   <section id="detail" tabindex="-1" hidden></section>
@@ -298,10 +303,11 @@ const mobileSidebar = matchMedia('(max-width: 900px)');
 const sidebar = document.getElementById('taskSidebar');
 const sidebarToggle = document.getElementById('sidebarToggle');
 const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+// The Agent selector and its suspend button move into the drawer on mobile.
 function placeAgentControl() {
-  const control = document.querySelector('.active-agent');
-  if (mobileSidebar.matches) document.getElementById('sidebarAgentSlot').append(control);
-  else document.querySelector('header').insertBefore(control, document.getElementById('identity'));
+  const controls = [document.querySelector('.active-agent'), document.getElementById('agentSuspend')];
+  if (mobileSidebar.matches) document.getElementById('sidebarAgentSlot').append(...controls);
+  else for (const control of controls) document.querySelector('header').insertBefore(control, document.getElementById('identity'));
 }
 function setSidebar(open, restoreFocus = false) {
   open = mobileSidebar.matches && open;
@@ -340,6 +346,7 @@ window.installSidebarResize(document.getElementById('sidebarResize'), sidebar, m
 window.rotateTaglines(document.getElementById('rotatingTagline'));
 document.getElementById('newTaskButton').onclick = () => openWelcome();
 document.getElementById('activeAgentSelect').onchange = changeActiveAgent;
+document.getElementById('agentSuspend').onclick = toggleAgentSuspend;
 document.getElementById('identity').onclick = signOut;
 function signOut() {
   const idToken = tokens?.id_token;
@@ -356,6 +363,7 @@ function signOut() {
     document.querySelector('main').hidden = true;
     document.getElementById('identity').hidden = true;
     document.querySelector('.active-agent').hidden = true;
+    document.getElementById('agentSuspend').hidden = true;
     status('Signed out');
     const button = document.createElement('button');
     button.type = 'button'; button.textContent = 'Sign in';
@@ -726,6 +734,46 @@ function changeActiveAgent() {
   loadModels();
   renderAgentCapabilities();
   renderAgentWebhookSetup();
+  renderAgentSuspend();
+  if (selectedDetail) renderDetail(selectedDetail);
+}
+
+function activeAgent() {
+  const [name, namespace] = document.getElementById('activeAgentSelect').value.split('|');
+  return agents.find(item => item.name === name && item.namespace === namespace);
+}
+
+// The navbar button suspends or resumes every Task of the active Agent. Users
+// without the suspend verb see only the suspended state.
+function renderAgentSuspend() {
+  const button = document.getElementById('agentSuspend');
+  const agent = activeAgent();
+  const create = document.getElementById('createTaskButton');
+  create.disabled = !agent?.canPrompt;
+  create.title = agent && !agent.canPrompt ? 'Creating Tasks requires the prompt permission on this Agent' : '';
+  button.hidden = !agent || !agent.canSuspend && !agent.suspend;
+  if (button.hidden) return;
+  button.classList.toggle('suspended', agent.suspend);
+  button.disabled = !agent.canSuspend;
+  button.textContent = agent.suspend ? (agent.canSuspend ? 'Resume agent' : 'Agent suspended') : 'Suspend agent';
+  button.title = agent.suspend
+    ? `${agent.namespace}/${agent.name} is suspended; no worker runs.` + (agent.canSuspend ? ' Resume lets Tasks that are not suspended themselves start workers again.' : '')
+    : `Stop every worker of ${agent.namespace}/${agent.name} and keep new ones from starting; workspaces, sessions and queued messages are kept.`;
+}
+
+async function toggleAgentSuspend() {
+  const button = document.getElementById('agentSuspend');
+  const agent = activeAgent();
+  if (!agent) return;
+  const suspend = !agent.suspend;
+  if (suspend && !confirm(`Suspend ${agent.namespace}/${agent.name}? Its running workers stop now, including turns in progress.`)) return;
+  button.disabled = true; button.prepend(spinner());
+  try {
+    const response = await apiFetch(`/api/agents/${encodeURIComponent(agent.namespace)}/${encodeURIComponent(agent.name)}/suspend`, {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({suspend})});
+    if (!response.ok) return alert(await apiError(response));
+    await load();
+  } finally { button.querySelector('.spinner')?.remove(); renderAgentSuspend(); }
 }
 
 function copyableCommand(host, label, command) {
@@ -924,7 +972,9 @@ function renderActiveAgentSelect() {
     const agent = agents.find(item => item.name === name && item.namespace === namespace);
     const modelConfig = JSON.stringify([agent?.backend, agent?.modelName]);
     if (sel.dataset.modelConfig !== modelConfig) { sel.dataset.modelConfig = modelConfig; loadModels(); }
-    renderAgentCapabilities(); renderAgentWebhookSetup(); return;
+    renderAgentCapabilities(); renderAgentWebhookSetup(); renderAgentSuspend();
+    if (selectedDetail) renderDetail(selectedDetail);
+    return;
   }
   let selected = sel.value;
   if (!selected) { try { selected = localStorage.getItem('agent-operator-active-agent') || ''; } catch {} }
@@ -1107,6 +1157,10 @@ function renderDetail(task) {
   const heading = document.createElement('div'); heading.className = 'chat-heading';
   const title = document.createElement('h2'); title.textContent = task.title || task.name;
   heading.append(title);
+  const agent = agents.find(item => item.name === task.agentName && item.namespace === task.namespace);
+  // Readers without the prompt or suspend verb get no controls for them.
+  const canPrompt = !!agent?.canPrompt, canSuspend = !!agent?.canSuspend;
+  const agentSuspended = !!agent?.suspend && !task.suspended;
   const probe = document.createElement('div'); probe.className = 'mcp-probe';
   const report = task.mcpProbe;
   const disabledMcps = new Set(task.disabledMcps || []);
@@ -1134,6 +1188,9 @@ function renderDetail(task) {
     let action = disabled ? 'Click to enable' : 'Click to disable';
     if (endpoint.name === 'agent_operator') {
       action = 'Required by the worker';
+      button.disabled = true;
+    } else if (!canPrompt) {
+      action = 'Changing MCPs requires the prompt permission';
       button.disabled = true;
     } else button.onclick = () => toggleMCP(task.namespace, task.name, endpoint.name, !disabled);
     button.title = [`${mcpLabel(endpoint.name, endpoint.serverTitle)} (${endpoint.name}): ${status}`,
@@ -1188,7 +1245,6 @@ function renderDetail(task) {
     heading.append(references);
   }
   heading.append(taskDiagnostics(task, diagnosticsOpen));
-  const agent = agents.find(item => item.name === task.agentName && item.namespace === task.namespace);
   if (agent) {
     const integrations = document.createElement('details'); integrations.className = 'webhook-details';
     integrations.open = reused && !!existing.querySelector('.webhook-details')?.open;
@@ -1206,10 +1262,10 @@ function renderDetail(task) {
     return button;
   };
   const controls = [];
-  if (task.phase === 'Running' && task.activity === 'working' && !task.suspended) {
+  if (canPrompt && task.phase === 'Running' && task.activity === 'working' && !task.suspended) {
     controls.push(control('Stop', 'Interrupt the current turn; the worker stays available for follow-ups', {path: 'stop'}));
   }
-  if (!task.completed) {
+  if (canSuspend && !task.completed) {
     controls.push(task.suspended
       ? control('Resume', 'Allow the worker to start again with the same workspace and session', {path: 'suspend', body: {suspend: false}})
       : control('Suspend', task.workerPod && task.phase === 'Running'
@@ -1219,7 +1275,7 @@ function renderDetail(task) {
   }
   const remove = document.createElement('button'); remove.className = 'btn-danger'; remove.textContent = 'Delete';
   remove.onclick = () => deleteTask(task.namespace, task.name);
-  const headActions = document.createElement('div'); headActions.className = 'chat-head-actions'; headActions.append(probe, ...controls, remove);
+  const headActions = document.createElement('div'); headActions.className = 'chat-head-actions'; headActions.append(probe, ...controls, ...(task.canDelete ? [remove] : []));
   head.append(heading, headActions);
   const history = document.createElement('div'); history.className = 'chat-history'; history.id = 'timeline';
   const messages = [{id: 'objective', role: task.objectiveSource === 'webhook' ? 'external' : 'user',
@@ -1364,13 +1420,20 @@ function renderDetail(task) {
       idleCountdownTimer = setInterval(updateIdle, 1000);
     }
   }
+  if (!canPrompt) {
+    const readOnly = document.createElement('div'); readOnly.className = 'chat-compose read-only';
+    readOnly.textContent = 'Read-only: prompting requires the prompt permission on this Agent.';
+    chat.append(head, history, readOnly); host.replaceChildren(chat);
+    history.scrollTop = stick ? history.scrollHeight : scroll;
+    return;
+  }
   const compose = document.createElement('div'); compose.className = 'chat-compose';
   const input = document.createElement('textarea'); input.id = 'promptInput'; input.placeholder = wakePrompt;
   input.value = draft; input.disabled = task.completed;
   input.onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendPrompt(task.namespace, task.name, busy === 'Working'); } };
   const actions = document.createElement('div'); actions.className = 'compose-actions';
-  const hint = document.createElement('span'); hint.className = 'compose-hint'; hint.textContent = task.suspended ? 'Messages stay queued until you Resume' : busy === 'Working' ? 'Enter interrupts and sends · Queue for later waits' : 'Enter to send · Shift+Enter for a new line';
-  const send = document.createElement('button'); send.className = 'btn-send'; send.textContent = busy === 'Working' ? 'Interrupt and send' : task.suspended ? 'Queue message' : 'Send'; send.disabled = input.disabled;
+  const hint = document.createElement('span'); hint.className = 'compose-hint'; hint.textContent = task.suspended ? 'Messages stay queued until you Resume' : agentSuspended ? 'Messages stay queued until the Agent is resumed' : busy === 'Working' ? 'Enter interrupts and sends · Queue for later waits' : 'Enter to send · Shift+Enter for a new line';
+  const send = document.createElement('button'); send.className = 'btn-send'; send.textContent = busy === 'Working' ? 'Interrupt and send' : task.suspended || agentSuspended ? 'Queue message' : 'Send'; send.disabled = input.disabled;
   send.onclick = () => sendPrompt(task.namespace, task.name, busy === 'Working');
   actions.append(hint, send);
   if (busy === 'Working') {

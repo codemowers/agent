@@ -29,10 +29,15 @@ func (fakeVerifier) Verify(_ context.Context, token string) (caller, error) {
 	return caller{}, fmt.Errorf("invalid token")
 }
 
+// fakeReviewer grants every verb on the developer Agent, get on the observed
+// Agent and delete on Tasks named deletable.
 type fakeReviewer struct{}
 
-func (fakeReviewer) Allowed(_ context.Context, _ caller, _, name string) (bool, error) {
-	return name == "developer", nil
+func (fakeReviewer) Allowed(_ context.Context, _ caller, resource, verb, _, name string) (bool, error) {
+	if resource == "tasks" {
+		return verb == "delete" && name == "deletable", nil
+	}
+	return name == "developer" || name == "observed" && verb == verbRead, nil
 }
 
 func TestTaskAPIRequiresIdentityAndAgentAccess(t *testing.T) {
@@ -42,7 +47,7 @@ func TestTaskAPIRequiresIdentityAndAgentAccess(t *testing.T) {
 	}
 	checked := metav1.Now()
 	developer := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: types.UID("developer-uid"), Generation: 1},
-		Spec: agentsv1alpha1.AgentSpec{Suspended: true, IdleSeconds: int32Ptr(90), Model: agentsv1alpha1.ModelSpec{Backend: "claude", Name: "claude-default"}, Resources: &corev1.ResourceRequirements{
+		Spec: agentsv1alpha1.AgentSpec{IdleSeconds: int32Ptr(90), Model: agentsv1alpha1.ModelSpec{Backend: "claude", Name: "claude-default"}, Resources: &corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")}}},
 		Status: agentsv1alpha1.AgentStatus{ForgesCheckedAt: &checked, ForgesObservedProviders: agentsv1alpha1.ForgeProvidersHash(&agentsv1alpha1.Agent{}), Forges: []agentsv1alpha1.ForgeCapability{{Type: "gitea", ServerURL: "https://git.example.test", Status: "available"}}}}
 	support := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "support", Namespace: "team", UID: types.UID("support-uid")}}
@@ -150,9 +155,6 @@ func TestTaskAPIRequiresIdentityAndAgentAccess(t *testing.T) {
 	if task.Spec.AgentRef != "developer" {
 		t.Fatalf("Task did not reference selected Agent: %q", task.Spec.AgentRef)
 	}
-	if !task.Spec.Suspend {
-		t.Fatal("Task did not inherit Agent suspension")
-	}
 	if task.Spec.IdleSeconds == nil || *task.Spec.IdleSeconds != 90 {
 		t.Fatalf("Task did not copy Agent idle timeout: %+v", task.Spec.IdleSeconds)
 	}
@@ -183,7 +185,7 @@ func TestAgentAccessOverridesRBAC(t *testing.T) {
 		{"issuer identity is not a subject", "support", &agentsv1alpha1.AgentAccess{Users: []string{"https://issuer/#alice"}}, false},
 	} {
 		agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: tc.agent, Namespace: "team"}, Spec: agentsv1alpha1.AgentSpec{Access: tc.access}}
-		if got, err := h.canAccessAgent(r, alice, agent); err != nil || got != tc.want {
+		if got, err := h.canAccessAgent(r, alice, agent, verbRead); err != nil || got != tc.want {
 			t.Errorf("%s: got %v, %v", tc.name, got, err)
 		}
 	}
@@ -256,5 +258,81 @@ func TestTaskSuspendAndStopControls(t *testing.T) {
 	}
 	if code := post("/api/tasks/team/dev-task/stop", ``); code != http.StatusServiceUnavailable && code != http.StatusConflict {
 		t.Fatalf("stop without RabbitMQ or running turn: %d", code)
+	}
+}
+
+func TestObserverReadsButCannotPromptOrSuspend(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	owner := func(name string, uid types.UID) []metav1.OwnerReference {
+		return []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: name, UID: uid}}
+	}
+	developer := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: "developer-uid"}}
+	observed := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "observed", Namespace: "team", UID: "observed-uid"}}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "watched", Namespace: "team", OwnerReferences: owner("observed", observed.UID)},
+		Status: agentsv1alpha1.TaskStatus{Phase: agentsv1alpha1.TaskPhaseRunning, Activity: "working", WorkerPodUID: "pod-uid"}}
+	deletable := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "deletable", Namespace: "team", OwnerReferences: owner("observed", observed.UID)}}
+	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(developer, observed, task, deletable).
+		WithStatusSubresource(&agentsv1alpha1.Task{}).Build()
+	h := &Handler{Client: store, Verifier: fakeVerifier{}, Reviewer: fakeReviewer{}, AMQP: &probePublisher{}}
+	call := func(method, path, body string) int {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer valid")
+		response := httptest.NewRecorder()
+		h.routes().ServeHTTP(response, request)
+		return response.Code
+	}
+	if code := call(http.MethodGet, "/api/tasks/team/watched", ""); code != http.StatusOK {
+		t.Fatalf("observer cannot read conversation: %d", code)
+	}
+	for _, denied := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/tasks/team/watched/prompts", `{"body":"hello"}`},
+		{http.MethodPost, "/api/tasks/team/watched/stop", ``},
+		{http.MethodPost, "/api/tasks/team/watched/mcps", `{"name":"devices","disabled":true}`},
+		{http.MethodPost, "/api/tasks/team/watched/suspend", `{"suspend":true}`},
+		{http.MethodDelete, "/api/tasks/team/watched", ``},
+		{http.MethodPost, "/api/tasks", `{"agentName":"observed","agentNamespace":"team","objective":"Do things"}`},
+		{http.MethodPost, "/api/agents/team/observed/suspend", `{"suspend":true}`},
+	} {
+		if code := call(denied.method, denied.path, denied.body); code != http.StatusForbidden {
+			t.Errorf("%s %s: got %d, want 403", denied.method, denied.path, code)
+		}
+	}
+	for name, want := range map[string]bool{"watched": false, "deletable": true} {
+		request := httptest.NewRequest(http.MethodGet, "/api/tasks/team/"+name, nil)
+		request.Header.Set("Authorization", "Bearer valid")
+		response := httptest.NewRecorder()
+		h.routes().ServeHTTP(response, request)
+		var detail struct{ CanDelete bool }
+		if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil || detail.CanDelete != want {
+			t.Errorf("%s canDelete: got %v, want %v (%v)", name, detail.CanDelete, want, err)
+		}
+	}
+	if code := call(http.MethodDelete, "/api/tasks/team/deletable", ""); code != http.StatusNoContent {
+		t.Fatalf("Task delete RBAC ignored: %d", code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	request.Header.Set("Authorization", "Bearer valid")
+	response := httptest.NewRecorder()
+	h.routes().ServeHTTP(response, request)
+	var agents []agentItem
+	if err := json.Unmarshal(response.Body.Bytes(), &agents); err != nil || len(agents) != 2 {
+		t.Fatalf("Agent catalog: %d %s", response.Code, response.Body.String())
+	}
+	for _, agent := range agents {
+		if want := agent.Name == "developer"; agent.CanPrompt != want || agent.CanSuspend != want {
+			t.Errorf("%s permissions: prompt %v suspend %v", agent.Name, agent.CanPrompt, agent.CanSuspend)
+		}
+	}
+
+	if code := call(http.MethodPost, "/api/agents/team/developer/suspend", `{"suspend":true}`); code != http.StatusOK {
+		t.Fatalf("Agent suspend: %d", code)
+	}
+	var current agentsv1alpha1.Agent
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(developer), &current); err != nil || !current.Spec.Suspend {
+		t.Fatalf("Agent not suspended: %v", err)
 	}
 }

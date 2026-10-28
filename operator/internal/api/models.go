@@ -71,7 +71,7 @@ func (h *Handler) listAgentModels(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, http.StatusNotFound)
 		return
 	}
-	allowed, err := h.canAccessAgent(r, identity, &agent)
+	allowed, err := h.canAccessAgent(r, identity, &agent, verbRead)
 	if err != nil {
 		jsonError(w, err, http.StatusServiceUnavailable)
 		return

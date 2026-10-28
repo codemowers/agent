@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -117,6 +118,7 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("GET /config", h.config)
 	mux.HandleFunc("GET /api/agents", h.listAgents)
 	mux.HandleFunc("GET /api/agents/{namespace}/{name}/models", h.listAgentModels)
+	mux.HandleFunc("POST /api/agents/{namespace}/{name}/suspend", h.setAgentSuspend)
 	mux.HandleFunc("GET /api/me", h.me)
 	mux.HandleFunc("GET /api/tasks", h.listTasks)
 	mux.HandleFunc("GET /api/tasks/{namespace}/{name}", h.getTask)
@@ -151,7 +153,9 @@ type agentItem struct {
 	Backend         string                           `json:"backend"`
 	ModelName       string                           `json:"modelName,omitempty"`
 	GitHubUsername  string                           `json:"githubUsername,omitempty"`
-	Suspended       bool                             `json:"suspended"`
+	Suspend         bool                             `json:"suspend"`
+	CanPrompt       bool                             `json:"canPrompt"`
+	CanSuspend      bool                             `json:"canSuspend"`
 	IdleSeconds     int32                            `json:"idleSeconds"`
 	Resources       *corev1.ResourceRequirements     `json:"resources,omitempty"`
 	Forges          []agentsv1alpha1.ForgeCapability `json:"forges,omitempty"`
@@ -187,6 +191,7 @@ type taskItem struct {
 
 type taskDetail struct {
 	taskItem
+	CanDelete          bool                               `json:"canDelete"`
 	Conversation       []agentsv1alpha1.TaskMessage       `json:"conversation"`
 	ExternalReferences []agentsv1alpha1.ExternalReference `json:"externalReferences"`
 	MCPProbe           *agentsv1alpha1.MCPProbeStatus     `json:"mcpProbe,omitempty"`
@@ -240,31 +245,88 @@ func (h *Handler) authenticatedCaller(w http.ResponseWriter, r *http.Request) (c
 	return identity, true
 }
 
-func (h *Handler) canAccessAgent(r *http.Request, identity caller, agent *agentsv1alpha1.Agent) (bool, error) {
+// Dashboard operations map to verbs on the Agent: get reads its Tasks and
+// conversations, the custom verb prompt creates, prompts, interrupts and
+// configures Tasks, and the custom verb suspend suspends and resumes the Agent
+// and its Tasks.
+const (
+	verbRead    = "get"
+	verbPrompt  = "prompt"
+	verbSuspend = "suspend"
+)
+
+// canAccessAgent reports whether the caller holds verb on the Agent. An Agent
+// with spec.access grants the users and groups it names every verb.
+func (h *Handler) canAccessAgent(r *http.Request, identity caller, agent *agentsv1alpha1.Agent, verb string) (bool, error) {
 	if agent.Spec.Access != nil {
 		return agent.Spec.Access.Admits(identity.subject, identity.groups), nil
 	}
 	if h.Reviewer == nil {
 		return false, fmt.Errorf("Kubernetes authorization unavailable")
 	}
-	return h.Reviewer.Allowed(r.Context(), identity, agent.Namespace, agent.Name)
+	return h.Reviewer.Allowed(r.Context(), identity, "agents", verb, agent.Namespace, agent.Name)
 }
 
-func (h *Handler) canAccessTask(r *http.Request, identity caller, task *agentsv1alpha1.Task) (bool, error) {
+// taskAgent returns the Agent owning the Task, or nil when the Task has no
+// Agent owner or the owner was recreated.
+func (h *Handler) taskAgent(ctx context.Context, task *agentsv1alpha1.Task) (*agentsv1alpha1.Agent, error) {
 	for _, owner := range task.OwnerReferences {
 		if owner.APIVersion != agentsv1alpha1.GroupVersion.String() || owner.Kind != "Agent" {
 			continue
 		}
 		var agent agentsv1alpha1.Agent
-		if err := h.Client.Get(r.Context(), client.ObjectKey{Namespace: task.Namespace, Name: owner.Name}, &agent); err != nil {
-			return false, err
+		if err := h.Client.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: owner.Name}, &agent); err != nil {
+			return nil, err
 		}
 		if owner.UID != agent.UID {
-			return false, nil
+			return nil, nil
 		}
-		return h.canAccessAgent(r, identity, &agent)
+		return &agent, nil
 	}
-	return false, nil
+	return nil, nil
+}
+
+// canAccessTask reports whether the caller holds verb on the Task's Agent and
+// returns that Agent when it does.
+func (h *Handler) canAccessTask(r *http.Request, identity caller, task *agentsv1alpha1.Task, verb string) (*agentsv1alpha1.Agent, bool, error) {
+	agent, err := h.taskAgent(r.Context(), task)
+	if err != nil || agent == nil {
+		return nil, false, err
+	}
+	allowed, err := h.canAccessAgent(r, identity, agent, verb)
+	if err != nil || !allowed {
+		return nil, false, err
+	}
+	return agent, true, nil
+}
+
+type agentVerbSet struct {
+	read, prompt, suspend bool
+	err                   error
+}
+
+// agentVerbs checks the dashboard verbs of each Agent, at most eight Agents at
+// a time, skipping prompt and suspend where get is denied.
+func (h *Handler) agentVerbs(r *http.Request, identity caller, agents []agentsv1alpha1.Agent) []agentVerbSet {
+	out := make([]agentVerbSet, len(agents))
+	limit := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i := range agents {
+		wg.Go(func() {
+			limit <- struct{}{}
+			defer func() { <-limit }()
+			set := &out[i]
+			if set.read, set.err = h.canAccessAgent(r, identity, &agents[i], verbRead); set.err != nil || !set.read {
+				return
+			}
+			if set.prompt, set.err = h.canAccessAgent(r, identity, &agents[i], verbPrompt); set.err != nil {
+				return
+			}
+			set.suspend, set.err = h.canAccessAgent(r, identity, &agents[i], verbSuspend)
+		})
+	}
+	wg.Wait()
+	return out
 }
 
 // --- Handlers ---
@@ -279,16 +341,17 @@ func (h *Handler) listAgents(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, 500)
 		return
 	}
+	verbs := h.agentVerbs(r, identity, list.Items)
 	out := make([]agentItem, 0, len(list.Items))
-	for _, a := range list.Items {
-		allowed, err := h.canAccessAgent(r, identity, &a)
-		if err != nil {
-			jsonError(w, err, 503)
+	for i, a := range list.Items {
+		if verbs[i].err != nil {
+			jsonError(w, verbs[i].err, 503)
 			return
 		}
-		if !allowed {
+		if !verbs[i].read {
 			continue
 		}
+		canPrompt, canSuspend := verbs[i].prompt, verbs[i].suspend
 		forges := a.Status.Forges
 		forgeStatusCurrent := agentsv1alpha1.ForgesCurrent(&a)
 		if !forgeStatusCurrent {
@@ -303,7 +366,9 @@ func (h *Handler) listAgents(w http.ResponseWriter, r *http.Request) {
 			Backend:        a.Spec.Model.Backend,
 			ModelName:      a.Spec.Model.Name,
 			GitHubUsername: agentGitHubUsername(&a),
-			Suspended:      a.Spec.Suspended,
+			Suspend:        a.Spec.Suspend,
+			CanPrompt:      canPrompt,
+			CanSuspend:     canSuspend,
 			IdleSeconds:    agentsv1alpha1.AgentIdleSeconds(&a),
 			Resources:      agentsv1alpha1.AgentWorkerResources(&a),
 			Forges:         forges,
@@ -334,7 +399,7 @@ func (h *Handler) listTasks(w http.ResponseWriter, r *http.Request) {
 	allowed := make(map[agentKey]bool)
 	for i := range agents.Items {
 		a := &agents.Items[i]
-		ok, err := h.canAccessAgent(r, identity, a)
+		ok, err := h.canAccessAgent(r, identity, a, verbRead)
 		if err != nil {
 			jsonError(w, err, 503)
 			return
@@ -379,7 +444,7 @@ func (h *Handler) getTask(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, http.StatusNotFound)
 		return
 	}
-	allowed, err := h.canAccessTask(r, identity, &task)
+	agent, allowed, err := h.canAccessTask(r, identity, &task, verbRead)
 	if err != nil {
 		jsonError(w, err, 503)
 		return
@@ -388,22 +453,19 @@ func (h *Handler) getTask(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, fmt.Errorf("access to Task denied"), http.StatusForbidden)
 		return
 	}
-	item := taskDisplay(&task)
-	for _, owner := range task.OwnerReferences {
-		if owner.APIVersion == agentsv1alpha1.GroupVersion.String() && owner.Kind == "Agent" {
-			item.AgentName = owner.Name
-			var agent agentsv1alpha1.Agent
-			if h.Client.Get(r.Context(), client.ObjectKey{Namespace: task.Namespace, Name: owner.Name}, &agent) == nil && agent.UID == owner.UID {
-				item.AgentGitHubUsername = agentGitHubUsername(&agent)
-			}
-			break
-		}
+	canDelete, err := h.canDeleteTask(r, identity, &task, agent)
+	if err != nil {
+		jsonError(w, err, 503)
+		return
 	}
+	item := taskDisplay(&task)
+	item.AgentName = agent.Name
+	item.AgentGitHubUsername = agentGitHubUsername(agent)
 	conversation := task.Status.Conversation
 	if conversation == nil {
 		conversation = []agentsv1alpha1.TaskMessage{}
 	}
-	jsonOK(w, taskDetail{taskItem: item, Conversation: conversation, ExternalReferences: taskExternalReferences(&task), MCPProbe: task.Status.MCPProbe})
+	jsonOK(w, taskDetail{taskItem: item, CanDelete: canDelete, Conversation: conversation, ExternalReferences: taskExternalReferences(&task), MCPProbe: task.Status.MCPProbe})
 }
 
 func (h *Handler) requestMCPProbe(w http.ResponseWriter, r *http.Request) {
@@ -421,7 +483,7 @@ func (h *Handler) requestMCPProbe(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, http.StatusNotFound)
 		return
 	}
-	allowed, err := h.canAccessTask(r, identity, &task)
+	_, allowed, err := h.canAccessTask(r, identity, &task, verbRead)
 	if err != nil {
 		jsonError(w, err, http.StatusServiceUnavailable)
 		return
@@ -541,7 +603,7 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, 404)
 		return
 	}
-	allowed, err := h.canAccessAgent(r, identity, &agent)
+	allowed, err := h.canAccessAgent(r, identity, &agent, verbPrompt)
 	if err != nil {
 		jsonError(w, err, 503)
 		return
@@ -571,7 +633,6 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		Spec: agentsv1alpha1.TaskSpec{
 			AgentRef:    agent.Name,
 			Objective:   req.Objective,
-			Suspend:     agent.Spec.Suspended,
 			IdleSeconds: int32Ptr(agentsv1alpha1.AgentIdleSeconds(&agent)),
 			Resources:   agentsv1alpha1.AgentWorkerResources(&agent),
 		},
@@ -616,7 +677,7 @@ func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, http.StatusNotFound)
 		return
 	}
-	allowed, err := h.canAccessTask(r, identity, &task)
+	_, allowed, err := h.canAccessTask(r, identity, &task, verbPrompt)
 	if err != nil {
 		jsonError(w, err, 503)
 		return
@@ -678,8 +739,9 @@ func (h *Handler) sendPrompt(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, result)
 }
 
-// authorizedTask authenticates the caller and loads a Task it may access.
-func (h *Handler) authorizedTask(w http.ResponseWriter, r *http.Request) (caller, *agentsv1alpha1.Task, bool) {
+// authorizedTask authenticates the caller and loads a Task on whose Agent it
+// holds verb.
+func (h *Handler) authorizedTask(w http.ResponseWriter, r *http.Request, verb string) (caller, *agentsv1alpha1.Task, bool) {
 	identity, ok := h.authenticatedCaller(w, r)
 	if !ok {
 		return caller{}, nil, false
@@ -689,7 +751,7 @@ func (h *Handler) authorizedTask(w http.ResponseWriter, r *http.Request) (caller
 		jsonError(w, err, http.StatusNotFound)
 		return caller{}, nil, false
 	}
-	allowed, err := h.canAccessTask(r, identity, &task)
+	_, allowed, err := h.canAccessTask(r, identity, &task, verb)
 	if err != nil {
 		jsonError(w, err, http.StatusServiceUnavailable)
 		return caller{}, nil, false
@@ -704,7 +766,7 @@ func (h *Handler) authorizedTask(w http.ResponseWriter, r *http.Request) (caller
 // setTaskSuspend pauses or resumes a Task. Pausing stops its worker while
 // retaining the PVC, native session and queued messages.
 func (h *Handler) setTaskSuspend(w http.ResponseWriter, r *http.Request) {
-	identity, task, ok := h.authorizedTask(w, r)
+	identity, task, ok := h.authorizedTask(w, r, verbSuspend)
 	if !ok {
 		return
 	}
@@ -735,9 +797,49 @@ func (h *Handler) setTaskSuspend(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]bool{"suspend": req.Suspend})
 }
 
+// setAgentSuspend suspends or resumes every Task of an Agent through
+// Agent.spec.suspend; each Task keeps its own spec.suspend. The operator may
+// change no other Agent field.
+func (h *Handler) setAgentSuspend(w http.ResponseWriter, r *http.Request) {
+	identity, ok := h.authenticatedCaller(w, r)
+	if !ok {
+		return
+	}
+	var req suspendReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req); err != nil {
+		jsonError(w, err, 400)
+		return
+	}
+	var agent agentsv1alpha1.Agent
+	if err := h.Client.Get(r.Context(), client.ObjectKey{Namespace: r.PathValue("namespace"), Name: r.PathValue("name")}, &agent); err != nil {
+		jsonError(w, err, http.StatusNotFound)
+		return
+	}
+	allowed, err := h.canAccessAgent(r, identity, &agent, verbSuspend)
+	if err != nil {
+		jsonError(w, err, http.StatusServiceUnavailable)
+		return
+	}
+	if !allowed {
+		jsonError(w, fmt.Errorf("access to Agent denied"), http.StatusForbidden)
+		return
+	}
+	if agent.Spec.Suspend != req.Suspend {
+		patch := client.MergeFrom(agent.DeepCopy())
+		agent.Spec.Suspend = req.Suspend
+		if err := h.Client.Patch(r.Context(), &agent, patch); err != nil {
+			jsonError(w, err, http.StatusServiceUnavailable)
+			return
+		}
+		log.FromContext(r.Context()).Info("Agent suspend changed", "namespace", agent.Namespace, "agent", agent.Name,
+			"suspend", req.Suspend, "actor", identity.user)
+	}
+	jsonOK(w, map[string]bool{"suspend": req.Suspend})
+}
+
 // setMCPDisabled adds or removes one MCP endpoint from Task.spec.disabledMCPs.
 func (h *Handler) setMCPDisabled(w http.ResponseWriter, r *http.Request) {
-	identity, task, ok := h.authorizedTask(w, r)
+	identity, task, ok := h.authorizedTask(w, r, verbPrompt)
 	if !ok {
 		return
 	}
@@ -784,7 +886,7 @@ func (h *Handler) setMCPDisabled(w http.ResponseWriter, r *http.Request) {
 // stopTurn interrupts the current CLI turn of the running worker. The worker
 // keeps its Pod, PVC and native session for follow-up prompts.
 func (h *Handler) stopTurn(w http.ResponseWriter, r *http.Request) {
-	identity, task, ok := h.authorizedTask(w, r)
+	identity, task, ok := h.authorizedTask(w, r, verbPrompt)
 	if !ok {
 		return
 	}
@@ -838,6 +940,19 @@ func (h *Handler) recordUserAction(r *http.Request, task *agentsv1alpha1.Task, i
 	})
 }
 
+// canDeleteTask requires Kubernetes delete on the Task itself, so the dashboard
+// cannot delete what kubectl could not, unless the spec.access of its Agent,
+// which the caller may already read, admits the caller.
+func (h *Handler) canDeleteTask(r *http.Request, identity caller, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) (bool, error) {
+	if agent.Spec.Access != nil {
+		return true, nil
+	}
+	if h.Reviewer == nil {
+		return false, fmt.Errorf("Kubernetes authorization unavailable")
+	}
+	return h.Reviewer.Allowed(r.Context(), identity, "tasks", "delete", task.Namespace, task.Name)
+}
+
 func (h *Handler) deleteTask(w http.ResponseWriter, r *http.Request) {
 	identity, ok := h.authenticatedCaller(w, r)
 	if !ok {
@@ -850,7 +965,10 @@ func (h *Handler) deleteTask(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err, 404)
 		return
 	}
-	allowed, err := h.canAccessTask(r, identity, &task)
+	agent, allowed, err := h.canAccessTask(r, identity, &task, verbRead)
+	if err == nil && allowed {
+		allowed, err = h.canDeleteTask(r, identity, &task, agent)
+	}
 	if err != nil {
 		jsonError(w, err, 503)
 		return

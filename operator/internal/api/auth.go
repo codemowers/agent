@@ -32,17 +32,17 @@ type tokenVerifier interface {
 	Verify(context.Context, string) (caller, error)
 }
 type accessReviewer interface {
-	Allowed(context.Context, caller, string, string) (bool, error)
+	Allowed(ctx context.Context, user caller, resource, verb, namespace, name string) (bool, error)
 }
 
 type subjectAccessReviewer struct {
 	client authclient.AuthorizationV1Interface
 }
 
-func (s subjectAccessReviewer) Allowed(ctx context.Context, user caller, namespace, name string) (bool, error) {
+func (s subjectAccessReviewer) Allowed(ctx context.Context, user caller, resource, verb, namespace, name string) (bool, error) {
 	review, err := s.client.SubjectAccessReviews().Create(ctx, &authv1.SubjectAccessReview{
 		Spec: authv1.SubjectAccessReviewSpec{User: user.user, Groups: user.groups,
-			ResourceAttributes: &authv1.ResourceAttributes{Group: "codemowers.ai", Resource: "agents", Verb: "get", Namespace: namespace, Name: name}},
+			ResourceAttributes: &authv1.ResourceAttributes{Group: "codemowers.ai", Resource: resource, Verb: verb, Namespace: namespace, Name: name}},
 	}, metav1.CreateOptions{})
 	if err != nil {
 		return false, err

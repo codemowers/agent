@@ -9,6 +9,8 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Name }}-{{ .Release.Namespace }}-operator
 rules:
+  # patch sets spec.suspend for dashboard users holding the suspend verb;
+  # the agent-suspend admission policy below rejects any other change.
   - apiGroups: [codemowers.ai]
     resources:
       - agents
@@ -16,6 +18,7 @@ rules:
       - get
       - list
       - watch
+      - patch
   - apiGroups: [codemowers.ai]
     resources:
       - taskpolicies
@@ -108,6 +111,49 @@ subjects:
   - kind: ServiceAccount
     name: {{ .Release.Name }}
     namespace: {{ .Release.Namespace }}
+---
+# The operator may change only spec.suspend of an Agent; namespace
+# administrators own every other field.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-agent-suspend
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [codemowers.ai]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [agents]
+  matchConditions:
+    - name: operator
+      expression: request.userInfo.username == 'system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}'
+  validations:
+    - message: The operator may change only spec.suspend of an Agent.
+      expression: >-
+          object.metadata.?labels == oldObject.metadata.?labels &&
+          object.metadata.?annotations == oldObject.metadata.?annotations &&
+          object.metadata.?finalizers == oldObject.metadata.?finalizers &&
+          object.metadata.?ownerReferences == oldObject.metadata.?ownerReferences &&
+          object.spec.?idleSeconds == oldObject.spec.?idleSeconds &&
+          object.spec.?coalesceSeconds == oldObject.spec.?coalesceSeconds &&
+          object.spec.?resourcePrefix == oldObject.spec.?resourcePrefix &&
+          object.spec.?instructions == oldObject.spec.?instructions &&
+          object.spec.?resources == oldObject.spec.?resources &&
+          object.spec.?template == oldObject.spec.?template &&
+          object.spec.?model == oldObject.spec.?model &&
+          object.spec.?volumeClaimTemplates == oldObject.spec.?volumeClaimTemplates &&
+          object.spec.?gitProviders == oldObject.spec.?gitProviders &&
+          object.spec.?access == oldObject.spec.?access
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-agent-suspend
+spec:
+  policyName: {{ .Release.Name }}-{{ .Release.Namespace }}-agent-suspend
+  validationActions: [Deny]
 ---
 # Leader election records an Event on its Lease in the release namespace.
 apiVersion: rbac.authorization.k8s.io/v1

@@ -170,6 +170,13 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	if response := call("valid", "create_task", `{"objective":"New work","routingKey":"https://example.test/one"}`); !strings.Contains(response.Body.String(), `\"existing\":true`) {
 		t.Fatalf("duplicate key created: %s", response.Body.String())
 	}
+	if response := call("valid", "create_task", `{"objective":"Held work","routingKey":"https://example.test/held","suspend":true}`); response.Code != 200 || strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatalf("suspended create rejected: %s", response.Body.String())
+	}
+	var held agentsv1alpha1.Task
+	if err := store.Get(context.Background(), client.ObjectKey{Namespace: task.Namespace, Name: agentsv1alpha1.TaskNameForKey(agent.UID, "https://example.test/held")}, &held); err != nil || !held.Spec.Suspend {
+		t.Fatalf("created Task not suspended: %v %+v", err, held.Spec)
+	}
 	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &current); err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +232,24 @@ func TestAgentMCPBindsWorkerToOwnTaskAndAgent(t *testing.T) {
 	}
 	if !current.Status.TurnStartedAt.Equal(started) {
 		t.Fatal("retry reset elapsed turn duration")
+	}
+	var suspended agentsv1alpha1.Agent
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(agent), &suspended); err != nil {
+		t.Fatal(err)
+	}
+	suspended.Spec.Suspend = true
+	if err := store.Update(context.Background(), &suspended); err != nil {
+		t.Fatal(err)
+	}
+	if response := call("valid", "create_task", `{"objective":"Late work"}`); !strings.Contains(response.Body.String(), "Agent is suspended") {
+		t.Fatalf("worker of suspended Agent created a Task: %s", response.Body.String())
+	}
+	suspended.Spec.Suspend = false
+	if err := store.Update(context.Background(), &suspended); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &current); err != nil {
+		t.Fatal(err)
 	}
 	current.Status.WorkerPodUID = "replacement-pod-uid"
 	if err := store.Status().Update(context.Background(), &current); err != nil {

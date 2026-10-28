@@ -198,9 +198,10 @@ func agentTools() []map[string]any {
 		mcpTool("list_tasks", "List bounded Tasks of this Agent to find existing work and avoid duplicates.", map[string]any{}),
 		mcpTool("get_task", "Read one Task of this Agent, including its routing keys, references and recent conversation.", map[string]any{
 			"name": map[string]string{"type": "string"}}, "name"),
-		mcpTool("create_task", "Create a new Task for this Agent. Supply a canonical resource URI as routingKey to deduplicate repeated events.", map[string]any{
+		mcpTool("create_task", "Create a new Task for this Agent. Supply a canonical resource URI as routingKey to deduplicate repeated events. Set suspend to create it without starting a worker until a human resumes it.", map[string]any{
 			"objective":  map[string]string{"type": "string"},
-			"routingKey": map[string]any{"type": "string", "format": "uri"}}, "objective"),
+			"routingKey": map[string]any{"type": "string", "format": "uri"},
+			"suspend":    map[string]string{"type": "boolean"}}, "objective"),
 		mcpTool("complete_task", "Complete a Task of this Agent and stop its worker while retaining history and workspace.", map[string]any{
 			"name": map[string]string{"type": "string"}, "reason": map[string]string{"type": "string"}}, "name", "reason"),
 	}
@@ -307,6 +308,9 @@ func (h *Handler) scopedTask(ctx context.Context, scope *workerScope, name strin
 func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name string, raw json.RawMessage) (any, error) {
 	if scope.Task.Spec.Suspend && name != "report_turn_result" {
 		return nil, errors.New("Task is suspended")
+	}
+	if scope.Agent.Spec.Suspend && name != "report_turn_result" {
+		return nil, errors.New("Agent is suspended")
 	}
 	switch name {
 	case "report_mcp_probe":
@@ -587,6 +591,7 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 		var arg struct {
 			Objective  string `json:"objective"`
 			RoutingKey string `json:"routingKey"`
+			Suspend    bool   `json:"suspend"`
 		}
 		if decodeToolArgs(raw, &arg) != nil || strings.TrimSpace(arg.Objective) == "" || len(arg.Objective) > 16000 {
 			return nil, errors.New("objective required (up to 16000 bytes)")
@@ -617,15 +622,15 @@ func (h *Handler) callAgentTool(ctx context.Context, scope *workerScope, name st
 			Labels: map[string]string{"codemowers.ai/agent": scope.Agent.Name},
 			OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent",
 				Name: scope.Agent.Name, UID: scope.Agent.UID, Controller: &controller, BlockOwnerDeletion: &controller}}},
-			Spec: agentsv1alpha1.TaskSpec{AgentRef: scope.Agent.Name, Objective: arg.Objective,
+			Spec: agentsv1alpha1.TaskSpec{AgentRef: scope.Agent.Name, Objective: arg.Objective, Suspend: arg.Suspend,
 				RoutingKeys: func() []string {
 					if arg.RoutingKey == "" {
 						return nil
 					}
 					return []string{arg.RoutingKey}
 				}(),
-				Suspend: scope.Agent.Spec.Suspended, IdleSeconds: int32Ptr(agentsv1alpha1.AgentIdleSeconds(&scope.Agent)),
-				Resources: agentsv1alpha1.AgentWorkerResources(&scope.Agent)}}
+				IdleSeconds: int32Ptr(agentsv1alpha1.AgentIdleSeconds(&scope.Agent)),
+				Resources:   agentsv1alpha1.AgentWorkerResources(&scope.Agent)}}
 		if err := h.Client.Create(ctx, task); apierrors.IsAlreadyExists(err) && arg.RoutingKey != "" {
 			existing, lookupErr := h.scopedTask(ctx, scope, name)
 			if lookupErr != nil || len(existing.Spec.RoutingKeys) != 1 || existing.Spec.RoutingKeys[0] != arg.RoutingKey {

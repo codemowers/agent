@@ -380,6 +380,48 @@ func TestAgentChangeEnqueuesOwnedTasks(t *testing.T) {
 	}
 }
 
+func TestAgentSuspendStopsWorkerAndKeepsTaskSuspend(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: types.UID("agent-uid")},
+		Spec: agentsv1alpha1.AgentSpec{Suspend: true}}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team", UID: types.UID("task-uid"),
+		Labels:          map[string]string{"codemowers.ai/agent": agent.Name},
+		OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID, Controller: boolPtr(true)}}},
+		Spec: agentsv1alpha1.TaskSpec{AgentRef: agent.Name, IdleSeconds: int32Ptr(90), Resources: &corev1.ResourceRequirements{},
+			Model: &agentsv1alpha1.ModelSpec{Backend: "claude"}},
+		Status: agentsv1alpha1.TaskStatus{Phase: agentsv1alpha1.TaskPhaseRunning, WorkerPodName: "worker", WorkerPodUID: "pod-uid"}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "worker", Namespace: "team", UID: types.UID("pod-uid"),
+		Labels: map[string]string{"codemowers.ai/task": task.Name}, OwnerReferences: []metav1.OwnerReference{taskOwnerRef(task)}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	store := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(task).WithObjects(agent, task, pod).Build()
+	r := &TaskReconciler{Client: store}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(task)}
+	for range 2 {
+		if _, err := r.Reconcile(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("worker of suspended Agent remains: %v", err)
+	}
+	var actual agentsv1alpha1.Task
+	if err := store.Get(context.Background(), client.ObjectKeyFromObject(task), &actual); err != nil {
+		t.Fatal(err)
+	}
+	if actual.Spec.Suspend {
+		t.Fatal("Agent suspension was copied into the Task")
+	}
+	if actual.Status.Phase != agentsv1alpha1.TaskPhasePaused || actual.Status.Reason != "AgentSuspended" {
+		t.Fatalf("unexpected phase: %s %s", actual.Status.Phase, actual.Status.Reason)
+	}
+}
+
 func TestWorkerConfigChangeStopsOwnedPodOnce(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {

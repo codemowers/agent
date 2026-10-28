@@ -24,7 +24,8 @@ import (
 
 // createTaskByPolicy creates a Task for an unclaimed key when the most
 // specific TaskPolicy of the Agent allows it. An event alone cannot choose a
-// repository, Agent credential, or assignee.
+// repository, Agent credential, or assignee. A suspended Agent's Tasks are
+// still created; the reconciler starts no worker for them.
 func (c *EventConsumer) createTaskByPolicy(ctx context.Context, agent *agentsv1alpha1.Agent, ev intakeEvent) (bool, error) {
 	var policies agentsv1alpha1.TaskPolicyList
 	if err := c.APIReader.List(ctx, &policies, client.InNamespace(ev.Namespace)); err != nil {
@@ -69,7 +70,6 @@ func (c *EventConsumer) createTaskByPolicy(ctx context.Context, agent *agentsv1a
 		Spec: agentsv1alpha1.TaskSpec{
 			AgentRef:    agent.Name,
 			Objective:   fmt.Sprintf("%s: %s. Read the latest updates and decide what to do next.", ev.Text, source),
-			Suspend:     agent.Spec.Suspended,
 			IdleSeconds: int32Ptr(agentsv1alpha1.AgentIdleSeconds(agent)),
 			Resources:   agentsv1alpha1.AgentWorkerResources(agent),
 			RoutingKeys: []string{ev.Key},

@@ -101,7 +101,9 @@ routing, and worker Pods derived from `Agent.spec.template` as a Kubernetes
 `PodTemplateSpec` plus StatefulSet-shaped `volumeClaimTemplates`.
 Namespace administrators, who are humans, define and update Agent specs. No
 automation receives RBAC to create or mutate Agents. The operator reads Agents
-and updates only `Agent.status`. Namespace administrators may also declare
+and updates `Agent.status`; its only spec write is `Agent.spec.suspend` for a
+dashboard user holding the `suspend` verb, and the chart's `agent-suspend`
+ValidatingAdmissionPolicy rejects any other Agent change by the operator. Namespace administrators may also declare
 Tasks with immutable `Task.spec.agentRef` naming a same-namespace Agent; the
 operator adds their Agent ownerReference and routing label before creating a
 worker or PVC. The operator creates event/UI Tasks and owns derived Task metadata
@@ -484,6 +486,15 @@ that instruction when Send is clicked with an empty input.
 The Task header offers Suspend/Resume, which sets `Task.spec.suspend`; the
 operator stops the worker and keeps the PVC, native session and queued
 messages. A completed Task cannot be resumed from the UI.
+The navbar offers Suspend agent/Resume agent for the active Agent, which sets
+`Agent.spec.suspend`: every Task of the Agent stops its worker and starts none,
+with phase Paused and reason AgentSuspended, while keeping its own
+`spec.suspend`, so resuming the Agent resumes only Tasks not suspended
+themselves. Events and prompts still queue, and TaskPolicies still create
+Tasks, which wait for the Agent to resume. Dashboard Tasks start unsuspended,
+`create_task` takes an optional `suspend` for the new Task, and a Task applied
+with kubectl keeps whatever `spec.suspend` it declares. Readers without
+`suspend` see only a disabled Agent suspended label.
 Unexpected worker failure or disappearance sets `Task.spec.suspend: true`; queued
 messages cannot restart it. Only explicit Resume permits execution again.
 Suspended Tasks accept web prompts into their durable queue, with the composer
@@ -602,8 +613,13 @@ deliveries, and GitHub and Gitea sign neither headers nor a timestamp, so keep
 secrets with the receiver owner. The operator UI uses its native OIDCClient owner
 Secret and bearer tokens. When an Agent sets `spec.access`, its `users` (OIDC
 `sub` claims) and `groups` alone decide who may read, create, prompt and control
-its Tasks, and an empty `access` admits nobody; otherwise SubjectAccessReview
-for Agent `get` rights decides.
+its Tasks, and an empty `access` admits nobody. Otherwise SubjectAccessReview
+for the user `<issuer>#<sub>` and its groups decides by verb on the Agent:
+`get` reads its Tasks and conversations, the custom verb `prompt` creates,
+prompts, stops and toggles MCPs of its Tasks, and the custom verb `suspend`
+suspends and resumes the Agent and its Tasks. Deleting a Task takes `delete`
+on that Task. The Agent list reports `canPrompt` and `canSuspend`, and the UI
+shows readers the timeline without composer or controls.
 Its API streams Agent and Task cache invalidations to the browser over an
 authenticated HTTP event stream. Task subscriptions are scoped to Agent names
 and checked the same way; the browser fetches changed state from
@@ -792,7 +808,7 @@ native Claude/Codex/OpenCode and Kubernetes API requests retain their own user a
 | --- | --- |
 | `set_task_title` | Short display title for the worker's own Task |
 | `report_progress` | Bounded semantic progress/question, not completion |
-| `list_tasks`, `get_task`, `create_task`, `complete_task` | Same-Agent Task discovery, deduplicated creation and audited completion |
+| `list_tasks`, `get_task`, `create_task`, `complete_task` | Same-Agent Task discovery, deduplicated creation, optionally suspended, and audited completion |
 | `report_turn_start`, `report_turn_progress`, `report_turn_result`, `report_mcp_probe` | Worker runtime reporting; not for model use |
 
 The `feeds` MCP provides `list_feeds` and `list_feed_items` for the Feeds of
@@ -935,7 +951,7 @@ credentials. Anonymous public draft/shared views are separately scoped below.
 Product drafts live in the embedded UI `operator/internal/api/public/drafts.json`.
 Paint, File drop and Pad retain product-specific requirements. Selecting one
 copies editable text into the ordinary Task objective. Task creation requires
-OIDC authentication and Agent `get` access.
+OIDC authentication and the Agent `prompt` verb.
 
 ## Declarative examples
 

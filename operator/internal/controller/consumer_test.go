@@ -210,10 +210,10 @@ func TestSelfEventRequiresMatchingCurrentForgeIdentity(t *testing.T) {
 			t.Fatalf("unrelated event suppressed: %+v", changed)
 		}
 	}
-	// Spec changes other than gitProviders keep the snapshot.
-	agent.Generation = 4
+	// Spec changes other than gitProviders, such as suspend, keep the snapshot.
+	agent.Generation, agent.Spec.Suspend = 4, true
 	if !selfEvent(agent, event) {
-		t.Fatal("unrelated spec change made the forge identity stale")
+		t.Fatal("Agent suspension made the forge identity stale")
 	}
 	agent.Spec.GitProviders = []agentsv1alpha1.GitProvider{{Type: "gitea", ServerURL: "https://git.example.test", CredentialKeyRef: "other"}}
 	if selfEvent(agent, event) {

@@ -23,6 +23,9 @@ spec:
     - jsonPath: .status.taskCount
       name: Tasks
       type: integer
+    - jsonPath: .spec.suspend
+      name: Suspended
+      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -74,8 +77,8 @@ spec:
                     x-kubernetes-list-type: set
                     items:
                       type: string
-              suspended:
-                description: Suspended makes newly created Tasks start suspended. Existing Tasks keep their own suspend state.
+              suspend:
+                description: Suspend stops the workers of every Task of the Agent and keeps new ones from starting, retaining PVCs, native sessions and queued messages. Each Task keeps its own spec.suspend.
                 type: boolean
               idleSeconds:
                 description: Worker idle timeout copied into new Tasks; absent means 3600 seconds.

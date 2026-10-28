@@ -55,7 +55,7 @@ func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: types.UID("agent-uid")},
-		Spec: agentsv1alpha1.AgentSpec{Suspended: true, IdleSeconds: int32Ptr(120), CoalesceSeconds: int32Ptr(120), Resources: &corev1.ResourceRequirements{
+		Spec: agentsv1alpha1.AgentSpec{IdleSeconds: int32Ptr(120), CoalesceSeconds: int32Ptr(120), Resources: &corev1.ResourceRequirements{
 			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}}, GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://forge.example.test",
 			CredentialKeyRef: "git-token"}}}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agentsv1alpha1.ProviderTokensSecretName, Namespace: "team"},
@@ -100,9 +100,6 @@ func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 	}
 	if tasks.Items[0].Spec.AgentRef != agent.Name {
 		t.Fatalf("webhook Task did not reference Agent: %q", tasks.Items[0].Spec.AgentRef)
-	}
-	if !tasks.Items[0].Spec.Suspend {
-		t.Fatal("webhook Task did not inherit Agent suspension")
 	}
 	if tasks.Items[0].Spec.IdleSeconds == nil || *tasks.Items[0].Spec.IdleSeconds != 120 {
 		t.Fatalf("webhook Task did not copy Agent idle timeout: %+v", tasks.Items[0].Spec.IdleSeconds)

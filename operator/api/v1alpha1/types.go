@@ -22,6 +22,7 @@ var (
 // +kubebuilder:resource:scope=Namespaced,shortName=ag
 // +kubebuilder:printcolumn:name="Backend",type=string,JSONPath=".spec.model.backend"
 // +kubebuilder:printcolumn:name="Tasks",type=integer,JSONPath=".status.taskCount"
+// +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // Agent defines a privilege domain: which credentials and MCP endpoints worker
@@ -36,9 +37,11 @@ type Agent struct {
 }
 
 type AgentSpec struct {
-	// Suspended makes newly created Tasks start suspended. Existing Tasks keep
-	// their own suspend state.
-	Suspended bool `json:"suspended,omitempty"`
+	// Suspend stops the workers of every Task of the Agent and keeps new ones
+	// from starting, retaining PVCs, native sessions and queued messages. Each
+	// Task keeps its own spec.suspend, so resuming the Agent resumes only Tasks
+	// that are not suspended themselves.
+	Suspend bool `json:"suspend,omitempty"`
 	// IdleSeconds is copied into new Tasks. Zero shuts the worker down as soon
 	// as its queue is empty after a completed turn; nil defaults to one hour.
 	// +kubebuilder:validation:Minimum=0
