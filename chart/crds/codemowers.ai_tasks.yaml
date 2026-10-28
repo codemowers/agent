@@ -146,8 +146,8 @@ spec:
                     pattern: '^https?://[^/?#@]+(/[^?#]*)?$'
                   credentialKeyRef:
                     pattern: '^[A-Za-z0-9._-]{1,253}$'
-                    description: CredentialKeyRef selects an API key in the namespace's
-                      agent-operator-provider-tokens Secret.
+                    description: CredentialKeyRef selects an API key in the Agent's
+                      credential Secret.
                     type: string
                   name:
                     description: Name is the provider model identifier. Empty uses the CLI default.

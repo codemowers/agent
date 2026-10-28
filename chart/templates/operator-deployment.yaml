@@ -139,6 +139,7 @@ spec:
           object.spec.?idleSeconds == oldObject.spec.?idleSeconds &&
           object.spec.?coalesceSeconds == oldObject.spec.?coalesceSeconds &&
           object.spec.?resourcePrefix == oldObject.spec.?resourcePrefix &&
+          object.spec.?credentialSecretName == oldObject.spec.?credentialSecretName &&
           object.spec.?instructions == oldObject.spec.?instructions &&
           object.spec.?resources == oldObject.spec.?resources &&
           object.spec.?template == oldObject.spec.?template &&

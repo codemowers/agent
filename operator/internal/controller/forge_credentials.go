@@ -12,7 +12,8 @@ import (
 
 // The unsuffixed token is safe to choose only when an Agent defines one
 // provider of that type. Multi-provider Agents expose explicitly named tokens.
-func forgeCredentialEnv(providers []agentsv1alpha1.GitProvider) []corev1.EnvVar {
+// Keys are read from the Secret secretName.
+func forgeCredentialEnv(secretName string, providers []agentsv1alpha1.GitProvider) []corev1.EnvVar {
 	type entry struct {
 		provider agentsv1alpha1.GitProvider
 		base     string
@@ -59,7 +60,7 @@ func forgeCredentialEnv(providers []agentsv1alpha1.GitProvider) []corev1.EnvVar 
 		}
 		result = append(result, corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName},
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
 				Key:                  item.provider.CredentialKeyRef,
 			},
 		}})

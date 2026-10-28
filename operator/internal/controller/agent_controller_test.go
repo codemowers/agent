@@ -668,6 +668,54 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 	}
 }
 
+// Agents sharing a namespace keep their keys in their own Secrets: every key
+// a worker receives comes from its Agent's Secret.
+func TestWorkerKeysComeFromAgentCredentialSecret(t *testing.T) {
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "agents"},
+		Spec: agentsv1alpha1.TaskSpec{ExternalReferences: []agentsv1alpha1.ExternalReference{{
+			Source: "github", ServerURL: "https://github.com", RepositoryOwner: "team", RepositoryName: "project", Kind: "issue", ID: "8"}}}}
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "sandbox"}, Spec: agentsv1alpha1.AgentSpec{
+		Model:        agentsv1alpha1.ModelSpec{Backend: "claude", CredentialKeyRef: "model"},
+		GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://github.com", CredentialKeyRef: "github"}},
+		Template:     corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "worker"}}}}}}
+	shared := (&TaskReconciler{}).buildWorkerPod("worker", task, agent, "worker", nil)
+	agent.Spec.CredentialSecretName = "sandbox-credentials"
+	pod := (&TaskReconciler{}).buildWorkerPod("worker", task, agent, "worker", nil,
+		mcpServer{"linear", "https://mcp.linear.app/mcp", "", "linear"})
+	if pod.Annotations[workerConfigHashAnnotation] == shared.Annotations[workerConfigHashAnnotation] {
+		t.Fatal("changing the credential Secret did not change worker configuration hash")
+	}
+	keys := map[string]bool{}
+	for _, env := range pod.Spec.Containers[0].Env {
+		if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
+			if env.ValueFrom.SecretKeyRef.Name != "sandbox-credentials" {
+				t.Fatalf("%s reads Secret %s", env.Name, env.ValueFrom.SecretKeyRef.Name)
+			}
+			keys[env.Name] = true
+		}
+	}
+	if !keys["ANTHROPIC_API_KEY"] || !keys["GH_TOKEN"] || !keys["AGENT_FORGE_TOKEN"] {
+		t.Fatalf("worker lacks keys: %v", keys)
+	}
+	projected := false
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Projected == nil {
+			continue
+		}
+		for _, source := range volume.Projected.Sources {
+			if source.Secret != nil {
+				if source.Secret.Name != "sandbox-credentials" {
+					t.Fatalf("MCP credential projected from %s", source.Secret.Name)
+				}
+				projected = true
+			}
+		}
+	}
+	if !projected {
+		t.Fatal("MCP credential not projected")
+	}
+}
+
 // workerTokens maps each projected token path in the worker's token volume
 // to its audience.
 func TestCredentialedMCPServerGetsOnlyItsProviderKey(t *testing.T) {

@@ -12,7 +12,7 @@ func TestForgeCredentialEnvironment(t *testing.T) {
 		{Type: "github", ServerURL: "https://github.com", CredentialKeyRef: "github-main"},
 		{Type: "gitea", ServerURL: "https://gitea.com", CredentialKeyRef: "gitea-main"},
 	}
-	env := forgeCredentialEnv(providers)
+	env := forgeCredentialEnv(agentsv1alpha1.ProviderTokensSecretName, providers)
 	if len(env) != 2 || env[0].Name != "GH_TOKEN" || env[1].Name != "GITEA_TOKEN" {
 		t.Fatalf("single provider of each type should get default token names: %+v", env)
 	}
@@ -26,7 +26,7 @@ func TestForgeCredentialEnvironment(t *testing.T) {
 		agentsv1alpha1.GitProvider{Type: "gitea", ServerURL: "https://git.example.test:3000/one", CredentialKeyRef: "gitea-one"},
 		agentsv1alpha1.GitProvider{Type: "gitea", ServerURL: "https://git.example.test:3000/two", CredentialKeyRef: "gitea-two"},
 	)
-	env = forgeCredentialEnv(providers)
+	env = forgeCredentialEnv(agentsv1alpha1.ProviderTokensSecretName, providers)
 	if len(env) != 5 {
 		t.Fatalf("missing provider credentials: %+v", env)
 	}

@@ -161,7 +161,7 @@ func (c *EventConsumer) verifyForgeAssignment(ctx context.Context, agent *agents
 		return forgeItem{}, false, fmt.Errorf("secret API reader is unavailable")
 	}
 	var secret corev1.Secret
-	if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.ProviderTokensSecretName}, &secret); err != nil {
+	if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.ProviderTokensSecret(agent)}, &secret); err != nil {
 		return forgeItem{}, false, fmt.Errorf("get configured forge credential: %w", err)
 	}
 	token := string(secret.Data[provider.CredentialKeyRef])

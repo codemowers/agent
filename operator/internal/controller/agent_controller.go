@@ -918,11 +918,12 @@ func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha
 		GitProviders     []agentsv1alpha1.GitProvider `json:"gitProviders"`
 		CheckoutEnv      []corev1.EnvVar              `json:"checkoutEnv"`
 		Backend          string                       `json:"backend"`
+		CredentialSecret string                       `json:"credentialSecret"`
 		CredentialKeyRef string                       `json:"credentialKeyRef"`
 		BaseURL          string                       `json:"baseURL,omitempty"`
 		Instructions     string                       `json:"instructions,omitempty"`
 		Template         corev1.PodTemplateSpec       `json:"template"`
-	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, model.BaseURL, agent.Spec.Instructions, agent.Spec.Template})
+	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, agentsv1alpha1.ProviderTokensSecret(agent), model.CredentialKeyRef, model.BaseURL, agent.Spec.Instructions, agent.Spec.Template})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -973,7 +974,7 @@ func checkoutEnvironment(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent)
 				{Name: "AGENT_FORGE_URL", Value: serverURL},
 				{Name: "AGENT_REPOSITORY", Value: ref.RepositoryOwner + "/" + ref.RepositoryName},
 				{Name: "AGENT_FORGE_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName}, Key: provider.CredentialKeyRef}}},
+					LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecret(agent)}, Key: provider.CredentialKeyRef}}},
 			}
 		}
 	}
@@ -1226,7 +1227,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 			// missing key leaves this server unavailable, not the worker Pod.
 			endpoints[i].TokenFile = agentsv1alpha1.WorkerTokenDir + "/mcp/" + server.Name
 			tokens = append(tokens, corev1.VolumeProjection{Secret: &corev1.SecretProjection{
-				LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName},
+				LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecret(agent)},
 				Items:                []corev1.KeyToPath{{Key: server.CredentialKeyRef, Path: "mcp/" + server.Name}},
 				Optional:             boolPtr(true)}})
 		case server.Audience != "":
@@ -1248,14 +1249,14 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	credentialName := map[string]string{"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "opencode": "AGENT_MODEL_API_KEY"}[model.Backend]
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_BACKEND", Value: model.Backend},
 		corev1.EnvVar{Name: credentialName, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName}, Key: model.CredentialKeyRef}}})
+			LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecret(agent)}, Key: model.CredentialKeyRef}}})
 	if model.Name != "" {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MODEL", Value: model.Name})
 	}
 	if model.BaseURL != "" {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MODEL_BASE_URL", Value: model.BaseURL})
 	}
-	opEnv = append(opEnv, forgeCredentialEnv(agent.Spec.GitProviders)...)
+	opEnv = append(opEnv, forgeCredentialEnv(agentsv1alpha1.ProviderTokensSecret(agent), agent.Spec.GitProviders)...)
 	opEnv = append(opEnv, checkoutEnvironment(task, agent)...)
 	if r.AMQPURL != "" {
 		opEnv = append(opEnv,

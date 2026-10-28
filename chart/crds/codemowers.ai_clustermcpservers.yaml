@@ -47,7 +47,7 @@ spec:
                   type: string
                   maxLength: 2048
                 credentialKeyRef:
-                  description: Key of the worker namespace's agent-operator-provider-tokens Secret that workers present as a bearer token instead of a ServiceAccount token, for servers that authorize each call with their own credentials. Workers can read the key.
+                  description: Key of the worker's Agent credential Secret (spec.credentialSecretName, by default agent-operator-provider-tokens) that workers present as a bearer token instead of a ServiceAccount token, for servers that authorize each call with their own credentials. Workers can read the key.
                   type: string
                   pattern: ^[-._a-zA-Z0-9]+$
                   maxLength: 253

@@ -63,6 +63,13 @@ type AgentSpec struct {
 	// +kubebuilder:validation:MaxLength=30
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$`
 	ResourcePrefix string `json:"resourcePrefix,omitempty"`
+	// CredentialSecretName names the Secret in the Agent's namespace that
+	// holds the keys its credentialKeyRefs select, so Agents sharing a
+	// namespace can keep their credentials apart. Empty uses
+	// agent-operator-provider-tokens.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	CredentialSecretName string `json:"credentialSecretName,omitempty"`
 	// Instructions describes the Agent's role to its workers and leads every
 	// turn's prompt; changes reach the next worker Pod.
 	// +kubebuilder:validation:MaxLength=4096
@@ -146,7 +153,7 @@ type ModelSpec struct {
 	// backend calls, such as a llama.cpp server.
 	BaseURL string `json:"baseURL,omitempty"`
 
-	// CredentialKeyRef selects an API key in the namespace's provider-token Secret.
+	// CredentialKeyRef selects an API key in the Agent's credential Secret.
 	CredentialKeyRef string `json:"credentialKeyRef"`
 }
 
@@ -154,7 +161,7 @@ type GitProvider struct {
 	// +kubebuilder:validation:Enum=github;gitea
 	Type      string `json:"type"`
 	ServerURL string `json:"serverURL"`
-	// CredentialKeyRef selects a token in the namespace's provider-token Secret.
+	// CredentialKeyRef selects a token in the Agent's credential Secret.
 	CredentialKeyRef string `json:"credentialKeyRef"`
 }
 

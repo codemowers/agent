@@ -97,14 +97,14 @@ func (h *Handler) listAgentModels(w http.ResponseWriter, r *http.Request) {
 		jsonOK(w, result)
 		return
 	}
-	if err := h.APIReader.Get(r.Context(), client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.ProviderTokensSecretName}, &secret); err != nil {
+	if err := h.APIReader.Get(r.Context(), client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.ProviderTokensSecret(&agent)}, &secret); err != nil {
 		switch {
 		case apierrors.IsNotFound(err):
-			result.Warning = "Model discovery unavailable: provider token Secret not found"
+			result.Warning = "Model discovery unavailable: credential Secret not found"
 		case apierrors.IsForbidden(err):
-			result.Warning = "Model discovery unavailable: provider token Secret access denied"
+			result.Warning = "Model discovery unavailable: credential Secret access denied"
 		default:
-			result.Warning = "Model discovery unavailable: provider token Secret read failed"
+			result.Warning = "Model discovery unavailable: credential Secret read failed"
 		}
 		jsonOK(w, result)
 		return

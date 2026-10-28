@@ -121,11 +121,17 @@ underscores. Ports and collision hashes disambiguate host names. A Task with
 a matching external repository reference also receives its selected key as
 `AGENT_FORGE_TOKEN` for checkout. Unbound Tasks still receive their Agent's
 configured provider credentials.
-Provider tokens live under separate keys in the namespace's
-`agent-operator-provider-tokens` Secret. Model and Git provider
-`credentialKeyRef` fields select a key. The operator has get-only RBAC for
-the provider Secret. Neither the operator nor the webhook receiver has Secret
-list/watch.
+Provider tokens live under separate keys in the Agent's credential Secret:
+`Agent.spec.credentialSecretName`, by default `agent-operator-provider-tokens`,
+so Agents sharing a namespace can each keep their own. Model, Git provider and
+MCP server `credentialKeyRef` fields select a key of it; a Task's model
+override selects from its Agent's. The chart grants the operator get-only
+RBAC for `agent-operator-provider-tokens`. A platform whose Agents name their
+own Secrets sets the name through admission, such as a MutatingAdmissionPolicy
+deriving it from the Agent's name in a shared namespace, and grants the
+operator `get` there itself; Agents naming a Secret it cannot read still run,
+without forge probes, forge assignment checks or model discovery. Neither the operator nor
+the webhook receiver has Secret list/watch.
 Webhook endpoints are receivers. A namespaced WebhookReceiver serves
 `/hooks/<namespace>/<name>` to WebhookBindings of its namespace; a
 cluster-scoped ClusterWebhookReceiver serves `/hooks/<name>` and fans each
@@ -395,8 +401,8 @@ from its in-cluster URL, and a server outside the cluster gets no token; an
 explicit audience serves servers with a contract of their own, such as
 Driftmower. Namespace administrators may set any audience: through the Agent
 Pod template they can already mint worker tokens for any audience. A server
-with `credentialKeyRef` instead gets that key of the worker namespace's
-`agent-operator-provider-tokens` Secret as its bearer token and no
+with `credentialKeyRef` instead gets that key of the worker's Agent credential
+Secret as its bearer token and no
 ServiceAccount token, for external servers such as Linear that authorize each
 call with their own credentials; the CRD rejects it together with `audience`,
 and a missing key leaves only that server unavailable.

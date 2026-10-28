@@ -49,8 +49,8 @@ and workers never read or write these resources through the Kubernetes API.
 - **ClusterMCPServer** and **MCPServer:** an MCP server advertised to workers.
   A worker token's audience is the server's `audience`, else its Service,
   `<service>.<namespace>`, derived from an in-cluster URL. A server with
-  `credentialKeyRef` gets that key of the worker namespace's
-  `agent-operator-provider-tokens` Secret instead.
+  `credentialKeyRef` gets that key of the worker's Agent credential Secret
+  instead.
 
 Dashboard users listed in an Agent's `spec.access` may do everything with its
 Tasks. Without that list, verbs on the Agent decide: `get` reads Tasks and
@@ -104,7 +104,7 @@ policy over existing servers, such as
 
 | Identity | Permissions |
 | --- | --- |
-| `agent-operator` | Reads Agents, Mailboxes, MCP servers and policies; manages Tasks, worker Pods, PVCs and Mailbox Services; writes Agent, Task and Mailbox status; reads `agent-operator-provider-tokens` by name; creates TokenReviews and SubjectAccessReviews. |
+| `agent-operator` | Reads Agents, Mailboxes, MCP servers and policies; manages Tasks, worker Pods, PVCs and Mailbox Services; writes Agent, Task and Mailbox status; reads `agent-operator-provider-tokens` by name, and other Agent credential Secrets where the platform grants it; creates TokenReviews and SubjectAccessReviews. |
 | `agent-operator-webhook` | Reads protocols, receivers, bindings and the Secret each receiver names; creates TokenReviews for ServiceAccount-token senders. |
 | `agent-devices` | Reads Devices and the Secrets named in `deviceBridge.secretNames`; writes Device status; creates TokenReviews and SubjectAccessReviews. |
 | `agent-mailbox` | Creates TokenReviews and SubjectAccessReviews. Only the Mailbox Pod's MCP container gets its token. |
@@ -119,7 +119,7 @@ images, chat and shell history.
 
 | Secret | Holds | Selected by |
 | --- | --- | --- |
-| `agent-operator-provider-tokens` | Model API keys and Git provider tokens | `credentialKeyRef` in an Agent's model and Git providers |
+| An Agent's `credentialSecretName`, by default `agent-operator-provider-tokens` | Model API keys, Git provider tokens and MCP server keys | `credentialKeyRef` in an Agent's model and Git providers, a Task's model and an MCP server |
 | Any, conventionally `agent-operator-webhook-keys` | Webhook signing keys | `senders.secretKeyRef` in a receiver |
 | A name allowed by `deviceBridge.secretNames` | Device connection keys | `connectionSecretRef` in a Device |
 | Any | Mailbox IMAP and SMTP credentials | `credentialsSecretRef` in a Mailbox |

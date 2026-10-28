@@ -109,6 +109,14 @@ spec:
                 type: string
                 maxLength: 30
                 pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$'
+              credentialSecretName:
+                description: >-
+                  Secret in the Agent's namespace holding the keys its credentialKeyRefs
+                  select, so Agents sharing a namespace keep their credentials apart.
+                  Absent uses agent-operator-provider-tokens.
+                type: string
+                maxLength: 253
+                pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
               resources:
                 description: Worker container requests and limits copied into new Tasks.
                 type: object
@@ -134,8 +142,8 @@ spec:
                   properties:
                     credentialKeyRef:
                       pattern: '^[A-Za-z0-9._-]{1,253}$'
-                      description: CredentialKeyRef selects a token in the namespace's
-                        agent-operator-provider-tokens Secret.
+                      description: CredentialKeyRef selects a token in the Agent's
+                        credential Secret.
                       type: string
                     serverURL:
                       type: string
@@ -168,8 +176,8 @@ spec:
                     pattern: '^https?://[^/?#@]+(/[^?#]*)?$'
                   credentialKeyRef:
                     pattern: '^[A-Za-z0-9._-]{1,253}$'
-                    description: CredentialKeyRef selects an API key in the namespace's
-                      agent-operator-provider-tokens Secret.
+                    description: CredentialKeyRef selects an API key in the Agent's
+                      credential Secret.
                     type: string
                   name:
                     description: Name is the provider model identifier. Empty uses the CLI default.
