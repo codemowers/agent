@@ -193,10 +193,20 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err == nil && coalesceDelay > 0 && (result.RequeueAfter == 0 || result.RequeueAfter > coalesceDelay) && !result.Requeue {
 		result.RequeueAfter = coalesceDelay
 	}
+	// RBAC changes trigger no reconcile, so a running worker's attachments
+	// are rechecked periodically.
+	if err == nil && task.Status.Phase == agentsv1alpha1.TaskPhaseRunning && !result.Requeue &&
+		(result.RequeueAfter == 0 || result.RequeueAfter > attachmentRecheckInterval) {
+		result.RequeueAfter = attachmentRecheckInterval
+	}
 	return result, err
 }
 
 const taskQueueFinalizer = "codemowers.ai/task-queue"
+
+// attachmentRecheckInterval bounds how long a running worker keeps MCP
+// servers and Mailboxes its ServiceAccount no longer holds, or lacks new ones.
+const attachmentRecheckInterval = time.Minute
 
 // trackTaskQueue records a Task queue before it is declared, so deleting the
 // Task deletes the queue too.
@@ -476,8 +486,12 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 			} else if replaced {
 				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 			}
-			if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed &&
-				pod.Annotations[workerConfigHashAnnotation] != workerConfigHash(task, agent) {
+			if stale := pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed &&
+				r.workerStale(ctx, task, agent, &pod); stale {
+				// Replace the worker between turns rather than interrupting one.
+				if task.Status.Activity == "working" {
+					return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+				}
 				if !task.Status.RetryWorker {
 					patch := client.MergeFrom(task.DeepCopy())
 					task.Status.RetryWorker = true
@@ -646,8 +660,9 @@ func (r *TaskReconciler) reconcileWorkerPod(ctx context.Context, task *agentsv1a
 
 	podName := workerPodName(agentsv1alpha1.ResourcePrefix(agent), task.Name, randSuffix())
 	sa := agentsv1alpha1.WorkerServiceAccount(agent)
-	pod := r.buildWorkerPod(podName, task, agent, sa, r.authorizedMailboxes(ctx, agent, task.Namespace, sa),
-		r.authorizedMCPServers(ctx, task.Namespace, sa)...)
+	mailboxes, _ := r.authorizedMailboxes(ctx, agent, task.Namespace, sa)
+	servers, _ := r.authorizedMCPServers(ctx, task.Namespace, sa)
+	pod := r.buildWorkerPod(podName, task, agent, sa, mailboxes, servers...)
 	r.pinKubectlImages(pod)
 
 	if err := r.Create(ctx, pod); err != nil {
@@ -692,7 +707,7 @@ func (r *TaskReconciler) publishRuntimeConfig(ctx context.Context, task *agentsv
 	idle := taskIdleSeconds(task, agent)
 	if err := r.AMQP.Publish(ctx, queue, rabbitmq.PromptMessage{
 		Type: "config", Generation: task.Generation, IdleSeconds: &idle, Model: model.Name,
-		DisabledMCPs: append([]string{}, task.Spec.DisabledMCPs...),
+		DisabledMCPs: append([]string{}, task.Spec.DisabledMCPs...), Objective: task.Spec.Objective,
 	}); err != nil {
 		return false, err
 	}
@@ -865,11 +880,12 @@ func taskIdleSeconds(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) int
 
 const (
 	workerConfigHashAnnotation        = "codemowers.ai/worker-config-hash"
+	workerAttachmentHashAnnotation    = "codemowers.ai/worker-attachment-hash"
 	workerVersionAnnotation           = "codemowers.ai/operator-worker-version"
 	workerRuntimeGenerationAnnotation = "codemowers.ai/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "27"
+	WorkerPodVersion = "28"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -883,9 +899,9 @@ func workerConfigHash(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) st
 	return workerConfigHashWithVersion(task, agent, WorkerPodVersion)
 }
 
-// workerConfigHashWithVersion covers what the worker Pod is built from.
-// Attached MCP servers and Mailboxes are excluded: RBAC changes reach a
-// worker with its next Pod.
+// workerConfigHashWithVersion covers what the worker Pod is built from,
+// except attached MCP servers and Mailboxes, which workerAttachmentHash
+// covers because resolving them takes SubjectAccessReviews.
 func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, version string) string {
 	model := agent.Spec.Model
 	if task.Spec.Model != nil {
@@ -899,10 +915,39 @@ func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha
 		Backend          string                       `json:"backend"`
 		CredentialKeyRef string                       `json:"credentialKeyRef"`
 		BaseURL          string                       `json:"baseURL,omitempty"`
+		Instructions     string                       `json:"instructions,omitempty"`
 		Template         corev1.PodTemplateSpec       `json:"template"`
-	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, model.BaseURL, agent.Spec.Template})
+	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, model.BaseURL, agent.Spec.Instructions, agent.Spec.Template})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// workerAttachmentHash covers the MCP servers and Mailboxes attached to a
+// worker Pod.
+func workerAttachmentHash(mailboxes []string, servers []mcpServer) string {
+	data, _ := json.Marshal(struct {
+		Mailboxes []string    `json:"mailboxes"`
+		Servers   []mcpServer `json:"servers"`
+	}{mailboxes, servers})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// workerStale reports whether a worker Pod no longer matches its Task and
+// Agent. Attachments are resolved only for a running worker between turns.
+func (r *TaskReconciler) workerStale(ctx context.Context, task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent, pod *corev1.Pod) bool {
+	if pod.Annotations[workerConfigHashAnnotation] != workerConfigHash(task, agent) {
+		return true
+	}
+	if pod.Status.Phase != corev1.PodRunning || task.Status.Activity == "working" {
+		return false
+	}
+	// A failed lookup must not look like a revoked grant.
+	sa := agentsv1alpha1.WorkerServiceAccount(agent)
+	mailboxes, mailboxesComplete := r.authorizedMailboxes(ctx, agent, task.Namespace, sa)
+	servers, serversComplete := r.authorizedMCPServers(ctx, task.Namespace, sa)
+	return mailboxesComplete && serversComplete &&
+		pod.Annotations[workerAttachmentHashAnnotation] != workerAttachmentHash(mailboxes, servers)
 }
 
 func checkoutEnvironment(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) []corev1.EnvVar {
@@ -985,15 +1030,17 @@ func workerExitDescription(pod *corev1.Pod) string {
 }
 
 // authorizedMailboxes lists the namespace's Mailboxes on which the worker
-// ServiceAccount holds the send or read verb. RBAC is the only attachment
-// knob; an RBAC change reaches a worker with its next Pod.
-func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv1alpha1.Agent, namespace, sa string) []string {
+// ServiceAccount holds the send or read verb, sorted, and whether every
+// lookup succeeded. RBAC is the only attachment knob; an RBAC change replaces
+// a running worker between turns.
+func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv1alpha1.Agent, namespace, sa string) ([]string, bool) {
 	var mailboxes agentsv1alpha1.MailboxList
 	if err := r.List(ctx, &mailboxes, client.InNamespace(namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "list Mailboxes for worker attachment")
-		return nil
+		return nil, false
 	}
 	var names []string
+	complete := true
 	for _, mailbox := range mailboxes.Items {
 		if mailbox.Spec.AgentRef != "" && mailbox.Spec.AgentRef != agent.Name {
 			continue
@@ -1007,6 +1054,7 @@ func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv
 			}}
 			if err := r.Create(ctx, review); err != nil {
 				log.FromContext(ctx).Error(err, "review Mailbox access", "mailbox", mailbox.Name)
+				complete = false
 				break
 			}
 			if review.Status.Allowed {
@@ -1015,7 +1063,8 @@ func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv
 			}
 		}
 	}
-	return names
+	slices.Sort(names)
+	return names, complete
 }
 
 // mcpServer is an advertised MCP server attached to a worker; a non-empty
@@ -1025,12 +1074,14 @@ type mcpServer struct {
 }
 
 // authorizedMCPServers lists the ClusterMCPServers and the namespace's
-// MCPServers on which the worker ServiceAccount holds the custom verb "use".
-// A namespaced server overrides a cluster one of the same name. Like Mailbox
-// attachment, an RBAC change reaches a worker with its next Pod.
-func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa string) []mcpServer {
+// MCPServers on which the worker ServiceAccount holds the custom verb "use",
+// and whether every lookup succeeded. A namespaced server overrides a cluster
+// one of the same name. Like Mailbox attachment, an RBAC change replaces a
+// running worker between turns.
+func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa string) ([]mcpServer, bool) {
 	logger := log.FromContext(ctx)
 	byName := map[string]mcpServer{}
+	complete := true
 	allowed := func(scope, resource, name string) bool {
 		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:   "system:serviceaccount:" + namespace + ":" + sa,
@@ -1040,6 +1091,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 		}}
 		if err := r.Create(ctx, review); err != nil {
 			logger.Error(err, "review MCP server access", "server", name)
+			complete = false
 			return false
 		}
 		return review.Status.Allowed
@@ -1047,6 +1099,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 	var cluster agentsv1alpha1.ClusterMCPServerList
 	if err := r.List(ctx, &cluster); err != nil {
 		logger.Error(err, "list ClusterMCPServers for worker attachment")
+		complete = false
 	}
 	for _, server := range cluster.Items {
 		if allowed("", "clustermcpservers", server.Name) {
@@ -1056,6 +1109,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 	var local agentsv1alpha1.MCPServerList
 	if err := r.List(ctx, &local, client.InNamespace(namespace)); err != nil {
 		logger.Error(err, "list MCPServers for worker attachment")
+		complete = false
 	}
 	for _, server := range local.Items {
 		if allowed(namespace, "mcpservers", server.Name) {
@@ -1067,7 +1121,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 		servers = append(servers, server)
 	}
 	slices.SortFunc(servers, func(a, b mcpServer) int { return strings.Compare(a.Name, b.Name) })
-	return servers
+	return servers, complete
 }
 
 // KubectlTag returns the release part of an API server version, such as
@@ -1136,6 +1190,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		{Name: "AGENT_MODE", Value: "task-worker"},
 		{Name: "AGENT_IDLE_SECONDS", Value: strconv.FormatInt(int64(taskIdleSeconds(task, agent)), 10)},
 		{Name: "AGENT_TASK_GENERATION", Value: strconv.FormatInt(task.Generation, 10)},
+		{Name: "AGENT_TASK_OBJECTIVE", Value: task.Spec.Objective},
 		{Name: "AGENT_OPERATOR_MCP_URL", Value: agentsv1alpha1.OperatorMCPURL(r.HarnessNamespace)},
 		{Name: "AGENT_OPERATOR_MCP_TOKEN_FILE", Value: agentsv1alpha1.WorkerTokenDir + "/agent_operator"},
 	}
@@ -1234,6 +1289,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		annotations[key] = value
 	}
 	annotations[workerConfigHashAnnotation] = workerConfigHash(task, agent)
+	annotations[workerAttachmentHashAnnotation] = workerAttachmentHash(mailboxes, servers)
 	annotations[workerVersionAnnotation] = WorkerPodVersion
 	annotations[workerRuntimeGenerationAnnotation] = strconv.FormatInt(task.Generation, 10)
 	return &corev1.Pod{

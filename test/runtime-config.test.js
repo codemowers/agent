@@ -10,6 +10,9 @@ test('runtime configuration applies only newer bounded updates', () => {
   assert.throws(() => runtimeConfig({...update, model: 42}, 4));
   assert.deepEqual(runtimeConfig({...update, disabledMcps: ['devices']}, 4).disabledMcps, ['devices']);
   assert.throws(() => runtimeConfig({...update, disabledMcps: ['bad name']}, 4));
+  assert.equal(runtimeConfig({...update, objective: 'Triage alerts'}, 4).objective, 'Triage alerts');
+  assert.throws(() => runtimeConfig({...update, objective: 42}, 4));
+  assert.throws(() => runtimeConfig({...update, objective: 'x'.repeat(65537)}, 4));
 });
 
 test('turn metrics preserve zero counts and normalize CLI usage', () => {

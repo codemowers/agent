@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {EventEmitter} from 'node:events';
 import {DatabaseSync} from 'node:sqlite';
-import {seedTaskContext, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs, mcpToolCalls, toolArguments, opencodeConfig, codexSessionModel, creditExhausted} from '../src/task-worker.js';
+import {seedTaskContext, syncTaskObjective, nativeSessionExists, brokerConnect, boundedTail, codexMcpArgs, mcpToolCalls, toolArguments, opencodeConfig, codexSessionModel, creditExhausted} from '../src/task-worker.js';
 
 test('Turn text keeps its end within the byte bound', () => {
   assert.equal(boundedTail('short'), 'short');
@@ -35,6 +35,54 @@ test('Task context preserves edits and native session recovery sees retained sta
     await writeFile(session, '');
     assert.equal(await nativeSessionExists(root, 'claude', 'session-1'), true);
     assert.equal(await nativeSessionExists(root, 'claude', 'missing'), false);
+  } finally {
+    if (previousName === undefined) delete process.env.TASK_NAME; else process.env.TASK_NAME = previousName;
+    if (previousAgent === undefined) delete process.env.AGENT_NAME; else process.env.AGENT_NAME = previousAgent;
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test('Objective edits replace the Task spec once and keep the replaced spec', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-task-objective-'));
+  const previousName = process.env.TASK_NAME;
+  process.env.TASK_NAME = 'triage';
+  try {
+    const repo = join(root, 'repo');
+    await mkdir(repo);
+    const spec = join(repo, 'specs', 'task-triage.md');
+    const previous = join(repo, 'specs', 'task-triage.previous.md');
+    // A new Task writes the spec without announcing a change.
+    assert.equal(await syncTaskObjective(root, repo, 'Use GitHub issues'), false);
+    assert.equal(await readFile(spec, 'utf8'), '# Task objective\n\nUse GitHub issues\n');
+    // Restarts with the same objective keep the worker's edits.
+    await writeFile(spec, 'Edited notes\n');
+    assert.equal(await syncTaskObjective(root, repo, 'Use GitHub issues'), false);
+    assert.equal(await readFile(spec, 'utf8'), 'Edited notes\n');
+    // An edited objective replaces the spec and keeps the old one beside it.
+    assert.equal(await syncTaskObjective(root, repo, 'Use Linear'), true);
+    assert.equal(await readFile(spec, 'utf8'), '# Task objective\n\nUse Linear\n');
+    assert.equal(await readFile(previous, 'utf8'), 'Edited notes\n');
+    assert.equal(await syncTaskObjective(root, repo, 'Use Linear'), false);
+  } finally {
+    if (previousName === undefined) delete process.env.TASK_NAME; else process.env.TASK_NAME = previousName;
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test('A workspace seeded before objective tracking adopts an edited objective', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-task-objective-'));
+  const previousName = process.env.TASK_NAME;
+  const previousAgent = process.env.AGENT_NAME;
+  process.env.TASK_NAME = 'triage';
+  process.env.AGENT_NAME = 'admin';
+  try {
+    const repo = join(root, 'repo');
+    await mkdir(repo);
+    await seedTaskContext(repo, {type: 'objective', body: 'Use GitHub issues'});
+    assert.equal(await syncTaskObjective(root, repo, 'Use GitHub issues'), false);
+    await rm(join(root, 'objective.json'));
+    assert.equal(await syncTaskObjective(root, repo, 'Use Linear'), true);
+    assert.equal(await readFile(join(repo, 'specs', 'task-triage.md'), 'utf8'), '# Task objective\n\nUse Linear\n');
   } finally {
     if (previousName === undefined) delete process.env.TASK_NAME; else process.env.TASK_NAME = previousName;
     if (previousAgent === undefined) delete process.env.AGENT_NAME; else process.env.AGENT_NAME = previousAgent;

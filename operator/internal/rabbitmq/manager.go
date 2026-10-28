@@ -26,6 +26,9 @@ type PromptMessage struct {
 	// DisabledMCPs is the Task's complete list on every runtime configuration
 	// message; omitted when empty, which the worker reads as none disabled.
 	DisabledMCPs []string `json:"disabledMcps,omitempty"`
+	// Objective is the Task's current objective on every runtime
+	// configuration message, so edits reach the workspace spec.
+	Objective string `json:"objective,omitempty"`
 }
 
 // Manager holds a lazily-established, auto-reconnecting AMQP connection.

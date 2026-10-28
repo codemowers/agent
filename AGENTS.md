@@ -220,13 +220,20 @@ as `Task.spec.resources`; Task edits replace the Pod, while Agent edits affect
 new Tasks. A same-backend Task model ID change is sent over RabbitMQ and starts
 a new native session epoch; backend or credential changes replace the Pod.
 An optional `Agent.spec.instructions` describes the Agent's role, such as
-cluster administrator, and leads every worker turn's prompt; changes reach the
-next worker Pod. Task titles are short display names in `Task.spec.title`. The initial
+cluster administrator, and leads every worker turn's prompt; it is part of the
+worker configuration hash, so edits replace a running worker between turns.
+`Task.spec.objective` reaches a new Task through its queued objective message.
+Each worker Pod also receives the current objective, and runtime configuration
+messages carry later edits. The worker records the objective it last applied
+outside the repository and rewrites `specs/task-<name>.md` only when the
+objective changes, keeping the replaced file as `specs/task-<name>.previous.md`
+and telling the next turn; restarts keep edits to the spec. Task titles are short display names in `Task.spec.title`. The initial
 worker prompt asks the worker to summarize the objective and set its own title through the
 execution-bound Agent MCP; only the operator writes the Task spec. The Task
 metadata name remains the stable ID, and the UI updates on Task watch events.
 The Go `WorkerPodVersion` is stamped on each worker Pod and included
-in its configuration hash. Bumping it replaces all active worker Pods as the
+in its configuration hash. A configuration or attachment change replaces a
+worker only between turns, never during one. Bumping it replaces all active worker Pods as the
 Task informer reconciles existing Tasks on operator startup. The replacement
 inherits the last result time for its idle deadline. Pod start, stop and
 terminal exit entries include actual Pod names in
@@ -397,8 +404,12 @@ which a SubjectAccessReview grants the worker ServiceAccount the custom verb
 projected volume at `/var/run/agent-tokens` holds every worker token:
 `agent_operator`, `rabbitmq`, `mcp/<name>` per server with a token or
 credential and
-`mcp/mailbox-<name>` per Mailbox. Attachment stays out of the worker
-configuration hash, like Mailboxes, so RBAC changes reach the next worker Pod.
+`mcp/mailbox-<name>` per Mailbox. Resolving attachment takes
+SubjectAccessReviews, so it has its own Pod annotation hash instead of joining
+the configuration hash. The operator rechecks a running worker's attached MCP
+servers and Mailboxes between turns and at least every minute, since RBAC
+changes trigger no reconcile, and replaces the worker when they differ. A
+failed lookup counts as no change.
 Wildcard RBAC such as cluster-admin uses every server. The servers still
 authorize each call: advertise only Kubernetes-native servers, which check
 TokenReview and SubjectAccessReview per call, credentialed servers whose
@@ -564,8 +575,8 @@ which a SubjectAccessReview grants the worker ServiceAccount verb `send` or
 `Mailbox.spec.agentRef` pins it to one Agent: other Agents' workers are not
 attached even when RBAC, such as cluster-admin, would allow it, and the `mcp`
 container accepts only that Agent's worker ServiceAccount. A missing Agent
-leaves the pinned Mailbox accepting no worker. Attachment is excluded from the worker configuration hash,
-so RBAC changes reach a worker with its next Pod. Each attached Mailbox becomes
+leaves the pinned Mailbox accepting no worker. Like MCP servers, attachment
+changes replace a running worker between turns. Each attached Mailbox becomes
 the worker MCP endpoint `mailbox-<name>`, served by an `mcp` container in that Mailbox's Pod behind
 the operator-owned Service `agent-mailbox-<name>`. Workers present a projected
 token for that Service's audience. The `mcp` container authenticates it

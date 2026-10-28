@@ -29,6 +29,64 @@ func TestWorkerPodVersionChangesPodConfigHash(t *testing.T) {
 	}
 }
 
+func TestAgentInstructionsChangePodConfigHash(t *testing.T) {
+	task := &agentsv1alpha1.Task{}
+	before := workerConfigHash(task, &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Instructions: "Use GitHub issues."}})
+	if before == workerConfigHash(task, &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Instructions: "Use Linear."}}) {
+		t.Fatal("Agent instructions did not change configuration hash")
+	}
+}
+
+func TestAttachmentChangeReplacesWorkerBetweenTurns(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	authorizationv1.AddToScheme(scheme)
+	reviewFails := false
+	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "linear", Namespace: "team"},
+			Spec: agentsv1alpha1.MCPServerSpec{URL: "https://mcp.linear.app/mcp", CredentialKeyRef: "linear"}},
+	).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if review, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+				if reviewFails {
+					return apierrors.NewServiceUnavailable("authorizer unavailable")
+				}
+				review.Status.Allowed = true
+				return nil
+			}
+			return c.Create(ctx, obj, opts...)
+		}}).Build()
+	r := &TaskReconciler{Client: store, HarnessNamespace: "harness"}
+	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
+	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "admin"}, Spec: agentsv1alpha1.AgentSpec{
+		Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "worker"}}}}}}
+	// The worker started before the linear grant.
+	pod := r.buildWorkerPod("worker", task, agent, "worker", nil)
+	pod.Status.Phase = corev1.PodRunning
+	task.Status.Activity = "working"
+	if r.workerStale(context.Background(), task, agent, pod) {
+		t.Fatal("worker replaced during a turn")
+	}
+	task.Status.Activity = "idle"
+	if !r.workerStale(context.Background(), task, agent, pod) {
+		t.Fatal("idle worker kept without its new MCP server")
+	}
+	reviewFails = true
+	if r.workerStale(context.Background(), task, agent, pod) {
+		t.Fatal("failed access review treated as a changed attachment")
+	}
+	reviewFails = false
+	servers, _ := r.authorizedMCPServers(context.Background(), "team", "worker")
+	if current := r.buildWorkerPod("worker", task, agent, "worker", nil, servers...); func() bool {
+		current.Status.Phase = corev1.PodRunning
+		return r.workerStale(context.Background(), task, agent, current)
+	}() {
+		t.Fatal("worker with current attachments reported stale")
+	}
+}
+
 func TestRuntimeSettingsUseQueueWithoutReplacingPod(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
@@ -534,7 +592,10 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 			return c.Create(ctx, obj, opts...)
 		}}).Build()
 	r := &TaskReconciler{Client: store, HarnessNamespace: "harness"}
-	servers := r.authorizedMCPServers(context.Background(), "team", "worker")
+	servers, complete := r.authorizedMCPServers(context.Background(), "team", "worker")
+	if !complete {
+		t.Fatal("successful lookups reported incomplete")
+	}
 	if len(servers) != 3 || servers[0] != (mcpServer{"codemowers", "https://mcp.codemowers.io/mcp", "", ""}) ||
 		servers[1].Audience != "agent-devices.harness" || servers[2] != (mcpServer{"driftmower", "http://drift.team.svc:3000/mcp", "drift.team", ""}) {
 		t.Fatalf("unexpected attachment: %+v", servers)
