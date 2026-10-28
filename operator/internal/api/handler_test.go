@@ -44,7 +44,7 @@ func TestTaskAPIRequiresIdentityAndAgentAccess(t *testing.T) {
 	developer := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: types.UID("developer-uid"), Generation: 1},
 		Spec: agentsv1alpha1.AgentSpec{Suspended: true, IdleSeconds: int32Ptr(90), Model: agentsv1alpha1.ModelSpec{Backend: "claude", Name: "claude-default"}, Resources: &corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")}}},
-		Status: agentsv1alpha1.AgentStatus{ForgesCheckedAt: &checked, ForgesObservedGeneration: 1, Forges: []agentsv1alpha1.ForgeCapability{{Type: "gitea", ServerURL: "https://git.example.test", Status: "available"}}}}
+		Status: agentsv1alpha1.AgentStatus{ForgesCheckedAt: &checked, ForgesObservedProviders: agentsv1alpha1.ForgeProvidersHash(&agentsv1alpha1.Agent{}), Forges: []agentsv1alpha1.ForgeCapability{{Type: "gitea", ServerURL: "https://git.example.test", Status: "available"}}}}
 	support := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "support", Namespace: "team", UID: types.UID("support-uid")}}
 	developerTask := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "dev-task", Namespace: "team", OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: "developer", UID: developer.UID}}},
 		Spec: agentsv1alpha1.TaskSpec{Title: "Review the issue", IdleSeconds: int32Ptr(90), ExternalReferences: []agentsv1alpha1.ExternalReference{{Source: "gitea", Kind: "issue", ServerURL: "https://git.example.test", RepositoryOwner: "team", RepositoryName: "repo", ID: "1"}}},

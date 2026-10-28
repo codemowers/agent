@@ -62,7 +62,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.removeLegacyAccessBinding(ctx, &agent); err != nil {
 		return ctrl.Result{}, err
 	}
-	probeDue := agent.Status.ForgesCheckedAt == nil || agent.Status.ForgesObservedGeneration != agent.Generation || agent.Status.TaskCount != len(taskList.Items)
+	probeDue := !agentsv1alpha1.ForgesCurrent(&agent) || agent.Status.TaskCount != len(taskList.Items)
 	if agent.Status.TaskCount == len(taskList.Items) && !probeDue {
 		return ctrl.Result{}, nil
 	}
@@ -75,7 +75,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		cancel()
 		now := metav1.Now()
 		agent.Status.ForgesCheckedAt = &now
-		agent.Status.ForgesObservedGeneration = agent.Generation
+		agent.Status.ForgesObservedProviders = agentsv1alpha1.ForgeProvidersHash(&agent)
 	}
 	if err := r.Status().Patch(ctx, &agent, patch); err != nil {
 		return ctrl.Result{}, err

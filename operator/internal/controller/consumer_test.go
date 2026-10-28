@@ -116,8 +116,8 @@ func TestNormalizedEventRoutesOnlyOwnedTask(t *testing.T) {
 	objects := []client.Object{}
 	for _, item := range []struct{ namespace, agent string }{{"team-a", "developer"}, {"team-b", "support"}} {
 		uid := types.UID(item.agent + "-uid")
-		objects = append(objects, &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: item.agent, Namespace: item.namespace, UID: uid, Generation: 1},
-			Status: agentsv1alpha1.AgentStatus{ForgesObservedGeneration: 1, Forges: []agentsv1alpha1.ForgeCapability{{Type: "github", ServerURL: "https://github.com", Status: "available", Login: item.agent}}}})
+		objects = append(objects, currentForges(&agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: item.agent, Namespace: item.namespace, UID: uid, Generation: 1},
+			Status: agentsv1alpha1.AgentStatus{Forges: []agentsv1alpha1.ForgeCapability{{Type: "github", ServerURL: "https://github.com", Status: "available", Login: item.agent}}}}))
 		objects = append(objects, &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "issue-8", Namespace: item.namespace, Labels: map[string]string{"codemowers.ai/agent": item.agent}, OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "Agent", Name: item.agent, UID: uid}}}, Spec: agentsv1alpha1.TaskSpec{RoutingKeys: []string{"https://github.com/codemowers/agent/issues/8"}}})
 	}
 	k8s := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&agentsv1alpha1.Task{}).WithObjects(objects...).Build()
@@ -192,10 +192,10 @@ func webhookDelivery(t *testing.T, event normalizedEvent) amqp.Delivery {
 }
 
 func TestSelfEventRequiresMatchingCurrentForgeIdentity(t *testing.T) {
-	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Generation: 3},
-		Status: agentsv1alpha1.AgentStatus{ForgesObservedGeneration: 3, Forges: []agentsv1alpha1.ForgeCapability{{
+	agent := currentForges(&agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Generation: 3},
+		Status: agentsv1alpha1.AgentStatus{Forges: []agentsv1alpha1.ForgeCapability{{
 			Type: "gitea", ServerURL: "https://git.example.test", Status: "available", Login: "bot",
-		}}}}
+		}}}})
 	event := intakeEvent{Source: "gitea", Actor: "Bot", Key: "https://git.example.test/team/repo/issues/1"}
 	if !selfEvent(agent, event) {
 		t.Fatal("current Gitea bot event not suppressed")
@@ -210,7 +210,12 @@ func TestSelfEventRequiresMatchingCurrentForgeIdentity(t *testing.T) {
 			t.Fatalf("unrelated event suppressed: %+v", changed)
 		}
 	}
-	agent.Status.ForgesObservedGeneration = 2
+	// Spec changes other than gitProviders keep the snapshot.
+	agent.Generation = 4
+	if !selfEvent(agent, event) {
+		t.Fatal("unrelated spec change made the forge identity stale")
+	}
+	agent.Spec.GitProviders = []agentsv1alpha1.GitProvider{{Type: "gitea", ServerURL: "https://git.example.test", CredentialKeyRef: "other"}}
 	if selfEvent(agent, event) {
 		t.Fatal("stale forge identity suppressed event")
 	}
@@ -386,4 +391,13 @@ func TestWakeTaskDeduplicatesKeysAndSkipsCompletedTasks(t *testing.T) {
 	if err := consumer.WakeTask(ctx, "team", "missing", actor, "", "", ""); !apierrors.IsNotFound(err) {
 		t.Fatalf("missing Task: %v", err)
 	}
+}
+
+// currentForges marks the Agent's forge snapshot as probed with its current
+// gitProviders.
+func currentForges(agent *agentsv1alpha1.Agent) *agentsv1alpha1.Agent {
+	checked := metav1.Now()
+	agent.Status.ForgesCheckedAt = &checked
+	agent.Status.ForgesObservedProviders = agentsv1alpha1.ForgeProvidersHash(agent)
+	return agent
 }

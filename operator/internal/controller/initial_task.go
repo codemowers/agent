@@ -239,7 +239,7 @@ func (c *EventConsumer) verifyForgeAssignment(ctx context.Context, agent *agents
 // probedForgeLogin reuses the Agent's current forge snapshot to avoid an
 // account lookup per event.
 func probedForgeLogin(agent *agentsv1alpha1.Agent, provider agentsv1alpha1.GitProvider) string {
-	if agent.Status.ForgesObservedGeneration != agent.Generation {
+	if !agentsv1alpha1.ForgesCurrent(agent) {
 		return ""
 	}
 	for _, forge := range agent.Status.Forges {

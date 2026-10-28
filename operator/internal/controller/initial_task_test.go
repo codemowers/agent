@@ -128,8 +128,9 @@ func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 	}
 	// A current forge snapshot replaces the per-event account lookup.
 	agent.Generation = 1
-	agent.Status = agentsv1alpha1.AgentStatus{ForgesObservedGeneration: 1, Forges: []agentsv1alpha1.ForgeCapability{{
+	agent.Status = agentsv1alpha1.AgentStatus{Forges: []agentsv1alpha1.ForgeCapability{{
 		Type: "github", ServerURL: "https://forge.example.test", Status: "available", Login: "agent-bot"}}}
+	currentForges(agent)
 	calls := userCalls
 	if _, err := consumer.createTaskByPolicy(context.Background(), agent, event); err != nil || userCalls != calls {
 		t.Fatalf("probed login not reused: err=%v calls=%d", err, userCalls-calls)

@@ -196,7 +196,7 @@ var closingEvents = map[string]bool{"issues.closed": true, "pull_request.closed"
 // selfEvent reports an event authored by the Agent's own probed forge account
 // on that forge's host, so a worker's comments do not wake its Task.
 func selfEvent(agent *agentsv1alpha1.Agent, ev intakeEvent) bool {
-	if ev.Key == "" || ev.Actor == "" || agent.Status.ForgesObservedGeneration != agent.Generation {
+	if ev.Key == "" || ev.Actor == "" || !agentsv1alpha1.ForgesCurrent(agent) {
 		return false
 	}
 	key, err := url.Parse(ev.Key)

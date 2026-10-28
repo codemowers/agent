@@ -8569,7 +8569,7 @@ spec:
                           role: {type: string}
                           url: {type: string}
               forgesCheckedAt: {type: string, format: date-time}
-              forgesObservedGeneration: {type: integer, format: int64}
+              forgesObservedProviders: {type: string}
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

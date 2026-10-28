@@ -314,7 +314,7 @@ publishes `mail.<namespace>.<mailbox>`. CEL extracts the actor and an event
 type such as `issues.assigned`. The operator accepts only events
 whose broker-verified `user_id` is the webhook receiver's ServiceAccount and
 ignores events whose actor is the Agent's own probed forge login on the key's
-host when that snapshot reflects the current Agent generation. It then
+host when that snapshot was probed with the current `gitProviders`. It then
 resolves exact keys. It reads TaskPolicy only when no Task claims a key: the
 policy of the Agent with the longest matching `keyPrefix` and allowed
 `eventTypes` applies, and equally specific policies create nothing.

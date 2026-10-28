@@ -290,7 +290,7 @@ func (h *Handler) listAgents(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		forges := a.Status.Forges
-		forgeStatusCurrent := a.Status.ForgesCheckedAt != nil && a.Status.ForgesObservedGeneration == a.Generation
+		forgeStatusCurrent := agentsv1alpha1.ForgesCurrent(&a)
 		if !forgeStatusCurrent {
 			forges = make([]agentsv1alpha1.ForgeCapability, 0, len(a.Spec.GitProviders))
 			for _, provider := range a.Spec.GitProviders {

@@ -231,11 +231,29 @@ const WorkerMetricsPort = 9464
 const WorkerTokenDir = "/var/run/agent-tokens"
 
 type AgentStatus struct {
-	TaskCount                int                `json:"taskCount,omitempty"`
-	Conditions               []metav1.Condition `json:"conditions,omitempty"`
-	Forges                   []ForgeCapability  `json:"forges,omitempty"`
-	ForgesCheckedAt          *metav1.Time       `json:"forgesCheckedAt,omitempty"`
-	ForgesObservedGeneration int64              `json:"forgesObservedGeneration,omitempty"`
+	TaskCount       int                `json:"taskCount,omitempty"`
+	Conditions      []metav1.Condition `json:"conditions,omitempty"`
+	Forges          []ForgeCapability  `json:"forges,omitempty"`
+	ForgesCheckedAt *metav1.Time       `json:"forgesCheckedAt,omitempty"`
+	// ForgesObservedProviders is ForgeProvidersHash of the gitProviders the
+	// snapshot was probed with, so other spec changes such as suspend keep it
+	// current.
+	ForgesObservedProviders string `json:"forgesObservedProviders,omitempty"`
+}
+
+// ForgeProvidersHash identifies an Agent's gitProviders for its forge snapshot.
+func ForgeProvidersHash(agent *Agent) string {
+	sum := sha256.New()
+	for _, provider := range agent.Spec.GitProviders {
+		sum.Write([]byte(provider.Type + "\x00" + provider.ServerURL + "\x00" + provider.CredentialKeyRef + "\x00"))
+	}
+	return hex.EncodeToString(sum.Sum(nil)[:8])
+}
+
+// ForgesCurrent reports whether the forge snapshot reflects the current
+// gitProviders.
+func ForgesCurrent(agent *Agent) bool {
+	return agent.Status.ForgesCheckedAt != nil && agent.Status.ForgesObservedProviders == ForgeProvidersHash(agent)
 }
 
 // ForgeCapability is a bounded, non-secret snapshot of one Agent credential's
