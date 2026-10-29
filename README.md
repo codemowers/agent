@@ -83,11 +83,17 @@ Requirements:
 - Admission policies that confine worker Pods, as described in the [security
   model](docs/security-model.md#admission-policies).
 
-The chart does not install CRDs. Apply them from a checkout of the release
-tag, then install the chart:
+The chart ships the `codemowers.ai` CRDs in [chart/crds/](chart/crds/). Helm
+installs them with the first release but never upgrades or deletes them, so
+apply them from the release tag before each upgrade:
 
 ```sh
-kubectl apply --server-side -f crd/
+kubectl apply --server-side -f chart/crds/
+```
+
+Install the chart:
+
+```sh
 helm install agent oci://ghcr.io/codemowers/charts/agent \
   --namespace codemowers-agent-system --create-namespace \
   --set operator.host=dashboard.example.com \
@@ -124,10 +130,11 @@ their own ServiceAccount's kubeconfig.
 ## Development
 
 Copy [skaffold.env.example](skaffold.env.example) to `skaffold.env`, fill in
-your cluster's values, apply the CRDs and run Skaffold:
+your cluster's values, apply the CRDs, which Skaffold does not render, and
+run Skaffold:
 
 ```sh
-kubectl apply --server-side -f crd/
+kubectl apply --server-side -f chart/crds/
 skaffold dev
 ```
 

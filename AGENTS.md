@@ -467,7 +467,8 @@ tool names.
 The Device bridge's instructions list the caller's authorized Devices.
 Server names are DNS labels that cannot start with `mailbox-`.
 Apply the Agent CRD with `kubectl apply --server-side`; it is too large for
-client-side apply. Selecting one toggles it in
+client-side apply. The chart ships them in `chart/crds/`, which Helm installs
+once and never upgrades or deletes; upgrades apply them first. Selecting one toggles it in
 `Task.spec.disabledMCPs`, which the operator sends to a running worker as
 runtime configuration; the worker omits disabled endpoints from the CLI
 configuration from its next turn. `agent_operator` cannot be disabled. It
@@ -958,7 +959,7 @@ OIDC authentication and the Agent `prompt` verb.
 Use the current [developer](examples/agents/matmlazi.yaml),
 [customer support](examples/agents/patpalouk.yaml) and
 [admin](examples/agents/krtek.yaml) Agent examples and the
-[`codemowers.ai/v1alpha1` CRD schemas](crd/) as the executable contract.
+[`codemowers.ai/v1alpha1` CRD schemas](chart/crds/) as the executable contract.
 Namespace administrators supply the two fixed Secrets described above and
 select individual keys in Agent specs. The operator creates Tasks and owns
 Task specs; worker observations are validated and written to Task status by

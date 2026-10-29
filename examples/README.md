@@ -21,7 +21,7 @@ admission policy.
 
 Files under `*/optional/` are templates with placeholder IDs and URLs.
 
-1. CRDs with `kubectl apply --server-side -f ../crd/`, then `rbac.yaml`,
+1. After installing the chart, which installs the CRDs on first install, `rbac.yaml`,
    `agents/`, including the worker PodMonitor, and the MCP servers they may
    use, `mcp/servers.yaml`.
 2. `tasks/fallbacks.yaml`, and optionally `tasks/krtek-capacity-review.yaml`
