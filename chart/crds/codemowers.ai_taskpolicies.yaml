@@ -1,58 +1,86 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: taskpolicies.codemowers.ai
 spec:
   group: codemowers.ai
-  scope: Namespaced
   names:
+    kind: TaskPolicy
+    listKind: TaskPolicyList
     plural: taskpolicies
     singular: taskpolicy
-    kind: TaskPolicy
+  scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          required:
-            - spec
-          properties:
-            spec:
-              type: object
-              required:
-                - agentRef
-                - keyPrefix
-                - verify
-              properties:
-                agentRef:
-                  type: string
-                keyPrefix:
-                  description: Canonical key URI prefix, matched at a path boundary.
-                    The longest matching prefix wins; equal matches create nothing.
-                  type: string
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          TaskPolicy authorizes creating a Task for an authenticated event whose
+          canonical key no Task claims. It applies to webhook and mail events alike.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              agentRef:
+                type: string
+              coalesceSeconds:
+                description: CoalesceSeconds is copied into the Tasks this policy
+                  creates.
+                format: int32
+                maximum: 86400
+                minimum: 0
+                type: integer
+              eventTypes:
+                description: EventTypes limits creation to these event types; empty
+                  allows all.
+                items:
+                  maxLength: 128
                   minLength: 1
-                  maxLength: 1024
-                eventTypes:
-                  description: Event types allowed to create a Task; empty allows all.
-                  type: array
-                  maxItems: 32
-                  x-kubernetes-list-type: set
-                  items:
-                    type: string
-                    minLength: 1
-                    maxLength: 128
-                verify:
-                  description: forgeAssignment requires an open forge issue or pull
-                    request assigned to the Agent's account; none creates directly.
                   type: string
-                  enum:
-                    - forgeAssignment
-                    - none
-                coalesceSeconds:
-                  description: Event coalescing window copied into the Tasks this policy creates.
-                  type: integer
-                  format: int32
-                  minimum: 0
-                  maximum: 86400
+                maxItems: 32
+                type: array
+                x-kubernetes-list-type: set
+              keyPrefix:
+                description: |-
+                  KeyPrefix matches canonical keys at a path boundary. The longest
+                  matching prefix wins; equally long matches are ambiguous and create nothing.
+                maxLength: 1024
+                minLength: 1
+                type: string
+              verify:
+                description: |-
+                  Verify is "forgeAssignment" to require an open forge issue or pull
+                  request assigned to the Agent's account, or "none".
+                enum:
+                - forgeAssignment
+                - none
+                type: string
+            required:
+            - agentRef
+            - keyPrefix
+            - verify
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true

@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.17.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: tasks.codemowers.ai
 spec:
   group: codemowers.ai
@@ -36,9 +36,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Task tracks one unit of work. spec.agentRef selects its Agent; the
-          operator adds an ownerReference. Deleting a Task cascades to its worker
-          Pod and workspace PVC.
+          Task tracks one unit of work. It is owned by an Agent CR. Deleting a Task
+          cascades to its worker Pod and workspace PVC via ownerReferences.
         properties:
           apiVersion:
             description: |-
@@ -60,12 +59,22 @@ spec:
           spec:
             properties:
               agentRef:
-                description: AgentRef names the Agent in this Task's namespace. The operator adds the corresponding ownerReference and routing label.
+                description: |-
+                  AgentRef names the Agent in this Task's namespace. The operator adds the
+                  corresponding ownerReference and routing label.
                 minLength: 1
                 type: string
                 x-kubernetes-validations:
                 - message: agentRef is immutable
                   rule: self == oldSelf
+              coalesceSeconds:
+                description: |-
+                  CoalesceSeconds overrides the Agent's event coalescing window for this
+                  Task, such as a longer one for an alert fallback Task.
+                format: int32
+                maximum: 86400
+                minimum: 0
+                type: integer
               completionPolicy:
                 description: CompletionPolicy defines when the controller considers
                   this Task done.
@@ -84,119 +93,6 @@ spec:
                 required:
                 - milestone
                 type: object
-              externalReferences:
-                description: Source links; a forge reference matching an Agent
-                  provider selects the initial repository checkout.
-                type: array
-                items:
-                  type: object
-                  required: [source, kind, id]
-                  properties:
-                    source:
-                      type: string
-                      enum: [github, gitea, slack, alertmanager, imap]
-                    kind:
-                      type: string
-                      enum: [issue, pull_request, thread, alert]
-                    id:
-                      type: string
-                    serverURL:
-                      type: string
-                    repositoryOwner:
-                      type: string
-                    repositoryName:
-                      type: string
-                    workspaceId:
-                      type: string
-                    channelId:
-                      type: string
-                    mailboxRef:
-                      type: string
-                    mailboxUid:
-                      type: string
-                    folder:
-                      type: string
-                    imapThreadId:
-                      type: string
-              routingKeys:
-                description: Exact canonical resource URIs scoped to this Task's
-                  Agent and namespace.
-                items:
-                  maxLength: 1024
-                  minLength: 1
-                  type: string
-                maxItems: 32
-                type: array
-                x-kubernetes-list-type: set
-              model:
-                description: Model overrides the Agent's default model for this Task.
-                properties:
-                  backend:
-                    description: Backend is claude, codex or opencode.
-                    enum:
-                    - claude
-                    - codex
-                    - opencode
-                    type: string
-                  baseURL:
-                    description: BaseURL is the OpenAI-compatible API, ending in /v1,
-                      that the opencode backend calls, such as a llama.cpp server.
-                    type: string
-                    maxLength: 2048
-                    pattern: '^https?://[^/?#@]+(/[^?#]*)?$'
-                  credentialKeyRef:
-                    pattern: '^[A-Za-z0-9._-]{1,253}$'
-                    description: CredentialKeyRef selects an API key in the namespace's
-                      agent-operator-provider-tokens Secret.
-                    type: string
-                  name:
-                    description: Name is the provider model identifier. Empty uses the CLI default.
-                    type: string
-                    maxLength: 200
-                required:
-                - backend
-                - credentialKeyRef
-                type: object
-                x-kubernetes-validations:
-                - message: opencode requires baseURL and name; other backends take no baseURL
-                  rule: "self.backend == 'opencode' ? has(self.baseURL) && has(self.name) : !has(self.baseURL)"
-              objective:
-                description: Objective is the human-readable goal for the worker.
-                type: string
-              title:
-                description: Short display name for the Task; its metadata name remains the stable ID.
-                maxLength: 120
-                type: string
-              idleSeconds:
-                description: Worker idle timeout after a completed turn; copied from Agent on Task creation and overridable per Task.
-                type: integer
-                format: int32
-                minimum: 0
-                maximum: 86400
-              coalesceSeconds:
-                description: Overrides the Agent's event coalescing window for this Task; TaskPolicy copies its own into the Tasks it creates.
-                type: integer
-                format: int32
-                minimum: 0
-                maximum: 86400
-              resources:
-                description: Worker container requests and limits copied from Agent on Task creation and overridable per Task.
-                type: object
-                properties:
-                  requests:
-                    type: object
-                    additionalProperties:
-                      anyOf:
-                      - type: integer
-                      - type: string
-                      x-kubernetes-int-or-string: true
-                  limits:
-                    type: object
-                    additionalProperties:
-                      anyOf:
-                      - type: integer
-                      - type: string
-                      x-kubernetes-int-or-string: true
               disabledMCPs:
                 description: |-
                   DisabledMCPs names MCP endpoints left out of the worker's CLI
@@ -209,127 +105,221 @@ spec:
                 maxItems: 32
                 type: array
                 x-kubernetes-list-type: set
+              externalReferences:
+                description: |-
+                  ExternalReferences are starting source links. A matching forge reference
+                  selects checkout; later observations belong in status.
+                items:
+                  properties:
+                    channelId:
+                      type: string
+                    folder:
+                      type: string
+                    id:
+                      description: |-
+                        ID is an issue/PR number, Slack thread_ts, Alertmanager fingerprint,
+                        or the RFC Message-ID at the root of an IMAP thread.
+                      type: string
+                    imapThreadId:
+                      description: IMAPThreadID is the optional server-assigned OBJECTID
+                        or Gmail thread ID.
+                      type: string
+                    kind:
+                      enum:
+                      - issue
+                      - pull_request
+                      - thread
+                      - alert
+                      type: string
+                    mailboxRef:
+                      type: string
+                    mailboxUid:
+                      type: string
+                    repositoryName:
+                      type: string
+                    repositoryOwner:
+                      type: string
+                    serverURL:
+                      type: string
+                    source:
+                      enum:
+                      - github
+                      - gitea
+                      - slack
+                      - alertmanager
+                      - imap
+                      type: string
+                    workspaceId:
+                      type: string
+                  required:
+                  - id
+                  - kind
+                  - source
+                  type: object
+                type: array
+              idleSeconds:
+                description: |-
+                  IdleSeconds is the Task's copied or overridden worker idle timeout.
+                  A change replaces the current worker Pod after it terminates.
+                format: int32
+                maximum: 86400
+                minimum: 0
+                type: integer
+              model:
+                description: Model overrides the Agent's default model for this Task.
+                properties:
+                  backend:
+                    description: Backend is claude, codex or opencode.
+                    enum:
+                    - claude
+                    - codex
+                    - opencode
+                    type: string
+                  baseURL:
+                    description: |-
+                      BaseURL is the OpenAI-compatible API, ending in /v1, that the opencode
+                      backend calls, such as a llama.cpp server.
+                    maxLength: 2048
+                    pattern: ^https?://[^/?#@]+(/[^?#]*)?$
+                    type: string
+                  credentialKeyRef:
+                    description: CredentialKeyRef selects an API key in the namespace's
+                      provider-token Secret.
+                    pattern: ^[A-Za-z0-9._-]{1,253}$
+                    type: string
+                  name:
+                    description: Name is the provider model identifier. Empty uses
+                      the CLI default.
+                    maxLength: 200
+                    type: string
+                required:
+                - backend
+                - credentialKeyRef
+                type: object
+                x-kubernetes-validations:
+                - message: opencode requires baseURL and name; other backends take
+                    no baseURL
+                  rule: 'self.backend == ''opencode'' ? has(self.baseURL) && has(self.name)
+                    : !has(self.baseURL)'
+              objective:
+                description: Objective is the human-readable goal for the worker.
+                type: string
+              resources:
+                description: |-
+                  Resources is the Task's copied or overridden worker requests and limits.
+                  Changes replace the current worker Pod.
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              routingKeys:
+                description: |-
+                  RoutingKeys are exact canonical resource URIs scoped to this Task's
+                  Agent and namespace. The Task name remains its primary identity.
+                items:
+                  maxLength: 1024
+                  minLength: 1
+                  type: string
+                maxItems: 32
+                type: array
+                x-kubernetes-list-type: set
               suspend:
                 default: false
                 description: |-
                   Suspend stops the current worker and prevents a new one from starting.
                   Analogous to CronJob suspend.
                 type: boolean
+              title:
+                description: |-
+                  Title is a short display name for the Task. The worker may set it through
+                  the operator's execution-bound Agent MCP; the Task name remains its ID.
+                maxLength: 120
+                type: string
             required:
             - agentRef
             - objective
             type: object
           status:
             properties:
-              mcpProbe:
-                type: object
-                required: [requestId, podUid, state, updatedAt]
+              activity:
+                description: Activity is reported by the current worker and reconciled
+                  on Pod exit.
+                enum:
+                - starting
+                - working
+                - idle
+                - stopped
+                type: string
+              completion:
+                description: Completion is set when the worker or a closing forge
+                  event completes the Task.
                 properties:
-                  requestId: {type: string, maxLength: 160}
-                  podUid: {type: string, maxLength: 80}
-                  state: {type: string, enum: [pending, complete, failed]}
-                  updatedAt: {type: string, format: date-time}
-                  checkedAt:
-                    description: Time of the last completed check. Endpoints keep that result while a newer check is pending.
+                  actor:
                     type: string
+                  completedAt:
                     format: date-time
-                  endpoints:
-                    type: array
-                    maxItems: 32
-                    items:
-                      type: object
-                      required: [name, state]
-                      properties:
-                        name: {type: string, maxLength: 64}
-                        state: {type: string, enum: [available, unavailable]}
-                        detail: {type: string, maxLength: 120}
-                        serverTitle: {type: string, maxLength: 64}
-                        instructions: {type: string, maxLength: 500}
-                        tools:
-                          type: array
-                          maxItems: 64
-                          items: {type: string, maxLength: 64}
-              externalReferences:
-                description: Source links collected after Task creation.
-                type: array
-                items:
-                  type: object
-                  required: [source, kind, id]
-                  properties:
-                    source:
-                      type: string
-                      enum: [github, gitea, slack, alertmanager, imap]
-                    kind:
-                      type: string
-                      enum: [issue, pull_request, thread, alert]
-                    id:
-                      type: string
-                    serverURL:
-                      type: string
-                    repositoryOwner:
-                      type: string
-                    repositoryName:
-                      type: string
-                    workspaceId:
-                      type: string
-                    channelId:
-                      type: string
-                    mailboxRef:
-                      type: string
-                    mailboxUid:
-                      type: string
-                    folder:
-                      type: string
-                    imapThreadId:
-                      type: string
-              conversation:
-                type: array
-                maxItems: 64
-                items:
-                  type: object
-                  required:
-                  - id
-                  - role
-                  - content
-                  - createdAt
-                  properties:
-                    id:
-                      type: string
-                    role:
-                      type: string
-                      enum: [user, agent, external, system]
-                    deliveryState:
-                      type: string
-                      enum: [queued, delivered]
-                    source:
-                      type: string
-                    actor:
-                      type: string
-                    backend:
-                      type: string
-                      enum: [claude, codex, opencode]
-                    model:
-                      type: string
-                      maxLength: 200
-                    metrics:
-                      type: object
-                      properties:
-                        durationMs: {type: integer, format: int64, minimum: 0}
-                        apiDurationMs: {type: integer, format: int64, minimum: 0}
-                        inputTokens: {type: integer, format: int64, minimum: 0}
-                        outputTokens: {type: integer, format: int64, minimum: 0}
-                        cacheReadTokens: {type: integer, format: int64, minimum: 0}
-                        cacheWriteTokens: {type: integer, format: int64, minimum: 0}
-                    content:
-                      type: string
-                      maxLength: 8000
-                    url:
-                      type: string
-                      maxLength: 2048
-                      format: uri
-                    createdAt:
-                      type: string
-                      format: date-time
+                    type: string
+                  reason:
+                    type: string
+                  requested:
+                    description: |-
+                      Requested is set by the worker on its own Task; completion follows its
+                      turn result.
+                    type: boolean
+                type: object
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -386,87 +376,275 @@ spec:
                   - type
                   type: object
                 type: array
+              conversation:
+                items:
+                  description: TaskMessage is one bounded, displayable turn in a Task
+                    conversation.
+                  properties:
+                    actor:
+                      type: string
+                    backend:
+                      enum:
+                      - claude
+                      - codex
+                      - opencode
+                      type: string
+                    content:
+                      maxLength: 8000
+                      type: string
+                    createdAt:
+                      format: date-time
+                      type: string
+                    deliveryState:
+                      description: DeliveryState is queued until the worker starts
+                        the turn containing this input.
+                      enum:
+                      - queued
+                      - delivered
+                      type: string
+                    id:
+                      type: string
+                    metrics:
+                      description: TurnMetrics contains measurements for one completed
+                        CLI turn.
+                      properties:
+                        apiDurationMs:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        cacheReadTokens:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        cacheWriteTokens:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        durationMs:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        inputTokens:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        outputTokens:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      type: object
+                    model:
+                      maxLength: 200
+                      type: string
+                    role:
+                      enum:
+                      - user
+                      - agent
+                      - external
+                      - system
+                      type: string
+                    source:
+                      type: string
+                    url:
+                      format: uri
+                      maxLength: 2048
+                      type: string
+                  required:
+                  - content
+                  - createdAt
+                  - id
+                  - role
+                  type: object
+                maxItems: 64
+                type: array
+              deliveredMessageIds:
+                description: DeliveredMessageIDs preserves bounded input receipts
+                  across publish/status races.
+                items:
+                  maxLength: 160
+                  type: string
+                maxItems: 128
+                type: array
+              events:
+                description: Events is the operator's intake bookkeeping for routed
+                  events.
+                properties:
+                  initialDeliveryID:
+                    description: InitialDeliveryID is the receipt of the event that
+                      created the Task.
+                    type: string
+                  receipts:
+                    description: Receipts holds the latest accepted delivery receipts,
+                      newest last.
+                    items:
+                      type: string
+                    maxItems: 128
+                    type: array
+                  wakePending:
+                    description: WakePending asks the reconciler to start a worker
+                      for queued messages.
+                    type: boolean
+                  windows:
+                    additionalProperties:
+                      description: EventWindow follows the first event on a routing
+                        key.
+                      properties:
+                        binding:
+                          description: Binding is the UID of the binding whose event
+                            opened the window.
+                          type: string
+                        trailing:
+                          description: Trailing is set when the same binding delivered
+                            more events.
+                          type: boolean
+                        until:
+                          format: date-time
+                          type: string
+                      required:
+                      - until
+                      type: object
+                    description: Windows maps routing keys to their open coalescing
+                      windows.
+                    type: object
+                type: object
+              externalReferences:
+                description: ExternalReferences are source links collected after Task
+                  creation.
+                items:
+                  properties:
+                    channelId:
+                      type: string
+                    folder:
+                      type: string
+                    id:
+                      description: |-
+                        ID is an issue/PR number, Slack thread_ts, Alertmanager fingerprint,
+                        or the RFC Message-ID at the root of an IMAP thread.
+                      type: string
+                    imapThreadId:
+                      description: IMAPThreadID is the optional server-assigned OBJECTID
+                        or Gmail thread ID.
+                      type: string
+                    kind:
+                      enum:
+                      - issue
+                      - pull_request
+                      - thread
+                      - alert
+                      type: string
+                    mailboxRef:
+                      type: string
+                    mailboxUid:
+                      type: string
+                    repositoryName:
+                      type: string
+                    repositoryOwner:
+                      type: string
+                    serverURL:
+                      type: string
+                    source:
+                      enum:
+                      - github
+                      - gitea
+                      - slack
+                      - alertmanager
+                      - imap
+                      type: string
+                    workspaceId:
+                      type: string
+                  required:
+                  - id
+                  - kind
+                  - source
+                  type: object
+                type: array
+              lastMessageAt:
+                description: |-
+                  LastMessageAt survives bounded conversation history and changes only for
+                  user, external, and agent messages, never lifecycle status entries.
+                format: date-time
+                type: string
+              lastResultAt:
+                format: date-time
+                type: string
+              lastWorkerExit:
+                type: string
+              mcpProbe:
+                description: |-
+                  MCPProbeStatus is the latest worker-side connectivity check for this Task.
+                  It contains only endpoint names and bounded results, never credentials or URLs.
+                properties:
+                  checkedAt:
+                    description: |-
+                      CheckedAt is the time of the last completed check. Endpoints keep that
+                      result while a newer check is pending or after it failed.
+                    format: date-time
+                    type: string
+                  endpoints:
+                    items:
+                      properties:
+                        detail:
+                          maxLength: 120
+                          type: string
+                        instructions:
+                          description: Instructions is the server's bounded initialize
+                            instructions text.
+                          maxLength: 500
+                          type: string
+                        name:
+                          maxLength: 64
+                          type: string
+                        serverTitle:
+                          description: ServerTitle is the server's own serverInfo.title.
+                          maxLength: 64
+                          type: string
+                        state:
+                          enum:
+                          - available
+                          - unavailable
+                          type: string
+                        tools:
+                          description: Tools lists the tool names the server advertised.
+                          items:
+                            maxLength: 64
+                            type: string
+                          maxItems: 64
+                          type: array
+                      required:
+                      - name
+                      - state
+                      type: object
+                    maxItems: 32
+                    type: array
+                  podUid:
+                    maxLength: 80
+                    type: string
+                  requestId:
+                    maxLength: 160
+                    type: string
+                  state:
+                    enum:
+                    - pending
+                    - complete
+                    - failed
+                    type: string
+                  updatedAt:
+                    format: date-time
+                    type: string
+                required:
+                - podUid
+                - requestId
+                - state
+                - updatedAt
+                type: object
+              objectivePublished:
+                description: ObjectivePublished records that the objective reached
+                  the Task queue.
+                type: boolean
               outputs:
                 additionalProperties:
                   type: string
                 type: object
-              deliveredMessageIds:
-                type: array
-                maxItems: 128
-                items:
-                  type: string
-                  maxLength: 160
-              turnId:
-                type: string
-                maxLength: 160
-              turnStartedAt:
-                type: string
-                format: date-time
-              lastResultAt:
-                type: string
-                format: date-time
-              events:
-                description: Operator intake bookkeeping for routed events.
-                type: object
-                properties:
-                  initialDeliveryID:
-                    description: Receipt of the event that created the Task.
-                    type: string
-                  receipts:
-                    description: Latest accepted delivery receipts, newest last.
-                    type: array
-                    maxItems: 128
-                    items:
-                      type: string
-                  wakePending:
-                    description: Asks the reconciler to start a worker for queued messages.
-                    type: boolean
-                  windows:
-                    description: Open coalescing windows by routing key.
-                    type: object
-                    additionalProperties:
-                      type: object
-                      required: [until]
-                      properties:
-                        binding:
-                          description: UID of the binding whose event opened the window.
-                          type: string
-                        until:
-                          type: string
-                          format: date-time
-                        trailing:
-                          description: The same binding delivered more events; one wake follows the window.
-                          type: boolean
-              completion:
-                description: Set when the worker or a closing forge event completes the Task.
-                type: object
-                properties:
-                  requested:
-                    description: The worker requested completion of its own Task; it completes after the turn result.
-                    type: boolean
-                  reason:
-                    type: string
-                  actor:
-                    type: string
-                  completedAt:
-                    type: string
-                    format: date-time
-              objectivePublished:
-                description: The objective reached the Task queue.
-                type: boolean
-              runtimePublishedGeneration:
-                description: Latest Task generation sent to the resident worker as runtime configuration.
-                type: integer
-                format: int64
-              retryWorker:
-                description: Authorizes replacing a worker the operator stopped itself.
-                type: boolean
-              lastMessageAt:
-                type: string
-                format: date-time
-              lastWorkerExit:
-                description: Last terminal worker Pod UID or name already recorded in conversation.
-                type: string
               phase:
                 description: TaskPhase describes the current lifecycle state of the
                   Task.
@@ -478,14 +656,6 @@ spec:
                 - Completed
                 - Failed
                 type: string
-              activity:
-                description: Current worker activity reported through Agent MCP and reconciled on Pod exit.
-                enum:
-                - starting
-                - working
-                - idle
-                - stopped
-                type: string
               progress:
                 properties:
                   summary:
@@ -494,16 +664,36 @@ spec:
                     format: date-time
                     type: string
                 type: object
+              queue:
+                description: |-
+                  Queue is the declared RabbitMQ Task queue, deleted with the Task even
+                  after its Agent is gone.
+                type: string
               queueMessageId:
                 type: string
               reason:
                 type: string
+              retryWorker:
+                description: RetryWorker authorizes replacing a worker the operator
+                  stopped itself.
+                type: boolean
+              runtimePublishedGeneration:
+                description: |-
+                  RuntimePublishedGeneration is the latest Task generation sent to the
+                  resident worker as runtime configuration.
+                format: int64
+                type: integer
               sessionEpoch:
                 type: integer
-              workerPodName:
+              turnId:
+                description: TurnID and TurnStartedAt identify the current model turn,
+                  not Pod uptime.
+                maxLength: 160
                 type: string
-              queue:
-                description: Declared RabbitMQ Task queue, deleted with the Task even after its Agent is gone.
+              turnStartedAt:
+                format: date-time
+                type: string
+              workerPodName:
                 type: string
               workerPodUID:
                 type: string

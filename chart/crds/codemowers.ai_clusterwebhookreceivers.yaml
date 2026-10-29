@@ -1,97 +1,138 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: clusterwebhookreceivers.codemowers.ai
 spec:
   group: codemowers.ai
-  scope: Cluster
   names:
+    kind: ClusterWebhookReceiver
+    listKind: ClusterWebhookReceiverList
     plural: clusterwebhookreceivers
     singular: clusterwebhookreceiver
-    kind: ClusterWebhookReceiver
+  scope: Cluster
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      additionalPrinterColumns:
-        - name: Protocol
-          type: string
-          jsonPath: .spec.protocolRef
-      schema:
-        openAPIV3Schema:
-          type: object
-          required:
-            - spec
-          properties:
-            spec:
-              type: object
-              required:
-                - protocolRef
-                - senders
-              properties:
-                protocolRef:
-                  description: Cluster-scoped WebhookProtocol name.
+  - additionalPrinterColumns:
+    - jsonPath: .spec.protocolRef
+      name: Protocol
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ClusterWebhookReceiver is an endpoint at /hooks/<name> that fans each
+          event out to the WebhookBindings of any namespace referencing it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              match:
+                additionalProperties:
                   type: string
-                match:
-                  description: Settings the protocol's CEL reads as receiver.match, such as serverURL.
-                  type: object
-                  maxProperties: 16
-                  additionalProperties:
+                description: |-
+                  Match holds settings the protocol's CEL reads as receiver.match, such
+                  as serverURL.
+                maxProperties: 16
+                type: object
+                x-kubernetes-validations:
+                - message: match values are at most 1024 characters
+                  rule: self.all(k, size(self[k]) <= 1024)
+              protocolRef:
+                type: string
+              senders:
+                description: |-
+                  WebhookSenders lists how a receiver authenticates deliveries: a request
+                  must pass the secret signature, a listed ServiceAccount's token or the
+                  Ed25519 signature, and also come from an allowed address when GitHubMeta or
+                  CIDRs restrict it.
+                properties:
+                  audience:
+                    maxLength: 253
                     type: string
+                  cidrs:
+                    description: CIDRs restrict deliveries to these client address
+                      ranges.
+                    items:
+                      maxLength: 64
+                      type: string
+                    maxItems: 64
+                    type: array
+                  ed25519PublicKey:
+                    description: Ed25519PublicKey is the hex public key for a protocol
+                      signature.
+                    pattern: ^[0-9a-fA-F]{64}$
+                    type: string
+                  githubMeta:
+                    description: |-
+                      GitHubMeta is a GitHub or GHES meta API URL; deliveries must come from
+                      its hooks address ranges.
                     maxLength: 1024
-                senders:
-                  description: A request must pass the secret signature, a listed ServiceAccount's
-                    token or the Ed25519 signature, and also come from an allowed address when
-                    githubMeta or cidrs restrict it.
-                  type: object
-                  x-kubernetes-validations:
-                    - rule: has(self.secretKeyRef) || has(self.serviceAccounts) || has(self.ed25519PublicKey)
-                      message: secretKeyRef, serviceAccounts or ed25519PublicKey is required
-                    - rule: '!has(self.serviceAccounts) || has(self.audience)'
-                      message: serviceAccounts require an audience
-                  properties:
-                    secretKeyRef:
-                      description: Signing key in a Secret of the named namespace.
-                      type: object
-                      required:
-                        - namespace
-                        - name
-                        - key
-                      properties:
-                        namespace:
-                          type: string
-                          maxLength: 63
-                        name:
-                          type: string
-                          maxLength: 253
-                        key:
-                          type: string
-                          maxLength: 253
-                          pattern: '^[-._a-zA-Z0-9]+$'
-                    githubMeta:
-                      description: GitHub or GHES meta API URL; deliveries must also come from its
-                        hooks address ranges.
-                      type: string
-                      maxLength: 1024
-                      pattern: '^https://'
-                    cidrs:
-                      description: Deliveries must also come from one of these client address ranges.
-                      type: array
-                      maxItems: 64
-                      items:
+                    pattern: ^https://
+                    type: string
+                  secretKeyRef:
+                    description: |-
+                      SecretKeyRef selects the signing key: a Secret in the receiver's
+                      namespace, or in the named namespace for a ClusterWebhookReceiver.
+                    properties:
+                      key:
+                        maxLength: 253
+                        pattern: ^[-._a-zA-Z0-9]+$
                         type: string
-                        maxLength: 64
-                    serviceAccounts:
-                      description: <namespace>/<name> senders presenting a projected token for audience.
-                      type: array
-                      maxItems: 16
-                      items:
+                      name:
+                        maxLength: 253
                         type: string
-                        pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
-                    audience:
+                      namespace:
+                        description: Namespace is required for, and only allowed on,
+                          a ClusterWebhookReceiver.
+                        maxLength: 63
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  serviceAccounts:
+                    description: |-
+                      ServiceAccounts are <namespace>/<name> senders presenting a projected
+                      token for Audience.
+                    items:
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
                       type: string
-                      maxLength: 253
-                    ed25519PublicKey:
-                      description: Hex public key for the protocol's signature.
-                      type: string
-                      pattern: '^[0-9a-fA-F]{64}$'
+                    maxItems: 16
+                    type: array
+                type: object
+                x-kubernetes-validations:
+                - message: secretKeyRef, serviceAccounts or ed25519PublicKey is required
+                  rule: has(self.secretKeyRef) || has(self.serviceAccounts) || has(self.ed25519PublicKey)
+                - message: serviceAccounts require an audience
+                  rule: '!has(self.serviceAccounts) || has(self.audience)'
+            required:
+            - protocolRef
+            - senders
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: secretKeyRef.namespace is required on a ClusterWebhookReceiver
+          rule: '!has(self.spec.senders.secretKeyRef) || has(self.spec.senders.secretKeyRef.__namespace__)'
+    served: true
+    storage: true
+    subresources: {}

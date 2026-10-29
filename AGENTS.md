@@ -32,7 +32,16 @@ or prevent abuse of credentials and data available to an agent.
 - Keep tooling and dependency Docker stages independent of source/frontend stages.
   Pin dependencies and coding CLIs; production images receive pruned dependencies.
   Exclude credentials, local configuration, generated output and editor files from
-  Git and image build context.
+  Git and image build context; the generated API output below is the exception.
+- The Go types in `operator/api/v1alpha1` are the source of truth for the
+  `codemowers.ai` API. `chart/crds/` and `zz_generated.deepcopy.go` are
+  generated from them by `go generate ./api/...` in `operator/`, which runs the
+  pinned controller-gen. Never edit either by hand: express validation,
+  defaults, enums, CEL rules, scope, subresources and printer columns as
+  kubebuilder markers on the types, regenerate and commit the result. CI fails
+  when the committed output differs from what the types generate. Each bound
+  must match the limit the code enforces; a schema tighter than the code
+  rejects the operator's own status writes.
 - Keep CSS organized by component, shared defaults and one block per responsive
   breakpoint. Remove superseded rules and unused selectors. Preserve desktop,
   mobile drawer, composer, dialog and read-only layouts.
@@ -959,7 +968,8 @@ OIDC authentication and the Agent `prompt` verb.
 Use the current [developer](examples/agents/matmlazi.yaml),
 [customer support](examples/agents/patpalouk.yaml) and
 [admin](examples/agents/krtek.yaml) Agent examples and the
-[`codemowers.ai/v1alpha1` CRD schemas](chart/crds/) as the executable contract.
+[`codemowers.ai/v1alpha1` API types](operator/api/v1alpha1/), and the CRD schemas
+generated from them in [chart/crds/](chart/crds/), as the executable contract.
 Namespace administrators supply the two fixed Secrets described above and
 select individual keys in Agent specs. The operator creates Tasks and owns
 Task specs; worker observations are validated and written to Task status by

@@ -1,127 +1,153 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: webhookprotocols.codemowers.ai
 spec:
   group: codemowers.ai
-  scope: Cluster
   names:
+    kind: WebhookProtocol
+    listKind: WebhookProtocolList
     plural: webhookprotocols
     singular: webhookprotocol
-    kind: WebhookProtocol
+  scope: Cluster
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          required:
-            - spec
-          properties:
-            spec:
-              type: object
-              required:
-                - event
-              properties:
-                signature:
-                  description: How the sender signs requests. The key comes from the receiver.
-                  type: object
-                  required:
-                    - algorithm
-                    - header
-                    - encoding
-                  properties:
-                    algorithm:
-                      description: hmacSha256 with the receiver's secret, or ed25519 with its public key.
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: WebhookProtocol defines a reusable, cluster-owned HTTP protocol.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              event:
+                properties:
+                  acceptCEL:
+                    maxLength: 8192
+                    type: string
+                  allowedKeyPrefixes:
+                    description: |-
+                      AllowedKeyPrefixes bounds the canonical keys that this protocol's
+                      events, including binding keyCEL results, may carry. Protocols whose
+                      events carry no key leave it empty.
+                    items:
+                      maxLength: 1024
+                      minLength: 1
                       type: string
-                      enum:
-                        - hmacSha256
-                        - ed25519
-                    keyEncoding:
-                      description: Encoding of the receiver's hmacSha256 secret.
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-type: set
+                  eventsCEL:
+                    maxLength: 16384
+                    type: string
+                  requiredHeaders:
+                    items:
                       type: string
-                      enum:
-                        - utf8
-                        - hex
-                    header:
-                      type: string
-                    prefix:
-                      type: string
-                    encoding:
-                      type: string
-                      enum:
-                        - hex
-                        - base64
-                    signedBytesCEL:
-                      type: string
-                      maxLength: 4096
-                    freshness:
-                      type: object
-                      required:
-                        - timestampHeader
-                        - maxSkew
+                    maxItems: 32
+                    type: array
+                required:
+                - eventsCEL
+                type: object
+              response:
+                properties:
+                  defaultStatus:
+                    maximum: 299
+                    minimum: 200
+                    type: integer
+                  rules:
+                    items:
                       properties:
-                        timestampHeader:
+                        bodyCEL:
+                          maxLength: 4096
                           type: string
-                        maxSkew:
+                        contentType:
                           type: string
-                event:
-                  type: object
-                  required:
-                    - eventsCEL
-                  properties:
-                    requiredHeaders:
-                      type: array
-                      maxItems: 32
-                      items:
+                        status:
+                          maximum: 299
+                          minimum: 200
+                          type: integer
+                        whenCEL:
+                          maxLength: 4096
+                          type: string
+                      required:
+                      - status
+                      - whenCEL
+                      type: object
+                    maxItems: 8
+                    type: array
+                  status:
+                    maximum: 299
+                    minimum: 200
+                    type: integer
+                type: object
+              signature:
+                description: |-
+                  Signature describes how the sender signs requests; the key comes from
+                  the receiver.
+                properties:
+                  algorithm:
+                    description: |-
+                      Algorithm is hmacSha256 with the receiver's secret, or ed25519 with its
+                      public key.
+                    enum:
+                    - hmacSha256
+                    - ed25519
+                    type: string
+                  encoding:
+                    enum:
+                    - hex
+                    - base64
+                    type: string
+                  freshness:
+                    properties:
+                      maxSkew:
                         type: string
-                    acceptCEL:
-                      type: string
-                      maxLength: 8192
-                    allowedKeyPrefixes:
-                      description: Canonical key URI prefixes this protocol's events
-                        may carry, matched at a path boundary. Events with other keys
-                        are rejected; without prefixes, events carry no key.
-                      type: array
-                      maxItems: 16
-                      x-kubernetes-list-type: set
-                      items:
+                      timestampHeader:
                         type: string
-                        minLength: 1
-                        maxLength: 1024
-                    eventsCEL:
-                      type: string
-                      maxLength: 16384
-                response:
-                  type: object
-                  properties:
-                    status:
-                      type: integer
-                      minimum: 200
-                      maximum: 299
-                    defaultStatus:
-                      type: integer
-                      minimum: 200
-                      maximum: 299
-                    rules:
-                      type: array
-                      maxItems: 8
-                      items:
-                        type: object
-                        required:
-                          - whenCEL
-                          - status
-                        properties:
-                          whenCEL:
-                            type: string
-                            maxLength: 4096
-                          status:
-                            type: integer
-                            minimum: 200
-                            maximum: 299
-                          contentType:
-                            type: string
-                          bodyCEL:
-                            type: string
-                            maxLength: 4096
+                    required:
+                    - maxSkew
+                    - timestampHeader
+                    type: object
+                  header:
+                    type: string
+                  keyEncoding:
+                    enum:
+                    - utf8
+                    - hex
+                    type: string
+                  prefix:
+                    type: string
+                  signedBytesCEL:
+                    maxLength: 4096
+                    type: string
+                required:
+                - algorithm
+                - encoding
+                - header
+                type: object
+            required:
+            - event
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true

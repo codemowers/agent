@@ -2,15 +2,18 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // WebhookProtocol defines a reusable, cluster-owned HTTP protocol.
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster
 type WebhookProtocol struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	Spec              WebhookProtocolSpec `json:"spec"`
 }
+
+// +kubebuilder:object:root=true
 type WebhookProtocolList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
@@ -26,11 +29,15 @@ type WebhookProtocolSpec struct {
 type WebhookSignature struct {
 	// Algorithm is hmacSha256 with the receiver's secret, or ed25519 with its
 	// public key.
-	Algorithm      string            `json:"algorithm"`
-	KeyEncoding    string            `json:"keyEncoding,omitempty"`
-	Header         string            `json:"header"`
-	Prefix         string            `json:"prefix,omitempty"`
-	Encoding       string            `json:"encoding"`
+	// +kubebuilder:validation:Enum=hmacSha256;ed25519
+	Algorithm string `json:"algorithm"`
+	// +kubebuilder:validation:Enum=utf8;hex
+	KeyEncoding string `json:"keyEncoding,omitempty"`
+	Header      string `json:"header"`
+	Prefix      string `json:"prefix,omitempty"`
+	// +kubebuilder:validation:Enum=hex;base64
+	Encoding string `json:"encoding"`
+	// +kubebuilder:validation:MaxLength=4096
 	SignedBytesCEL string            `json:"signedBytesCEL,omitempty"`
 	Freshness      *WebhookFreshness `json:"freshness,omitempty"`
 }
@@ -39,47 +46,39 @@ type WebhookFreshness struct {
 	MaxSkew         string `json:"maxSkew"`
 }
 type WebhookEventSpec struct {
+	// +kubebuilder:validation:MaxItems=32
 	RequiredHeaders []string `json:"requiredHeaders,omitempty"`
-	AcceptCEL       string   `json:"acceptCEL,omitempty"`
-	EventsCEL       string   `json:"eventsCEL"`
+	// +kubebuilder:validation:MaxLength=8192
+	AcceptCEL string `json:"acceptCEL,omitempty"`
+	// +kubebuilder:validation:MaxLength=16384
+	EventsCEL string `json:"eventsCEL"`
 	// AllowedKeyPrefixes bounds the canonical keys that this protocol's
-	// events, including binding keyCEL results, may carry.
+	// events, including binding keyCEL results, may carry. Protocols whose
+	// events carry no key leave it empty.
+	// +optional
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=1024
+	// +listType=set
 	AllowedKeyPrefixes []string `json:"allowedKeyPrefixes"`
 }
 type WebhookResponse struct {
-	Status        int                   `json:"status,omitempty"`
-	DefaultStatus int                   `json:"defaultStatus,omitempty"`
-	Rules         []WebhookResponseRule `json:"rules,omitempty"`
+	// +kubebuilder:validation:Minimum=200
+	// +kubebuilder:validation:Maximum=299
+	Status int `json:"status,omitempty"`
+	// +kubebuilder:validation:Minimum=200
+	// +kubebuilder:validation:Maximum=299
+	DefaultStatus int `json:"defaultStatus,omitempty"`
+	// +kubebuilder:validation:MaxItems=8
+	Rules []WebhookResponseRule `json:"rules,omitempty"`
 }
 type WebhookResponseRule struct {
-	WhenCEL     string `json:"whenCEL"`
+	// +kubebuilder:validation:MaxLength=4096
+	WhenCEL string `json:"whenCEL"`
+	// +kubebuilder:validation:Minimum=200
+	// +kubebuilder:validation:Maximum=299
 	Status      int    `json:"status"`
 	ContentType string `json:"contentType,omitempty"`
-	BodyCEL     string `json:"bodyCEL,omitempty"`
-}
-
-func (in *WebhookProtocol) DeepCopyObject() runtime.Object {
-	out := *in
-	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec.Event.RequiredHeaders = append([]string(nil), in.Spec.Event.RequiredHeaders...)
-	out.Spec.Event.AllowedKeyPrefixes = append([]string(nil), in.Spec.Event.AllowedKeyPrefixes...)
-	out.Spec.Response.Rules = append([]WebhookResponseRule(nil), in.Spec.Response.Rules...)
-	if in.Spec.Signature != nil {
-		v := *in.Spec.Signature
-		if v.Freshness != nil {
-			f := *v.Freshness
-			v.Freshness = &f
-		}
-		out.Spec.Signature = &v
-	}
-	return &out
-}
-func (in *WebhookProtocolList) DeepCopyObject() runtime.Object {
-	out := *in
-	in.ListMeta.DeepCopyInto(&out.ListMeta)
-	out.Items = make([]WebhookProtocol, len(in.Items))
-	for i := range in.Items {
-		out.Items[i] = *(in.Items[i].DeepCopyObject().(*WebhookProtocol))
-	}
-	return &out
+	// +kubebuilder:validation:MaxLength=4096
+	BodyCEL string `json:"bodyCEL,omitempty"`
 }

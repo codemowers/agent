@@ -1,53 +1,86 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: clustermcpservers.codemowers.ai
 spec:
   group: codemowers.ai
-  scope: Cluster
   names:
+    kind: ClusterMCPServer
+    listKind: ClusterMCPServerList
     plural: clustermcpservers
     singular: clustermcpserver
-    kind: ClusterMCPServer
+  scope: Cluster
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      additionalPrinterColumns:
-        - name: URL
-          type: string
-          jsonPath: .spec.url
-        - name: Audience
-          type: string
-          jsonPath: .spec.audience
-      schema:
-        openAPIV3Schema:
-          description: Advertises an MCP server to workers of every namespace whose ServiceAccount holds the custom verb use on it. The name is the endpoint name workers see.
-          type: object
-          required:
-            - spec
-          x-kubernetes-validations:
-            - rule: "self.metadata.name.matches('^[a-z0-9]([a-z0-9-]{0,57}[a-z0-9])?$') && !self.metadata.name.startsWith('mailbox-')"
-              message: name must be a DNS label of at most 59 characters not starting with mailbox-
-          properties:
-            spec:
-              type: object
-              required:
-                - url
-              x-kubernetes-validations:
-                - rule: "!(has(self.audience) && has(self.credentialKeyRef))"
-                  message: audience and credentialKeyRef are mutually exclusive
-              properties:
-                url:
-                  type: string
-                  pattern: ^https?://
-                  maxLength: 2048
-                audience:
-                  description: Audience of the projected ServiceAccount token workers present. Defaults to <service>.<namespace> for an in-cluster URL http(s)://<service>.<namespace>.svc[.cluster.local]; other URLs get no token without it.
-                  type: string
-                  maxLength: 2048
-                credentialKeyRef:
-                  description: Key of the worker namespace's agent-operator-provider-tokens Secret that workers present as a bearer token instead of a ServiceAccount token, for servers that authorize each call with their own credentials. Workers can read the key.
-                  type: string
-                  pattern: ^[-._a-zA-Z0-9]+$
-                  maxLength: 253
+  - additionalPrinterColumns:
+    - jsonPath: .spec.url
+      name: URL
+      type: string
+    - jsonPath: .spec.audience
+      name: Audience
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ClusterMCPServer advertises an MCP server to the workers of every
+          namespace that hold the custom verb "use" on it. Its name is the endpoint
+          name workers see.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              audience:
+                description: |-
+                  Audience is the audience of the projected ServiceAccount token workers
+                  present, for servers with an audience contract of their own.
+                maxLength: 2048
+                type: string
+              credentialKeyRef:
+                description: |-
+                  CredentialKeyRef names a key of the worker namespace's provider tokens
+                  Secret that workers present as a bearer token instead of a
+                  ServiceAccount token, for servers such as Linear that authorize each
+                  call with their own credentials.
+                maxLength: 253
+                pattern: ^[-._a-zA-Z0-9]+$
+                type: string
+              url:
+                maxLength: 2048
+                pattern: ^https?://
+                type: string
+            required:
+            - url
+            type: object
+            x-kubernetes-validations:
+            - message: audience and credentialKeyRef are mutually exclusive
+              rule: '!(has(self.audience) && has(self.credentialKeyRef))'
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: name must be a DNS label of at most 59 characters not starting
+            with mailbox-
+          rule: self.metadata.name.matches('^[a-z0-9]([a-z0-9-]{0,57}[a-z0-9])?$')
+            && !self.metadata.name.startsWith('mailbox-')
+    served: true
+    storage: true
+    subresources: {}

@@ -79,6 +79,7 @@ type AgentSpec struct {
 	//   - sets the worker image from the operator deployment's AGENT_WORKER_IMAGE
 	//   - enforces restartPolicy=Never and hostUsers=false
 	//   - defaults serviceAccountName to "agent-worker-<Agent name>" when empty
+	// +kubebuilder:validation:XValidation:rule="has(self.spec)",message="template.spec is required"
 	Template corev1.PodTemplateSpec `json:"template"`
 
 	// Model selects the AI backend and its credential secret.
@@ -141,12 +142,16 @@ type ModelSpec struct {
 	// +kubebuilder:validation:Enum=claude;codex;opencode
 	Backend string `json:"backend"`
 	// Name is the provider model identifier. Empty uses the CLI default.
+	// +kubebuilder:validation:MaxLength=200
 	Name string `json:"name,omitempty"`
 	// BaseURL is the OpenAI-compatible API, ending in /v1, that the opencode
 	// backend calls, such as a llama.cpp server.
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^https?://[^/?#@]+(/[^?#]*)?$`
 	BaseURL string `json:"baseURL,omitempty"`
 
 	// CredentialKeyRef selects an API key in the namespace's provider-token Secret.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]{1,253}$`
 	CredentialKeyRef string `json:"credentialKeyRef"`
 }
 
@@ -155,6 +160,7 @@ type GitProvider struct {
 	Type      string `json:"type"`
 	ServerURL string `json:"serverURL"`
 	// CredentialKeyRef selects a token in the namespace's provider-token Secret.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]{1,253}$`
 	CredentialKeyRef string `json:"credentialKeyRef"`
 }
 
@@ -349,6 +355,10 @@ type TaskSpec struct {
 
 	// RoutingKeys are exact canonical resource URIs scoped to this Task's
 	// Agent and namespace. The Task name remains its primary identity.
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=1024
+	// +listType=set
 	RoutingKeys []string `json:"routingKeys,omitempty"`
 
 	// ExternalReferences are starting source links. A matching forge reference
@@ -364,6 +374,10 @@ type TaskSpec struct {
 	// DisabledMCPs names MCP endpoints left out of the worker's CLI
 	// configuration. Changes reach a running worker before its next turn.
 	// The agent_operator endpoint cannot be disabled.
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MaxLength=64
+	// +kubebuilder:validation:items:Pattern=`^[a-zA-Z0-9_-]+$`
+	// +listType=set
 	DisabledMCPs []string `json:"disabledMCPs,omitempty"`
 }
 
@@ -411,6 +425,7 @@ type TaskEvents struct {
 	// InitialDeliveryID is the receipt of the event that created the Task.
 	InitialDeliveryID string `json:"initialDeliveryID,omitempty"`
 	// Receipts holds the latest accepted delivery receipts, newest last.
+	// +kubebuilder:validation:MaxItems=128
 	Receipts []string `json:"receipts,omitempty"`
 	// WakePending asks the reconciler to start a worker for queued messages.
 	WakePending bool `json:"wakePending,omitempty"`
@@ -421,6 +436,7 @@ type TaskEvents struct {
 // EventWindow follows the first event on a routing key.
 type EventWindow struct {
 	// Binding is the UID of the binding whose event opened the window.
+	// +optional
 	Binding string      `json:"binding"`
 	Until   metav1.Time `json:"until"`
 	// Trailing is set when the same binding delivered more events.
@@ -444,8 +460,11 @@ func (s *TaskStatus) Completed() bool {
 
 type TaskStatus struct {
 	// DeliveredMessageIDs preserves bounded input receipts across publish/status races.
+	// +kubebuilder:validation:MaxItems=128
+	// +kubebuilder:validation:items:MaxLength=160
 	DeliveredMessageIDs []string `json:"deliveredMessageIds,omitempty"`
 	// TurnID and TurnStartedAt identify the current model turn, not Pod uptime.
+	// +kubebuilder:validation:MaxLength=160
 	TurnID        string       `json:"turnId,omitempty"`
 	TurnStartedAt *metav1.Time `json:"turnStartedAt,omitempty"`
 	Phase         TaskPhase    `json:"phase,omitempty"`
@@ -461,10 +480,11 @@ type TaskStatus struct {
 	QueueMessageID string            `json:"queueMessageId,omitempty"`
 	// Queue is the declared RabbitMQ Task queue, deleted with the Task even
 	// after its Agent is gone.
-	Queue        string          `json:"queue,omitempty"`
-	Progress     *TaskProgress   `json:"progress,omitempty"`
-	MCPProbe     *MCPProbeStatus `json:"mcpProbe,omitempty"`
-	Conversation []TaskMessage   `json:"conversation,omitempty"`
+	Queue    string          `json:"queue,omitempty"`
+	Progress *TaskProgress   `json:"progress,omitempty"`
+	MCPProbe *MCPProbeStatus `json:"mcpProbe,omitempty"`
+	// +kubebuilder:validation:MaxItems=64
+	Conversation []TaskMessage `json:"conversation,omitempty"`
 	// LastMessageAt survives bounded conversation history and changes only for
 	// user, external, and agent messages, never lifecycle status entries.
 	LastMessageAt *metav1.Time `json:"lastMessageAt,omitempty"`
@@ -489,25 +509,36 @@ type TaskStatus struct {
 // MCPProbeStatus is the latest worker-side connectivity check for this Task.
 // It contains only endpoint names and bounded results, never credentials or URLs.
 type MCPProbeStatus struct {
-	RequestID string      `json:"requestId"`
-	PodUID    string      `json:"podUid"`
+	// +kubebuilder:validation:MaxLength=160
+	RequestID string `json:"requestId"`
+	// +kubebuilder:validation:MaxLength=80
+	PodUID string `json:"podUid"`
+	// +kubebuilder:validation:Enum=pending;complete;failed
 	State     string      `json:"state"`
 	UpdatedAt metav1.Time `json:"updatedAt"`
 	// CheckedAt is the time of the last completed check. Endpoints keep that
 	// result while a newer check is pending or after it failed.
-	CheckedAt *metav1.Time        `json:"checkedAt,omitempty"`
+	CheckedAt *metav1.Time `json:"checkedAt,omitempty"`
+	// +kubebuilder:validation:MaxItems=32
 	Endpoints []MCPEndpointStatus `json:"endpoints,omitempty"`
 }
 
 type MCPEndpointStatus struct {
-	Name   string `json:"name"`
-	State  string `json:"state"`
+	// +kubebuilder:validation:MaxLength=64
+	Name string `json:"name"`
+	// +kubebuilder:validation:Enum=available;unavailable
+	State string `json:"state"`
+	// +kubebuilder:validation:MaxLength=120
 	Detail string `json:"detail,omitempty"`
 	// ServerTitle is the server's own serverInfo.title.
+	// +kubebuilder:validation:MaxLength=64
 	ServerTitle string `json:"serverTitle,omitempty"`
 	// Instructions is the server's bounded initialize instructions text.
+	// +kubebuilder:validation:MaxLength=500
 	Instructions string `json:"instructions,omitempty"`
 	// Tools lists the tool names the server advertised.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=64
 	Tools []string `json:"tools,omitempty"`
 }
 
@@ -515,26 +546,38 @@ type MCPEndpointStatus struct {
 type TaskMessage struct {
 	// DeliveryState is queued until the worker starts the turn containing this input.
 	// +kubebuilder:validation:Enum=queued;delivered
-	DeliveryState string       `json:"deliveryState,omitempty"`
-	ID            string       `json:"id"`
-	Role          string       `json:"role"`
-	Source        string       `json:"source,omitempty"`
-	Actor         string       `json:"actor,omitempty"`
-	Backend       string       `json:"backend,omitempty"`
-	Model         string       `json:"model,omitempty"`
-	Metrics       *TurnMetrics `json:"metrics,omitempty"`
-	Content       string       `json:"content"`
-	URL           string       `json:"url,omitempty"`
-	CreatedAt     metav1.Time  `json:"createdAt"`
+	DeliveryState string `json:"deliveryState,omitempty"`
+	ID            string `json:"id"`
+	// +kubebuilder:validation:Enum=user;agent;external;system
+	Role   string `json:"role"`
+	Source string `json:"source,omitempty"`
+	Actor  string `json:"actor,omitempty"`
+	// +kubebuilder:validation:Enum=claude;codex;opencode
+	Backend string `json:"backend,omitempty"`
+	// +kubebuilder:validation:MaxLength=200
+	Model   string       `json:"model,omitempty"`
+	Metrics *TurnMetrics `json:"metrics,omitempty"`
+	// +kubebuilder:validation:MaxLength=8000
+	Content string `json:"content"`
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Format=uri
+	URL       string      `json:"url,omitempty"`
+	CreatedAt metav1.Time `json:"createdAt"`
 }
 
 // TurnMetrics contains measurements for one completed CLI turn.
 type TurnMetrics struct {
-	DurationMs       *int64 `json:"durationMs,omitempty"`
-	APIDurationMs    *int64 `json:"apiDurationMs,omitempty"`
-	InputTokens      *int64 `json:"inputTokens,omitempty"`
-	OutputTokens     *int64 `json:"outputTokens,omitempty"`
-	CacheReadTokens  *int64 `json:"cacheReadTokens,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	DurationMs *int64 `json:"durationMs,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	APIDurationMs *int64 `json:"apiDurationMs,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	InputTokens *int64 `json:"inputTokens,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	OutputTokens *int64 `json:"outputTokens,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	CacheReadTokens *int64 `json:"cacheReadTokens,omitempty"`
+	// +kubebuilder:validation:Minimum=0
 	CacheWriteTokens *int64 `json:"cacheWriteTokens,omitempty"`
 }
 

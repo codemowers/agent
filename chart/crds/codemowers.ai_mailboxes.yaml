@@ -1,190 +1,278 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: mailboxes.codemowers.ai
 spec:
   group: codemowers.ai
-  scope: Namespaced
   names:
-    plural: mailboxes
-    singular: mailbox
     kind: Mailbox
     listKind: MailboxList
+    plural: mailboxes
+    singular: mailbox
+  scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      additionalPrinterColumns:
-        - name: Address
-          type: string
-          jsonPath: .spec.address
-        - name: IMAP
-          type: string
-          jsonPath: .status.imap.state
-        - name: SMTP
-          type: string
-          jsonPath: .status.smtp.state
-      schema:
-        openAPIV3Schema:
-          type: object
-          required: [spec]
-          properties:
-            spec:
-              type: object
-              required: [address]
-              x-kubernetes-validations:
-                - rule: has(self.imap) || has(self.smtp)
-                  message: At least one of imap or smtp is required
-                - rule: '!has(self.smtp) || !has(self.smtp.sentCopy) || !self.smtp.sentCopy.enabled || has(self.imap)'
-                  message: SMTP Sent copies require IMAP on the same Mailbox
-              properties:
-                agentRef:
-                  description: >-
-                    Same-namespace Agent the Mailbox is pinned to. Only its workers get the
-                    Mailbox MCP, and only while RBAC grants send or read. Absent, RBAC alone
-                    decides, so several Agents can share the Mailbox.
-                  type: string
-                  maxLength: 253
-                address:
-                  description: Public mailbox address, also the default SMTP From and Reply-To address.
-                  type: string
-                  maxLength: 254
-                displayName:
-                  description: Sender name shown by the mail MCP alongside the address.
-                  type: string
-                  maxLength: 120
-                imap:
-                  type: object
-                  required: [host, credentialsSecretRef]
-                  properties:
-                    host:
-                      type: string
-                      minLength: 1
-                    port:
-                      type: integer
-                      minimum: 1
-                      maximum: 65535
-                      default: 993
-                    tls:
-                      description: Auto uses implicit TLS on port 993 and required STARTTLS on other ports.
-                      type: string
-                      enum: [auto, implicit, starttls, disabled]
-                      default: auto
-                    folder:
-                      type: string
-                      default: INBOX
-                    sentFolder:
-                      description: Optional explicit Sent folder; absent means discover the unique Sent-role folder.
-                      type: string
-                    credentialsSecretRef:
-                      type: object
-                      required: [name, usernameKey, passwordKey]
-                      properties:
-                        name:
-                          type: string
-                        usernameKey:
-                          type: string
-                        passwordKey:
-                          type: string
-                smtp:
-                  type: object
-                  required: [host, credentialsSecretRef]
-                  properties:
-                    host:
-                      type: string
-                      minLength: 1
-                    port:
-                      type: integer
-                      minimum: 1
-                      maximum: 65535
-                      default: 465
-                    tls:
-                      description: Auto uses implicit TLS on port 465 and required STARTTLS on other ports.
-                      type: string
-                      enum: [auto, implicit, starttls, disabled]
-                      default: auto
-                    fromAddress:
-                      description: Overrides spec.address as the SMTP From address.
-                      type: string
-                      maxLength: 254
-                    replyTo:
-                      description: Overrides the default Reply-To address.
-                      type: string
-                      maxLength: 254
-                    sentCopy:
-                      type: object
-                      properties:
-                        enabled:
-                          type: boolean
-                          default: false
-                    credentialsSecretRef:
-                      type: object
-                      required: [name, usernameKey, passwordKey]
-                      properties:
-                        name:
-                          type: string
-                        usernameKey:
-                          type: string
-                        passwordKey:
-                          type: string
-            status:
-              type: object
-              properties:
-                imap:
-                  type: object
-                  properties:
-                    state:
-                      type: string
-                      enum: [pending, connected, disconnected, error]
-                    cursor:
-                      description: Advance only after durable event publication; retries may replay messages.
-                      type: object
-                      required: [folder, uidValidity, lastUID]
-                      properties:
-                        folder:
-                          type: string
-                        uidValidity:
-                          type: integer
-                          format: int64
-                          minimum: 0
-                        lastUID:
-                          type: integer
-                          format: int64
-                          minimum: 0
-                    lastCheckedAt:
-                      type: string
-                      format: date-time
-                    lastReceivedAt:
-                      type: string
-                      format: date-time
-                smtp:
-                  type: object
-                  properties:
-                    state:
-                      type: string
-                      enum: [pending, ready, disconnected, error]
-                    lastSentAt:
-                      type: string
-                      format: date-time
-                conditions:
-                  type: array
-                  x-kubernetes-list-type: map
-                  x-kubernetes-list-map-keys: [type]
-                  items:
-                    type: object
-                    required: [type, status, reason, message, lastTransitionTime]
+  - additionalPrinterColumns:
+    - jsonPath: .spec.address
+      name: Address
+      type: string
+    - jsonPath: .status.imap.state
+      name: IMAP
+      type: string
+    - jsonPath: .status.smtp.state
+      name: SMTP
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Mailbox defines independent inbound and outbound connections. Credentials
+          are referenced by key and must never be copied into Agent or Task resources.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              address:
+                maxLength: 254
+                type: string
+              agentRef:
+                description: |-
+                  AgentRef pins the Mailbox to one same-namespace Agent: only its workers
+                  get the Mailbox MCP, and only while RBAC also grants them send or read.
+                  Without it, RBAC alone decides, so several Agents can share a Mailbox.
+                maxLength: 253
+                type: string
+              displayName:
+                maxLength: 120
+                type: string
+              imap:
+                properties:
+                  credentialsSecretRef:
                     properties:
-                      type:
+                      name:
                         type: string
-                      status:
+                      passwordKey:
                         type: string
-                        enum: ['True', 'False', Unknown]
-                      reason:
+                      usernameKey:
                         type: string
-                      message:
+                    required:
+                    - name
+                    - passwordKey
+                    - usernameKey
+                    type: object
+                  folder:
+                    default: INBOX
+                    type: string
+                  host:
+                    minLength: 1
+                    type: string
+                  port:
+                    default: 993
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  sentFolder:
+                    type: string
+                  tls:
+                    default: auto
+                    enum:
+                    - auto
+                    - implicit
+                    - starttls
+                    - disabled
+                    type: string
+                required:
+                - credentialsSecretRef
+                - host
+                type: object
+              smtp:
+                properties:
+                  credentialsSecretRef:
+                    properties:
+                      name:
                         type: string
-                      lastTransitionTime:
+                      passwordKey:
                         type: string
-                        format: date-time
-      subresources:
-        status: {}
+                      usernameKey:
+                        type: string
+                    required:
+                    - name
+                    - passwordKey
+                    - usernameKey
+                    type: object
+                  fromAddress:
+                    maxLength: 254
+                    type: string
+                  host:
+                    minLength: 1
+                    type: string
+                  port:
+                    default: 465
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  replyTo:
+                    maxLength: 254
+                    type: string
+                  sentCopy:
+                    properties:
+                      enabled:
+                        default: false
+                        type: boolean
+                    type: object
+                  tls:
+                    default: auto
+                    enum:
+                    - auto
+                    - implicit
+                    - starttls
+                    - disabled
+                    type: string
+                required:
+                - credentialsSecretRef
+                - host
+                type: object
+            required:
+            - address
+            type: object
+            x-kubernetes-validations:
+            - message: At least one of imap or smtp is required
+              rule: has(self.imap) || has(self.smtp)
+            - message: SMTP Sent copies require IMAP on the same Mailbox
+              rule: '!has(self.smtp) || !has(self.smtp.sentCopy) || !self.smtp.sentCopy.enabled
+                || has(self.imap)'
+          status:
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              imap:
+                properties:
+                  cursor:
+                    properties:
+                      folder:
+                        type: string
+                      lastUID:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      uidValidity:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    required:
+                    - folder
+                    - lastUID
+                    - uidValidity
+                    type: object
+                  lastCheckedAt:
+                    format: date-time
+                    type: string
+                  lastReceivedAt:
+                    format: date-time
+                    type: string
+                  state:
+                    enum:
+                    - pending
+                    - connected
+                    - disconnected
+                    - error
+                    type: string
+                type: object
+              smtp:
+                properties:
+                  lastSentAt:
+                    format: date-time
+                    type: string
+                  state:
+                    enum:
+                    - pending
+                    - ready
+                    - disconnected
+                    - error
+                    type: string
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

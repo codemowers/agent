@@ -26,6 +26,19 @@ jobs:
             helm package chart --destination "$RUNNER_TEMP"
           fi
 
+  # CRDs and DeepCopy methods are generated from the Go API types; fail when
+  # the committed output differs from what the types produce.
+  generated:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: operator/go.mod
+      - run: go generate ./api/...
+        working-directory: operator
+      - run: git diff --exit-code -- chart/crds operator/api/v1alpha1/zz_generated.deepcopy.go
+
   # Each architecture builds natively. Branches only verify builds; version
   # tags publish the architecture digests used by the merge job.
   build:
@@ -152,7 +165,7 @@ jobs:
 
   chart:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [chart-check, merge]
+    needs: [chart-check, generated, merge]
     runs-on: ubuntu-24.04
     permissions:
       contents: read

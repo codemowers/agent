@@ -1,68 +1,93 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: devices.codemowers.ai
 spec:
   group: codemowers.ai
-  scope: Namespaced
   names:
-    plural: devices
-    singular: device
     kind: Device
     listKind: DeviceList
+    plural: devices
+    singular: device
+  scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      subresources:
-        status: {}
-      additionalPrinterColumns:
-        - name: Connected
-          type: boolean
-          jsonPath: .status.connected
-        - name: Hostname
-          type: string
-          jsonPath: .status.hostname
-      schema:
-        openAPIV3Schema:
-          type: object
-          required: [spec]
-          properties:
-            spec:
-              type: object
-              required: [connectionSecretRef]
-              properties:
-                displayName:
-                  type: string
-                  maxLength: 100
-                connectionSecretRef:
-                  description: One key in a Secret in the Device's namespace. The bridge's RBAC must allow the Secret name. Its value is a 32-character lowercase hex bearer key used by device-agent in the WebSocket URL.
-                  type: object
-                  required: [name, key]
-                  properties:
-                    name:
-                      type: string
-                      maxLength: 253
-                      pattern: '^agent-device-[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
-                    key:
-                      type: string
-                      minLength: 1
-                      maxLength: 128
-                      pattern: '^[A-Za-z0-9._-]+$'
-            status:
-              type: object
-              properties:
-                connected:
-                  type: boolean
-                hostname:
-                  type: string
-                  maxLength: 100
-                version:
-                  type: string
-                  maxLength: 40
-                connectedAt:
-                  type: string
-                  format: date-time
-                lastSeenAt:
-                  type: string
-                  format: date-time
+  - additionalPrinterColumns:
+    - jsonPath: .status.connected
+      name: Connected
+      type: boolean
+    - jsonPath: .status.hostname
+      name: Hostname
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Device is one outbound device-agent connection. The bridge reads its
+          referenced Secret only when RBAC grants access to that name.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              connectionSecretRef:
+                properties:
+                  key:
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9._-]+$
+                    type: string
+                  name:
+                    maxLength: 253
+                    type: string
+                required:
+                - key
+                - name
+                type: object
+              displayName:
+                maxLength: 100
+                type: string
+            required:
+            - connectionSecretRef
+            type: object
+          status:
+            properties:
+              connected:
+                type: boolean
+              connectedAt:
+                format: date-time
+                type: string
+              hostname:
+                maxLength: 100
+                type: string
+              lastSeenAt:
+                format: date-time
+                type: string
+              version:
+                maxLength: 40
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
