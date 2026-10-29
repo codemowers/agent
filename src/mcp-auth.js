@@ -7,9 +7,10 @@ import {mcpRequestDuration} from './metrics.js';
 
 export async function mcpRequest(server, options = {}, request = agentFetch) {
   const headers = {...server.headers, ...options.headers};
-  if (server.tokenFile) {
+  if (server.tokenFile || server.tokenEnv) {
     for (const key of Object.keys(headers)) if (key.toLowerCase() === 'authorization') delete headers[key];
-    headers.Authorization = 'Bearer ' + (await readFile(server.tokenFile, 'utf8')).trim();
+    const token = server.tokenFile ? await readFile(server.tokenFile, 'utf8') : process.env[server.tokenEnv] || '';
+    headers.Authorization = 'Bearer ' + token.trim();
   }
   return request(server.url, {...options, headers, redirect: 'error'});
 }
@@ -21,7 +22,7 @@ export async function workerMcpConfig(config) {
   try {
     for (const [name, definition] of Object.entries(config.mcpServers || {})) {
       const remote = definition;
-      if (!remote.tokenFile) { mcpServers[name] = remote; continue; }
+      if (!remote.tokenFile && !remote.tokenEnv) { mcpServers[name] = remote; continue; }
       const server = http.createServer(async (req, res) => {
         // POST carries each MCP request and its full result; GET is a
         // long-lived event stream, so only POST is timed.

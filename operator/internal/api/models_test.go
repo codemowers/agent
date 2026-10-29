@@ -35,8 +35,8 @@ func TestAgentModelsRequireAccessAndFilterProviderCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team"},
-		Spec: agentsv1alpha1.AgentSpec{Model: agentsv1alpha1.ModelSpec{Backend: "codex", Name: "gpt-5", CredentialKeyRef: "openai"}}}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agentsv1alpha1.ProviderTokensSecretName, Namespace: "team"}, Data: map[string][]byte{"openai": []byte("private-token")}}
+		Spec: agentsv1alpha1.AgentSpec{CredentialSecretRef: agentsv1alpha1.CredentialSecretRef{Name: "team-credentials"}, Model: agentsv1alpha1.ModelSpec{Backend: "codex", Name: "gpt-5"}}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "team-credentials", Namespace: "team"}, Data: map[string][]byte{"OPENAI_API_KEY": []byte("private-token")}}
 	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, secret).Build()
 	h := &Handler{Client: noCachedSecretClient{store}, APIReader: store, Verifier: fakeVerifier{}, Reviewer: fakeReviewer{},
 		ModelHTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {

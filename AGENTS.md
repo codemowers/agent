@@ -119,22 +119,39 @@ worker or PVC. The operator creates event/UI Tasks and owns derived Task metadat
 and status. Workers cannot write Agent or Task Kubernetes resources. Workers
 report execution results through the configured transport, and the operator
 records validated observations in `Task.status`. A namespace administrator's
-ability to edit Agent references and therefore select credential keys is part
-of this trust boundary. Worker Pods receive only the Secret keys that the
-operator references in their Pod spec, never a whole provider Secret mount.
-The operator projects every Git provider key named by the Agent into the worker
-environment. One provider of a type receives `GH_TOKEN` or `GITEA_TOKEN`;
-multiple providers of that type receive `GH_TOKEN_<HOST>` or
-`GITEA_TOKEN_<HOST>`, with uppercase ASCII and punctuation replaced by
-underscores. Ports and collision hashes disambiguate host names. A Task with
-a matching external repository reference also receives its selected key as
-`AGENT_FORGE_TOKEN` for checkout. Unbound Tasks still receive their Agent's
-configured provider credentials.
-Provider tokens live under separate keys in the namespace's
-`agent-operator-provider-tokens` Secret. Model and Git provider
-`credentialKeyRef` fields select a key. The operator has get-only RBAC for
-the provider Secret. Neither the operator nor the webhook receiver has Secret
-list/watch.
+ability to edit Agent references and therefore select a credential Secret is
+part of this trust boundary.
+Each Agent names its credential Secret in `spec.credentialSecretRef`, and the
+worker container, and no other container, receives every key of it as an
+environment variable through `envFrom`. Keys are fixed by convention: the
+model key is `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `AGENT_MODEL_API_KEY`;
+a GitHub provider reads `GH_TOKEN` for github.com and `*.ghe.com` and
+`GH_ENTERPRISE_TOKEN` for other hosts, a Gitea provider `GITEA_TOKEN`; a
+credentialed MCP server reads `MCP_<NAME>_TOKEN`. Any other key, such as one
+for the worker's own tools, arrives under its name. A `credentialKeyRef`
+selects another key of the same Secret, never another Secret, so admission
+checks one Secret name per Agent; the CRD requires distinct Git provider
+keys. The operator also references the model and Git provider keys
+explicitly, because `envFrom` skips missing keys: a missing key keeps the
+worker Pod from starting instead of letting a tool fall back to another
+token. Operator-set variables replace same-named template variables.
+`AGENT_GIT_PROVIDERS` lists the providers with their key names. The worker
+writes gh's `hosts.yml`, tea's `config.yml` and one Git credential helper per
+provider into a memory-backed volume at `AGENT_CREDENTIAL_DIR`, so no token
+reaches the workspace. gh's `GH_TOKEN` and `GH_ENTERPRISE_TOKEN` and tea's
+`GITEA_INSTANCE_URL` apply to every host of their kind, so the operator sets
+`GH_HOST` and `GITEA_INSTANCE_URL` only for a single such provider reading
+its default key, and with several hosts of a kind the worker removes that
+kind's variables from the CLI environment; tea also sends `GH_TOKEN` to
+`GITEA_INSTANCE_URL` when `GITEA_TOKEN` is empty. A Task with a matching
+external repository reference also receives its provider's key as
+`AGENT_FORGE_TOKEN` for checkout.
+Agent names are lowercase letters and digits, so the `<name>-` prefix of one
+Agent never matches another Agent's resources. The operator may get only the
+credential Secrets listed in the chart's `operator.credentialSecretNames`,
+for forge probes, forge assignment checks and model discovery; Agents with
+other Secrets run without them. Neither the operator nor the webhook receiver
+has Secret list/watch.
 Webhook endpoints are receivers. A namespaced WebhookReceiver serves
 `/hooks/<namespace>/<name>` to WebhookBindings of its namespace; a
 cluster-scoped ClusterWebhookReceiver serves `/hooks/<name>` and fans each
@@ -404,11 +421,11 @@ from its in-cluster URL, and a server outside the cluster gets no token; an
 explicit audience serves servers with a contract of their own, such as
 Driftmower. Namespace administrators may set any audience: through the Agent
 Pod template they can already mint worker tokens for any audience. A server
-with `credentialKeyRef` instead gets that key of the worker namespace's
-`agent-operator-provider-tokens` Secret as its bearer token and no
-ServiceAccount token, for external servers such as Linear that authorize each
-call with their own credentials; the CRD rejects it together with `audience`,
-and a missing key leaves only that server unavailable.
+with `credential: true` instead gets each worker's `MCP_<NAME>_TOKEN` key of
+its Agent's credential Secret as its bearer token and no ServiceAccount
+token, for external servers such as Linear that authorize each call with
+per-user credentials; the CRD rejects it together with `audience`, and a
+worker without the key leaves only that server out.
 Like Git provider keys, the worker can read it. When it creates a worker Pod, the operator attaches every server on
 which a SubjectAccessReview grants the worker ServiceAccount the custom verb
 `use`, a namespaced server overriding a cluster one of the same name. One

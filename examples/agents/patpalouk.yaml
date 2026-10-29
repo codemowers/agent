@@ -29,11 +29,13 @@ spec:
               secretKeyRef:
                 name: mat-slack-token
                 key: user-token
+  # Keys of patpalouk-credentials reach the worker as environment variables:
+  # ANTHROPIC_API_KEY for the model and GH_TOKEN for GitHub.
+  credentialSecretRef:
+    name: patpalouk-credentials
   # No volumeClaimTemplates — tasks are stateless; no PVCs created.
   model:
     backend: claude
-    credentialKeyRef: anthropic
   gitProviders:
     - type: github
       serverURL: https://github.com
-      credentialKeyRef: github

@@ -183,9 +183,12 @@ spec:
                     pattern: ^https?://[^/?#@]+(/[^?#]*)?$
                     type: string
                   credentialKeyRef:
-                    description: CredentialKeyRef selects an API key in the namespace's
-                      provider-token Secret.
-                    pattern: ^[A-Za-z0-9._-]{1,253}$
+                    description: |-
+                      CredentialKeyRef selects another key of the Agent's credential Secret
+                      than the backend's default: ANTHROPIC_API_KEY, OPENAI_API_KEY or
+                      AGENT_MODEL_API_KEY.
+                    maxLength: 128
+                    pattern: ^[A-Za-z_][A-Za-z0-9_]*$
                     type: string
                   name:
                     description: Name is the provider model identifier. Empty uses
@@ -194,7 +197,6 @@ spec:
                     type: string
                 required:
                 - backend
-                - credentialKeyRef
                 type: object
                 x-kubernetes-validations:
                 - message: opencode requires baseURL and name; other backends take

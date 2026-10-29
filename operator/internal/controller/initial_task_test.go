@@ -55,11 +55,10 @@ func TestTaskPolicyCreatesTaskOnlyForCurrentAssignee(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "developer", Namespace: "team", UID: types.UID("agent-uid")},
-		Spec: agentsv1alpha1.AgentSpec{IdleSeconds: int32Ptr(120), CoalesceSeconds: int32Ptr(120), Resources: &corev1.ResourceRequirements{
-			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}}, GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://forge.example.test",
-			CredentialKeyRef: "git-token"}}}}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agentsv1alpha1.ProviderTokensSecretName, Namespace: "team"},
-		Data: map[string][]byte{"git-token": []byte("configured-token")}}
+		Spec: agentsv1alpha1.AgentSpec{CredentialSecretRef: agentsv1alpha1.CredentialSecretRef{Name: "developer-credentials"}, IdleSeconds: int32Ptr(120), CoalesceSeconds: int32Ptr(120), Resources: &corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}}, GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://forge.example.test"}}}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "developer-credentials", Namespace: "team"},
+		Data: map[string][]byte{"GH_ENTERPRISE_TOKEN": []byte("configured-token")}}
 	policies := []client.Object{
 		&agentsv1alpha1.TaskPolicy{ObjectMeta: metav1.ObjectMeta{Name: "assigned", Namespace: "team"}, Spec: agentsv1alpha1.TaskPolicySpec{
 			AgentRef: "developer", KeyPrefix: "https://forge.example.test/team", EventTypes: []string{"issues.assigned"}, Verify: "forgeAssignment"}},

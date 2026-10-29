@@ -49,8 +49,8 @@ and workers never read or write these resources through the Kubernetes API.
 - **ClusterMCPServer** and **MCPServer:** an MCP server advertised to workers.
   A worker token's audience is the server's `audience`, else its Service,
   `<service>.<namespace>`, derived from an in-cluster URL. A server with
-  `credentialKeyRef` gets that key of the worker namespace's
-  `agent-operator-provider-tokens` Secret instead.
+  `credential: true` gets the worker's `MCP_<NAME>_TOKEN` key of its Agent's
+  credential Secret instead.
 
 Dashboard users listed in an Agent's `spec.access` may do everything with its
 Tasks. Without that list, verbs on the Agent decide: `get` reads Tasks and
@@ -90,8 +90,8 @@ ClusterMCPServer and MCPServer advertise three kinds of server:
   with TokenReview and authorizes each call with SubjectAccessReview on the
   exact object, as the Device bridge, Mailboxes and Driftmower do.
 - **Credentialed external:** a service such as Linear that authorizes each
-  call against the `credentialKeyRef` key. The worker can read the key, as it
-  can its Git provider keys, so scope it to what every grantee may do.
+  call against the worker's `MCP_<NAME>_TOKEN` key. The worker can read the
+  key, as it can its Git provider keys, so scope it to what that Agent may do.
 - **Authless with nothing sensitive:** public advisory content such as the
   Codemowers MCP, or a tool whose reach any worker may have anyway.
 
@@ -104,7 +104,7 @@ policy over existing servers, such as
 
 | Identity | Permissions |
 | --- | --- |
-| `agent-operator` | Reads Agents, Mailboxes, MCP servers and policies; manages Tasks, worker Pods, PVCs and Mailbox Services; writes Agent, Task and Mailbox status; reads `agent-operator-provider-tokens` by name; creates TokenReviews and SubjectAccessReviews. |
+| `agent-operator` | Reads Agents, Mailboxes, MCP servers and policies; manages Tasks, worker Pods, PVCs and Mailbox Services; writes Agent, Task and Mailbox status; gets the credential Secrets listed in `operator.credentialSecretNames` by name; creates TokenReviews and SubjectAccessReviews. |
 | `agent-operator-webhook` | Reads protocols, receivers, bindings and the Secret each receiver names; creates TokenReviews for ServiceAccount-token senders. |
 | `agent-devices` | Reads Devices and the Secrets named in `deviceBridge.secretNames`; writes Device status; creates TokenReviews and SubjectAccessReviews. |
 | `agent-mailbox` | Creates TokenReviews and SubjectAccessReviews. Only the Mailbox Pod's MCP container gets its token. |
@@ -119,7 +119,7 @@ images, chat and shell history.
 
 | Secret | Holds | Selected by |
 | --- | --- | --- |
-| `agent-operator-provider-tokens` | Model API keys and Git provider tokens | `credentialKeyRef` in an Agent's model and Git providers |
+| An Agent's `credentialSecretRef`, conventionally `<name>-credentials` | Model API keys, Git provider tokens, MCP server tokens and tool credentials, under fixed key names | The Agent; `credentialKeyRef` selects another key of it |
 | Any, conventionally `agent-operator-webhook-keys` | Webhook signing keys | `senders.secretKeyRef` in a receiver |
 | A name allowed by `deviceBridge.secretNames` | Device connection keys | `connectionSecretRef` in a Device |
 | Any | Mailbox IMAP and SMTP credentials | `credentialsSecretRef` in a Mailbox |
@@ -131,8 +131,8 @@ webhook signing key only authenticates deliveries; it is not an API token.
 
 | Credential | Operator | Worker |
 | --- | --- | --- |
-| Model API keys | Reads the selected key to discover models | The Agent's selected key |
-| Git provider tokens | Reads them to check repositories and assignment | Each provider key the Agent names |
+| Model API keys | Reads the key to discover models, if `operator.credentialSecretNames` lists the Secret | Every key of its Agent's credential Secret, as environment variables |
+| Git provider tokens | Reads them to check repositories and assignment, likewise | The same; gh, tea and Git configuration in a memory-backed volume |
 | Kaniko push credential | Not used | Mounted into Kaniko builder Pods by Skaffold |
 | Webhook signing keys | Not held; the webhook receiver reads them | Never |
 | RabbitMQ | Operator connection | A projected token that reads its ServiceAccount's queues and cannot publish |
@@ -168,6 +168,14 @@ Kubernetes 1.36, to enforce for worker, Kaniko and development Pods alike:
   policy takes the namespace's Agents as parameters and confines each worker's
   writes, Pod ServiceAccounts, Secret references and PVC mounts to resources
   named with its prefix.
+- For Agents sharing a namespace, the Agents themselves: an Agent's
+  `credentialSecretRef` and every Secret reference and ServiceAccount in its
+  Pod template must start with `<name>-`. The operator, not the Agent's
+  author, creates the worker Pod, so without this rule anyone who may write
+  an Agent can point it at another Agent's Secret. Agent names cannot contain
+  dashes, so prefixes never overlap; bind each name to its owner, for example
+  through its immutable `codemowers.io/created-by` annotation, so a user
+  cannot create an Agent named after another user's prefix.
 
 ## Current limits
 

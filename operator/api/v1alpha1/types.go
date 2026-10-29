@@ -24,6 +24,7 @@ var (
 // +kubebuilder:printcolumn:name="Tasks",type=integer,JSONPath=".status.taskCount"
 // +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z0-9]+$')",message="Agent names are lowercase letters and digits only, so the <name>- prefix of one Agent never matches another's resources"
 
 // Agent defines a privilege domain: which credentials and MCP endpoints worker
 // pods may access. Tasks select an Agent through spec.agentRef; the operator
@@ -63,6 +64,12 @@ type AgentSpec struct {
 	// +kubebuilder:validation:MaxLength=30
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?-$`
 	ResourcePrefix string `json:"resourcePrefix,omitempty"`
+	// CredentialSecretRef names the Secret in the Agent's namespace whose keys
+	// the worker container receives as environment variables. The model, Git
+	// provider and credentialed MCP server tokens are read from fixed keys of
+	// it, such as ANTHROPIC_API_KEY, GH_TOKEN and MCP_<NAME>_TOKEN, unless a
+	// credentialKeyRef selects another key of the same Secret.
+	CredentialSecretRef CredentialSecretRef `json:"credentialSecretRef"`
 	// Instructions describes the Agent's role to its workers and leads every
 	// turn's prompt; changes reach the next worker Pod.
 	// +kubebuilder:validation:MaxLength=4096
@@ -90,7 +97,10 @@ type AgentSpec struct {
 	// volume name and PVC name suffix. Mount by name from podSpec.containers[*].volumeMounts.
 	VolumeClaimTemplates []VolumeClaimTemplate `json:"volumeClaimTemplates,omitempty"`
 
-	// GitProviders lists git server credentials available to workers.
+	// GitProviders lists the forges workers use. Each provider reads its token
+	// from its own key of the credential Secret.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.all(p, self.filter(q, (has(q.credentialKeyRef) ? q.credentialKeyRef : q.type == 'gitea' ? 'GITEA_TOKEN' : (url(q.serverURL).getHostname() == 'github.com' || url(q.serverURL).getHostname().endsWith('.ghe.com')) ? 'GH_TOKEN' : 'GH_ENTERPRISE_TOKEN') == (has(p.credentialKeyRef) ? p.credentialKeyRef : p.type == 'gitea' ? 'GITEA_TOKEN' : (url(p.serverURL).getHostname() == 'github.com' || url(p.serverURL).getHostname().endsWith('.ghe.com')) ? 'GH_TOKEN' : 'GH_ENTERPRISE_TOKEN')).size() == 1)",message="each Git provider needs its own credential key; set credentialKeyRef on providers sharing a default key"
 	GitProviders []GitProvider `json:"gitProviders,omitempty"`
 
 	// Access, when set, alone decides which dashboard users may read this
@@ -150,18 +160,35 @@ type ModelSpec struct {
 	// +kubebuilder:validation:Pattern=`^https?://[^/?#@]+(/[^?#]*)?$`
 	BaseURL string `json:"baseURL,omitempty"`
 
-	// CredentialKeyRef selects an API key in the namespace's provider-token Secret.
-	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]{1,253}$`
-	CredentialKeyRef string `json:"credentialKeyRef"`
+	// CredentialKeyRef selects another key of the Agent's credential Secret
+	// than the backend's default: ANTHROPIC_API_KEY, OPENAI_API_KEY or
+	// AGENT_MODEL_API_KEY.
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
+	CredentialKeyRef string `json:"credentialKeyRef,omitempty"`
+}
+
+// CredentialSecretRef names a Secret in the Agent's namespace.
+type CredentialSecretRef struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	Name string `json:"name"`
 }
 
 type GitProvider struct {
 	// +kubebuilder:validation:Enum=github;gitea
-	Type      string `json:"type"`
+	Type string `json:"type"`
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^https://[^/?#@]+(/[^?#]*)?$`
 	ServerURL string `json:"serverURL"`
-	// CredentialKeyRef selects a token in the namespace's provider-token Secret.
-	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]{1,253}$`
-	CredentialKeyRef string `json:"credentialKeyRef"`
+	// CredentialKeyRef selects another key of the Agent's credential Secret
+	// than the provider's default: GH_TOKEN for github.com and *.ghe.com,
+	// GH_ENTERPRISE_TOKEN for other GitHub hosts and GITEA_TOKEN for Gitea.
+	// The key is also the worker's environment variable name.
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
+	CredentialKeyRef string `json:"credentialKeyRef,omitempty"`
 }
 
 // MailboxResourceName names a Mailbox's Pod and Service.
@@ -181,6 +208,8 @@ type MCPEndpoint struct {
 	Name      string `json:"name"`
 	URL       string `json:"url"`
 	TokenFile string `json:"tokenFile,omitempty"`
+	// TokenEnv names the worker environment variable holding the bearer token.
+	TokenEnv string `json:"tokenEnv,omitempty"`
 }
 
 // WorkerMCPEndpoints returns the operator's agent_operator endpoint followed
@@ -238,6 +267,10 @@ const WorkerMetricsPort = 9464
 
 // WorkerTokenDir holds one projected token file per audience a worker uses.
 const WorkerTokenDir = "/var/run/agent-tokens"
+
+// WorkerCredentialDir is the worker's memory-backed volume for the gh, tea
+// and Git credential files it writes from its credential environment.
+const WorkerCredentialDir = "/var/run/agent-credentials"
 
 type AgentStatus struct {
 	TaskCount       int                `json:"taskCount,omitempty"`

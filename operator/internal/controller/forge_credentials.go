@@ -1,96 +1,60 @@
 package controller
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"net/url"
+	"encoding/json"
 	"strings"
 
 	agentsv1alpha1 "github.com/codemowers/agent/operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 )
 
-// The unsuffixed token is safe to choose only when an Agent defines one
-// provider of that type. Multi-provider Agents expose explicitly named tokens.
-func forgeCredentialEnv(providers []agentsv1alpha1.GitProvider) []corev1.EnvVar {
-	type entry struct {
-		provider agentsv1alpha1.GitProvider
-		base     string
-		suffix   string
-	}
-	entries := make([]entry, 0, len(providers))
-	counts := make(map[string]int)
-	hostCounts := make(map[string]int)
-	seen := make(map[string]bool)
-	for _, provider := range providers {
-		base := ""
-		switch provider.Type {
-		case "github":
-			base = "GH_TOKEN"
-		case "gitea":
-			base = "GITEA_TOKEN"
-		default:
-			continue
-		}
-		identity := provider.Type + "\x00" + provider.ServerURL + "\x00" + provider.CredentialKeyRef
-		if seen[identity] {
-			continue
-		}
-		seen[identity] = true
-		counts[base]++
-		suffix := forgeHostSuffix(provider.ServerURL)
-		entries = append(entries, entry{provider: provider, base: base, suffix: suffix})
-		if suffix != "" {
-			hostCounts[base+"_"+suffix]++
-		}
-	}
-	result := make([]corev1.EnvVar, 0, len(entries))
-	for _, item := range entries {
-		if item.provider.CredentialKeyRef == "" || item.suffix == "" {
-			continue
-		}
-		name := item.base
-		if counts[item.base] > 1 {
-			name += "_" + item.suffix
-			if hostCounts[name] > 1 {
-				sum := sha256.Sum256([]byte(item.provider.ServerURL + "\x00" + item.provider.CredentialKeyRef))
-				name += "_" + strings.ToUpper(hex.EncodeToString(sum[:4]))
-			}
-		}
-		result = append(result, corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName},
-				Key:                  item.provider.CredentialKeyRef,
-			},
-		}})
-	}
-	return result
+// gitProviderEnv describes one Git provider to the worker, which writes the
+// gh, tea and Git credential configuration from it.
+type gitProviderEnv struct {
+	Type      string `json:"type"`
+	ServerURL string `json:"serverURL"`
+	TokenEnv  string `json:"tokenEnv"`
 }
 
-func forgeHostSuffix(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return ""
-	}
-	var suffix strings.Builder
-	lastUnderscore := false
-	for _, char := range strings.ToUpper(parsed.Hostname()) {
-		if char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
-			suffix.WriteRune(char)
-			lastUnderscore = false
-		} else if !lastUnderscore {
-			suffix.WriteByte('_')
-			lastUnderscore = true
+// forgeCredentialEnv requires each Git provider's key of the Agent's
+// credential Secret under its own name, so a missing key keeps the worker
+// Pod from starting instead of leaving tools to fall back to another token,
+// and lists the providers in AGENT_GIT_PROVIDERS. GH_HOST and
+// GITEA_INSTANCE_URL, which select gh's and tea's environment login, are set
+// only when they are unambiguous: tea sends GH_TOKEN to GITEA_INSTANCE_URL
+// when GITEA_TOKEN is empty.
+func forgeCredentialEnv(agent *agentsv1alpha1.Agent) []corev1.EnvVar {
+	secret := agentsv1alpha1.CredentialSecret(agent)
+	env := []corev1.EnvVar{}
+	providers := []gitProviderEnv{}
+	var enterprise, gitea []agentsv1alpha1.GitProvider
+	for _, provider := range agent.Spec.GitProviders {
+		key := agentsv1alpha1.GitProviderTokenKey(provider)
+		env = append(env, corev1.EnvVar{Name: key, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: key}}})
+		providers = append(providers, gitProviderEnv{provider.Type, strings.TrimRight(provider.ServerURL, "/"), key})
+		switch {
+		case provider.Type == "gitea":
+			gitea = append(gitea, provider)
+		case !agentsv1alpha1.GitHubDotCom(provider.ServerURL):
+			enterprise = append(enterprise, provider)
 		}
 	}
-	result := strings.Trim(suffix.String(), "_")
-	if port := parsed.Port(); port != "" {
-		result += "_" + port
+	if len(providers) == 0 {
+		return nil
 	}
-	return result
+	data, _ := json.Marshal(providers)
+	env = append(env, corev1.EnvVar{Name: "AGENT_GIT_PROVIDERS", Value: string(data)})
+	if len(enterprise) == 1 && agentsv1alpha1.GitProviderTokenKey(enterprise[0]) == "GH_ENTERPRISE_TOKEN" {
+		env = append(env, corev1.EnvVar{Name: "GH_HOST", Value: hostOf(enterprise[0].ServerURL)})
+	}
+	if len(gitea) == 1 && agentsv1alpha1.GitProviderTokenKey(gitea[0]) == "GITEA_TOKEN" {
+		env = append(env, corev1.EnvVar{Name: "GITEA_INSTANCE_URL", Value: strings.TrimRight(gitea[0].ServerURL, "/")})
+	}
+	return env
 }
 
-func managedForgeCredentialName(name string) bool {
-	return name == "AGENT_FORGE_TOKEN" || name == "GH_TOKEN" || name == "GITEA_TOKEN" ||
-		strings.HasPrefix(name, "GH_TOKEN_") || strings.HasPrefix(name, "GITEA_TOKEN_")
+func hostOf(serverURL string) string {
+	host := strings.TrimPrefix(strings.TrimPrefix(serverURL, "https://"), "http://")
+	return strings.TrimRight(host, "/")
 }

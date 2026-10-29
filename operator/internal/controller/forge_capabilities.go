@@ -61,7 +61,7 @@ func forgeURLs(provider agentsv1alpha1.GitProvider) (string, string, error) {
 func (r *AgentReconciler) probeForges(ctx context.Context, agent *agentsv1alpha1.Agent) []agentsv1alpha1.ForgeCapability {
 	result := make([]agentsv1alpha1.ForgeCapability, 0, len(agent.Spec.GitProviders))
 	var secret corev1.Secret
-	secretAvailable := r.APIReader != nil && r.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.ProviderTokensSecretName}, &secret) == nil
+	secretAvailable := r.APIReader != nil && r.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.CredentialSecret(agent)}, &secret) == nil
 	httpClient := r.ForgeHTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -75,12 +75,13 @@ func (r *AgentReconciler) probeForges(ctx context.Context, agent *agentsv1alpha1
 			continue
 		}
 		capability.ServerURL = base
-		if provider.CredentialKeyRef == "" || !secretAvailable || len(secret.Data[provider.CredentialKeyRef]) == 0 {
+		key := agentsv1alpha1.GitProviderTokenKey(provider)
+		if !secretAvailable || len(secret.Data[key]) == 0 {
 			capability.Detail = "Credential Secret unavailable"
 			result = append(result, capability)
 			continue
 		}
-		probe := forgeProbe{provider: provider, baseURL: base, apiURL: api, token: string(secret.Data[provider.CredentialKeyRef]), client: httpClient}
+		probe := forgeProbe{provider: provider, baseURL: base, apiURL: api, token: string(secret.Data[key]), client: httpClient}
 		if err := probe.read(ctx, &capability); err != nil {
 			capability.Detail = err.Error()
 		} else {

@@ -44,9 +44,10 @@ func TestForgeCapabilityProbe(t *testing.T) {
 				t.Fatal(err)
 			}
 			agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: "team"}, Spec: agentsv1alpha1.AgentSpec{
-				GitProviders: []agentsv1alpha1.GitProvider{{Type: tc.name, ServerURL: tc.server, CredentialKeyRef: "forge-token"}},
+				CredentialSecretRef: agentsv1alpha1.CredentialSecretRef{Name: "agent-credentials"},
+				GitProviders:        []agentsv1alpha1.GitProvider{{Type: tc.name, ServerURL: tc.server, CredentialKeyRef: "FORGE_TOKEN"}},
 			}}
-			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agentsv1alpha1.ProviderTokensSecretName, Namespace: "team"}, Data: map[string][]byte{"forge-token": []byte("private-token")}}
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "agent-credentials", Namespace: "team"}, Data: map[string][]byte{"FORGE_TOKEN": []byte("private-token")}}
 			store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
 			r := &AgentReconciler{APIReader: store, ForgeHTTPClient: &http.Client{Transport: forgeRoundTrip(func(request *http.Request) (*http.Response, error) {
 				if request.URL.Host != tc.api || request.Header.Get("Authorization") != "Bearer private-token" {

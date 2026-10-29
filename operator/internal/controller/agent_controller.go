@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -890,7 +891,7 @@ const (
 	workerRuntimeGenerationAnnotation = "codemowers.ai/worker-runtime-generation"
 	// Bump when the operator/runner contract requires replacement of every
 	// active worker Pod. The Task informer enqueues existing Tasks at startup.
-	WorkerPodVersion = "29"
+	WorkerPodVersion = "30"
 )
 
 func workerResources(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent) *corev1.ResourceRequirements {
@@ -918,11 +919,12 @@ func workerConfigHashWithVersion(task *agentsv1alpha1.Task, agent *agentsv1alpha
 		GitProviders     []agentsv1alpha1.GitProvider `json:"gitProviders"`
 		CheckoutEnv      []corev1.EnvVar              `json:"checkoutEnv"`
 		Backend          string                       `json:"backend"`
-		CredentialKeyRef string                       `json:"credentialKeyRef"`
+		CredentialSecret string                       `json:"credentialSecret"`
+		CredentialKey    string                       `json:"credentialKey"`
 		BaseURL          string                       `json:"baseURL,omitempty"`
 		Instructions     string                       `json:"instructions,omitempty"`
 		Template         corev1.PodTemplateSpec       `json:"template"`
-	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, model.CredentialKeyRef, model.BaseURL, agent.Spec.Instructions, agent.Spec.Template})
+	}{version, workerResources(task, agent), agent.Spec.GitProviders, checkoutEnvironment(task, agent), model.Backend, agentsv1alpha1.CredentialSecret(agent), agentsv1alpha1.ModelCredentialKey(model), model.BaseURL, agent.Spec.Instructions, agent.Spec.Template})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -973,7 +975,7 @@ func checkoutEnvironment(task *agentsv1alpha1.Task, agent *agentsv1alpha1.Agent)
 				{Name: "AGENT_FORGE_URL", Value: serverURL},
 				{Name: "AGENT_REPOSITORY", Value: ref.RepositoryOwner + "/" + ref.RepositoryName},
 				{Name: "AGENT_FORGE_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName}, Key: provider.CredentialKeyRef}}},
+					LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.CredentialSecret(agent)}, Key: agentsv1alpha1.GitProviderTokenKey(provider)}}},
 			}
 		}
 	}
@@ -1073,9 +1075,11 @@ func (r *TaskReconciler) authorizedMailboxes(ctx context.Context, agent *agentsv
 }
 
 // mcpServer is an advertised MCP server attached to a worker; a non-empty
-// Audience sends it a projected token, a CredentialKeyRef a provider token.
+// Audience sends it a projected token, Credential the worker's own token
+// from its Agent's credential Secret.
 type mcpServer struct {
-	Name, URL, Audience, CredentialKeyRef string
+	Name, URL, Audience string
+	Credential          bool
 }
 
 // authorizedMCPServers lists the ClusterMCPServers and the namespace's
@@ -1108,7 +1112,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 	}
 	for _, server := range cluster.Items {
 		if allowed("", "clustermcpservers", server.Name) {
-			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience(), server.Spec.CredentialKeyRef}
+			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience(), server.Spec.Credential}
 		}
 	}
 	var local agentsv1alpha1.MCPServerList
@@ -1118,7 +1122,7 @@ func (r *TaskReconciler) authorizedMCPServers(ctx context.Context, namespace, sa
 	}
 	for _, server := range local.Items {
 		if allowed(namespace, "mcpservers", server.Name) {
-			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience(), server.Spec.CredentialKeyRef}
+			byName[server.Name] = mcpServer{server.Name, server.Spec.URL, server.Spec.TokenAudience(), server.Spec.Credential}
 		}
 	}
 	servers := make([]mcpServer, 0, len(byName))
@@ -1198,6 +1202,7 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		{Name: "AGENT_TASK_OBJECTIVE", Value: task.Spec.Objective},
 		{Name: "AGENT_OPERATOR_MCP_URL", Value: agentsv1alpha1.OperatorMCPURL(r.HarnessNamespace)},
 		{Name: "AGENT_OPERATOR_MCP_TOKEN_FILE", Value: agentsv1alpha1.WorkerTokenDir + "/agent_operator"},
+		{Name: "AGENT_CREDENTIAL_DIR", Value: agentsv1alpha1.WorkerCredentialDir},
 	}
 	if task.Status.Progress != nil && task.Status.Progress.Summary != "" {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_PREVIOUS_SUMMARY", Value: task.Status.Progress.Summary})
@@ -1221,14 +1226,10 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	for i, server := range servers {
 		endpoints[i] = agentsv1alpha1.MCPEndpoint{Name: server.Name, URL: server.URL}
 		switch {
-		case server.CredentialKeyRef != "":
-			// Only the referenced key is projected, never the whole Secret. A
-			// missing key leaves this server unavailable, not the worker Pod.
-			endpoints[i].TokenFile = agentsv1alpha1.WorkerTokenDir + "/mcp/" + server.Name
-			tokens = append(tokens, corev1.VolumeProjection{Secret: &corev1.SecretProjection{
-				LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName},
-				Items:                []corev1.KeyToPath{{Key: server.CredentialKeyRef, Path: "mcp/" + server.Name}},
-				Optional:             boolPtr(true)}})
+		case server.Credential:
+			// envFrom delivers the key; a worker without it leaves the server
+			// out rather than failing.
+			endpoints[i].TokenEnv = agentsv1alpha1.MCPTokenEnv(server.Name)
 		case server.Audience != "":
 			endpoints[i].TokenFile = agentsv1alpha1.WorkerTokenDir + "/mcp/" + server.Name
 			tokens = append(tokens, token(server.Audience, "mcp/"+server.Name))
@@ -1245,17 +1246,17 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 	if task.Spec.Model != nil {
 		model = *task.Spec.Model
 	}
-	credentialName := map[string]string{"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "opencode": "AGENT_MODEL_API_KEY"}[model.Backend]
+	// The backend's key is required explicitly: envFrom skips missing keys.
 	opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_BACKEND", Value: model.Backend},
-		corev1.EnvVar{Name: credentialName, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.ProviderTokensSecretName}, Key: model.CredentialKeyRef}}})
+		corev1.EnvVar{Name: agentsv1alpha1.ModelCredentialEnv(model.Backend), ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.CredentialSecret(agent)}, Key: agentsv1alpha1.ModelCredentialKey(model)}}})
 	if model.Name != "" {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MODEL", Value: model.Name})
 	}
 	if model.BaseURL != "" {
 		opEnv = append(opEnv, corev1.EnvVar{Name: "AGENT_MODEL_BASE_URL", Value: model.BaseURL})
 	}
-	opEnv = append(opEnv, forgeCredentialEnv(agent.Spec.GitProviders)...)
+	opEnv = append(opEnv, forgeCredentialEnv(agent)...)
 	opEnv = append(opEnv, checkoutEnvironment(task, agent)...)
 	if r.AMQPURL != "" {
 		opEnv = append(opEnv,
@@ -1268,16 +1269,25 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		if ps.Containers[i].Name == "worker" {
 			ps.Containers[i].Image = r.WorkerImage
 			ps.Containers[i].Resources = *workerResources(task, agent)
+			// Operator-set variables replace same-named template ones.
+			managed := make(map[string]bool, len(opEnv))
+			for _, env := range opEnv {
+				managed[env.Name] = true
+			}
 			filtered := ps.Containers[i].Env[:0]
 			for _, env := range ps.Containers[i].Env {
-				if env.Name != "AGENT_IDLE_SECONDS" && !managedForgeCredentialName(env.Name) {
+				if !managed[env.Name] {
 					filtered = append(filtered, env)
 				}
 			}
-			ps.Containers[i].Env = filtered
-			ps.Containers[i].Env = append(ps.Containers[i].Env, opEnv...)
+			ps.Containers[i].Env = append(filtered, opEnv...)
+			// Every key of the credential Secret, including those for the
+			// worker's own tools, reaches the worker as an environment variable.
+			ps.Containers[i].EnvFrom = append(ps.Containers[i].EnvFrom, corev1.EnvFromSource{
+				SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: agentsv1alpha1.CredentialSecret(agent)}}})
 			ps.Containers[i].VolumeMounts = append(ps.Containers[i].VolumeMounts, corev1.VolumeMount{
-				Name: "agent-tokens", MountPath: agentsv1alpha1.WorkerTokenDir, ReadOnly: true})
+				Name: "agent-tokens", MountPath: agentsv1alpha1.WorkerTokenDir, ReadOnly: true},
+				corev1.VolumeMount{Name: "agent-credentials", MountPath: agentsv1alpha1.WorkerCredentialDir})
 			// The worker serves /metrics and, once its workspace and broker are
 			// ready to take work, /readyz.
 			ps.Containers[i].Ports = append(ps.Containers[i].Ports, corev1.ContainerPort{
@@ -1287,7 +1297,11 @@ func (r *TaskReconciler) buildWorkerPod(name string, task *agentsv1alpha1.Task, 
 		}
 	}
 	ps.Volumes = append(ps.Volumes, corev1.Volume{Name: "agent-tokens", VolumeSource: corev1.VolumeSource{
-		Projected: &corev1.ProjectedVolumeSource{Sources: tokens}}})
+		Projected: &corev1.ProjectedVolumeSource{Sources: tokens}}},
+		// gh, tea and Git credential files the worker writes from its
+		// environment stay in memory, never in the workspace.
+		corev1.Volume{Name: "agent-credentials", VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory, SizeLimit: resourcePtr("1Mi")}}})
 
 	annotations := make(map[string]string, len(agent.Spec.Template.ObjectMeta.Annotations)+1)
 	for key, value := range agent.Spec.Template.ObjectMeta.Annotations {
@@ -1375,6 +1389,11 @@ func ownedByTask(pod *corev1.Pod, task *agentsv1alpha1.Task) bool {
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(n int32) *int32 { return &n }
 func int64Ptr(n int64) *int64 { return &n }
+
+func resourcePtr(quantity string) *resource.Quantity {
+	value := resource.MustParse(quantity)
+	return &value
+}
 
 func min(a, b int) int {
 	if a < b {

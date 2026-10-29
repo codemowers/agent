@@ -54,15 +54,14 @@ spec:
                   present, for servers with an audience contract of their own.
                 maxLength: 2048
                 type: string
-              credentialKeyRef:
+              credential:
                 description: |-
-                  CredentialKeyRef names a key of the worker namespace's provider tokens
-                  Secret that workers present as a bearer token instead of a
+                  Credential makes each worker present its own bearer token, the
+                  MCP_<NAME>_TOKEN key of its Agent's credential Secret, instead of a
                   ServiceAccount token, for servers such as Linear that authorize each
-                  call with their own credentials.
-                maxLength: 253
-                pattern: ^[-._a-zA-Z0-9]+$
-                type: string
+                  call with per-user credentials. Workers without that key leave the
+                  server out.
+                type: boolean
               url:
                 maxLength: 2048
                 pattern: ^https?://
@@ -71,8 +70,8 @@ spec:
             - url
             type: object
             x-kubernetes-validations:
-            - message: audience and credentialKeyRef are mutually exclusive
-              rule: '!(has(self.audience) && has(self.credentialKeyRef))'
+            - message: audience and credential are mutually exclusive
+              rule: '!(has(self.audience) && has(self.credential) && self.credential)'
         required:
         - spec
         type: object

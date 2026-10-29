@@ -10,6 +10,7 @@ import {agentIdentity} from './identity.js';
 import {signalChild} from './child-signals.js';
 import {workerMcpConfig, mcpRequest} from './mcp-auth.js';
 import {prepareKubeEnv, pushSecret} from './kube-env.js';
+import {prepareForgeCredentials} from './forge-credentials.js';
 import {serveMetrics, setReady, idle, tokens, turnDuration} from './metrics.js';
 
 const required = name => {
@@ -403,6 +404,11 @@ export async function nativeSessionExists(root, backend, sessionId) {
   return false;
 }
 
+// Token variables gh or tea would send to every host of a kind while
+// several hosts of that kind are configured; the CLI uses the generated
+// per-host configuration instead.
+let ambiguousCliEnv = [];
+
 async function runPrompt(message, state, root, repo, backend, model, disabledMcps, signal) {
   await seedTaskContext(repo, message);
   const endpoints = JSON.parse(process.env.AGENT_MCP_ENDPOINTS || '[]');
@@ -413,8 +419,12 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
       throw new Error('Invalid or duplicate Agent MCP endpoint');
     }
     if (name !== 'agent_operator' && disabledMcps.includes(name)) continue;
+    // A credentialed server needs the worker's own token; without it the
+    // server is left out rather than called unauthenticated.
+    if (endpoint.tokenEnv && !process.env[endpoint.tokenEnv]) continue;
     mcpServers[name] = {type: 'http', url: endpoint.url,
-      ...(endpoint.tokenFile ? {tokenFile: endpoint.tokenFile} : {})};
+      ...(endpoint.tokenFile ? {tokenFile: endpoint.tokenFile} : {}),
+      ...(endpoint.tokenEnv ? {tokenEnv: endpoint.tokenEnv} : {})};
   }
   const mcp = await workerMcpConfig({mcpServers});
   const startedAt = new Date().toISOString();
@@ -455,6 +465,7 @@ async function runPrompt(message, state, root, repo, backend, model, disabledMcp
     args.push(prompt);
   }
   const cliEnv = {...process.env, HOME: join(root, 'home')};
+  for (const name of ambiguousCliEnv) delete cliEnv[name];
   // A headless turn ends at the CLI's result; background agents would die with it.
   if (backend === 'claude') cliEnv.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1';
   if (backend === 'codex') cliEnv.CODEX_API_KEY = process.env.OPENAI_API_KEY;
@@ -603,6 +614,8 @@ export async function taskWorker() {
   process.env.HOME = join(root, 'home');
   await prepareKubeEnv(process.env.HOME);
   const repo = await workspace(root, required('TASK_NAME'));
+  ambiguousCliEnv = await prepareForgeCredentials({dir: process.env.AGENT_CREDENTIAL_DIR, home: process.env.HOME,
+    giteaUser: agentIdentity().username, run});
   // Pod environment carries the objective current at creation; config
   // messages carry later edits.
   let objectiveChanged = process.env.AGENT_TASK_OBJECTIVE

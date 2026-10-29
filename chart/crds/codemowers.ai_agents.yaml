@@ -89,17 +89,40 @@ spec:
                 maximum: 86400
                 minimum: 0
                 type: integer
+              credentialSecretRef:
+                description: |-
+                  CredentialSecretRef names the Secret in the Agent's namespace whose keys
+                  the worker container receives as environment variables. The model, Git
+                  provider and credentialed MCP server tokens are read from fixed keys of
+                  it, such as ANTHROPIC_API_KEY, GH_TOKEN and MCP_<NAME>_TOKEN, unless a
+                  credentialKeyRef selects another key of the same Secret.
+                properties:
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                required:
+                - name
+                type: object
               gitProviders:
-                description: GitProviders lists git server credentials available to
-                  workers.
+                description: |-
+                  GitProviders lists the forges workers use. Each provider reads its token
+                  from its own key of the credential Secret.
                 items:
                   properties:
                     credentialKeyRef:
-                      description: CredentialKeyRef selects a token in the namespace's
-                        provider-token Secret.
-                      pattern: ^[A-Za-z0-9._-]{1,253}$
+                      description: |-
+                        CredentialKeyRef selects another key of the Agent's credential Secret
+                        than the provider's default: GH_TOKEN for github.com and *.ghe.com,
+                        GH_ENTERPRISE_TOKEN for other GitHub hosts and GITEA_TOKEN for Gitea.
+                        The key is also the worker's environment variable name.
+                      maxLength: 128
+                      pattern: ^[A-Za-z_][A-Za-z0-9_]*$
                       type: string
                     serverURL:
+                      maxLength: 2048
+                      pattern: ^https://[^/?#@]+(/[^?#]*)?$
                       type: string
                     type:
                       enum:
@@ -107,11 +130,21 @@ spec:
                       - gitea
                       type: string
                   required:
-                  - credentialKeyRef
                   - serverURL
                   - type
                   type: object
+                maxItems: 16
                 type: array
+                x-kubernetes-validations:
+                - message: each Git provider needs its own credential key; set credentialKeyRef
+                    on providers sharing a default key
+                  rule: 'self.all(p, self.filter(q, (has(q.credentialKeyRef) ? q.credentialKeyRef
+                    : q.type == ''gitea'' ? ''GITEA_TOKEN'' : (url(q.serverURL).getHostname()
+                    == ''github.com'' || url(q.serverURL).getHostname().endsWith(''.ghe.com''))
+                    ? ''GH_TOKEN'' : ''GH_ENTERPRISE_TOKEN'') == (has(p.credentialKeyRef)
+                    ? p.credentialKeyRef : p.type == ''gitea'' ? ''GITEA_TOKEN'' :
+                    (url(p.serverURL).getHostname() == ''github.com'' || url(p.serverURL).getHostname().endsWith(''.ghe.com''))
+                    ? ''GH_TOKEN'' : ''GH_ENTERPRISE_TOKEN'')).size() == 1)'
               idleSeconds:
                 description: |-
                   IdleSeconds is copied into new Tasks. Zero shuts the worker down as soon
@@ -144,9 +177,12 @@ spec:
                     pattern: ^https?://[^/?#@]+(/[^?#]*)?$
                     type: string
                   credentialKeyRef:
-                    description: CredentialKeyRef selects an API key in the namespace's
-                      provider-token Secret.
-                    pattern: ^[A-Za-z0-9._-]{1,253}$
+                    description: |-
+                      CredentialKeyRef selects another key of the Agent's credential Secret
+                      than the backend's default: ANTHROPIC_API_KEY, OPENAI_API_KEY or
+                      AGENT_MODEL_API_KEY.
+                    maxLength: 128
+                    pattern: ^[A-Za-z_][A-Za-z0-9_]*$
                     type: string
                   name:
                     description: Name is the provider model identifier. Empty uses
@@ -155,7 +191,6 @@ spec:
                     type: string
                 required:
                 - backend
-                - credentialKeyRef
                 type: object
                 x-kubernetes-validations:
                 - message: opencode requires baseURL and name; other backends take
@@ -9319,6 +9354,7 @@ spec:
                   type: object
                 type: array
             required:
+            - credentialSecretRef
             - model
             - template
             type: object
@@ -9462,6 +9498,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: Agent names are lowercase letters and digits only, so the <name>-
+            prefix of one Agent never matches another's resources
+          rule: self.metadata.name.matches('^[a-z0-9]+$')
     served: true
     storage: true
     subresources:

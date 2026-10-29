@@ -215,7 +215,7 @@ func TestSelfEventRequiresMatchingCurrentForgeIdentity(t *testing.T) {
 	if !selfEvent(agent, event) {
 		t.Fatal("Agent suspension made the forge identity stale")
 	}
-	agent.Spec.GitProviders = []agentsv1alpha1.GitProvider{{Type: "gitea", ServerURL: "https://git.example.test", CredentialKeyRef: "other"}}
+	agent.Spec.GitProviders = []agentsv1alpha1.GitProvider{{Type: "gitea", ServerURL: "https://git.example.test", CredentialKeyRef: "OTHER"}}
 	if selfEvent(agent, event) {
 		t.Fatal("stale forge identity suppressed event")
 	}

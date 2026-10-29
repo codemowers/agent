@@ -1,5 +1,6 @@
-# Apply after Gitea issues laurivosandi an API token and the Agent references
-# its key in agent-operator-provider-tokens. The webhook signing key is separate.
+# Apply after Gitea issues laurivosandi an API token, stored as GITEA_TOKEN in
+# laurivosandi-credentials, which operator.credentialSecretNames lists. The
+# webhook signing key is separate.
 apiVersion: codemowers.ai/v1alpha1
 kind: TaskPolicy
 metadata:

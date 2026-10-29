@@ -48,13 +48,14 @@ spec:
         resources:
           requests:
             storage: 5Gi
+  # Keys of laurivosandi-credentials reach the worker as environment variables:
+  # ANTHROPIC_API_KEY for the model, GH_TOKEN and GITEA_TOKEN for the forges.
+  credentialSecretRef:
+    name: laurivosandi-credentials
   model:
     backend: claude
-    credentialKeyRef: anthropic
   gitProviders:
     - type: github
       serverURL: https://github.com
-      credentialKeyRef: laurivosandi-github
     - type: gitea
       serverURL: https://git.codemowers.io
-      credentialKeyRef: laurivosandi-gitea

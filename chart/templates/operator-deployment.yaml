@@ -67,13 +67,16 @@ rules:
       - update
       - patch
       - delete
+  {{- with .Values.operator.credentialSecretNames }}
+  # Forge probes, forge assignment checks and model discovery read these
+  # Agent credential Secrets; Agents naming others run without them.
   - apiGroups: [""]
     resources:
       - secrets
-    resourceNames:
-      - agent-operator-provider-tokens
+    resourceNames: {{ toJson . }}
     verbs:
       - get
+  {{- end }}
   - apiGroups: [authorization.k8s.io]
     resources:
       - subjectaccessreviews
@@ -139,6 +142,7 @@ spec:
           object.spec.?idleSeconds == oldObject.spec.?idleSeconds &&
           object.spec.?coalesceSeconds == oldObject.spec.?coalesceSeconds &&
           object.spec.?resourcePrefix == oldObject.spec.?resourcePrefix &&
+          object.spec.?credentialSecretRef == oldObject.spec.?credentialSecretRef &&
           object.spec.?instructions == oldObject.spec.?instructions &&
           object.spec.?resources == oldObject.spec.?resources &&
           object.spec.?template == oldObject.spec.?template &&

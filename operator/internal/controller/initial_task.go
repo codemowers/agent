@@ -154,17 +154,17 @@ func (c *EventConsumer) verifyForgeAssignment(ctx context.Context, agent *agents
 			break
 		}
 	}
-	if provider == nil || provider.CredentialKeyRef == "" {
+	if provider == nil {
 		return forgeItem{}, false, nil
 	}
 	if c.APIReader == nil {
 		return forgeItem{}, false, fmt.Errorf("secret API reader is unavailable")
 	}
 	var secret corev1.Secret
-	if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.ProviderTokensSecretName}, &secret); err != nil {
+	if err := c.APIReader.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.CredentialSecret(agent)}, &secret); err != nil {
 		return forgeItem{}, false, fmt.Errorf("get configured forge credential: %w", err)
 	}
-	token := string(secret.Data[provider.CredentialKeyRef])
+	token := string(secret.Data[agentsv1alpha1.GitProviderTokenKey(*provider)])
 	if token == "" {
 		return forgeItem{}, false, fmt.Errorf("configured forge credential has no token")
 	}

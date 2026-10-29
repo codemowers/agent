@@ -39,13 +39,15 @@ Files under `*/optional/` are templates with placeholder IDs and URLs.
 
 Outside these files:
 
-- `agents` needs the `agent-operator-provider-tokens` and
-  `agent-operator-webhook-keys` Secrets, and `demo` the
+- Each Agent needs its `<name>-credentials` Secret, with the keys its
+  manifest lists, and `agents` the `agent-operator-webhook-keys` Secret;
+  `demo` needs the
   `zot-registry-cluster-push-kaniko` Secret for Kaniko builds.
 - Slack needs the app's signing secret as key `slack-codemowers` in
   `agent-operator-webhook-keys`. A Slack API token cannot verify events.
-- Gitea assignment policies need a Gitea API token in
-  `agent-operator-provider-tokens` and a matching `gitProviders` entry.
+- Gitea assignment policies need a Gitea API token as `GITEA_TOKEN` in the
+  Agent's credential Secret, a matching `gitProviders` entry, and the Secret
+  listed in the chart's `operator.credentialSecretNames`.
 - Configure senders and `device-agent` with the values the dashboard shows.
 
 `task-quota.yaml` caps the namespace at 1000 Tasks and alerts before that.

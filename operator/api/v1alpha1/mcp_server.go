@@ -44,7 +44,7 @@ type MCPServerList struct {
 	Items           []MCPServer `json:"items"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!(has(self.audience) && has(self.credentialKeyRef))",message="audience and credentialKeyRef are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!(has(self.audience) && has(self.credential) && self.credential)",message="audience and credential are mutually exclusive"
 type MCPServerSpec struct {
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:Pattern=`^https?://`
@@ -53,20 +53,19 @@ type MCPServerSpec struct {
 	// present, for servers with an audience contract of their own.
 	// +kubebuilder:validation:MaxLength=2048
 	Audience string `json:"audience,omitempty"`
-	// CredentialKeyRef names a key of the worker namespace's provider tokens
-	// Secret that workers present as a bearer token instead of a
+	// Credential makes each worker present its own bearer token, the
+	// MCP_<NAME>_TOKEN key of its Agent's credential Secret, instead of a
 	// ServiceAccount token, for servers such as Linear that authorize each
-	// call with their own credentials.
-	// +kubebuilder:validation:MaxLength=253
-	// +kubebuilder:validation:Pattern=`^[-._a-zA-Z0-9]+$`
-	CredentialKeyRef string `json:"credentialKeyRef,omitempty"`
+	// call with per-user credentials. Workers without that key leave the
+	// server out.
+	Credential bool `json:"credential,omitempty"`
 }
 
 // TokenAudience is the explicit audience, else the <service>.<namespace> of
 // an in-cluster URL; a server outside the cluster without an audience gets
 // no token, and a server with a credential gets no ServiceAccount token.
 func (s MCPServerSpec) TokenAudience() string {
-	if s.CredentialKeyRef != "" {
+	if s.Credential {
 		return ""
 	}
 	if s.Audience != "" {

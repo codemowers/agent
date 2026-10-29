@@ -87,34 +87,30 @@ func (h *Handler) listAgentModels(w http.ResponseWriter, r *http.Request) {
 		Warning string        `json:"warning,omitempty"`
 	}{Backend: agent.Spec.Model.Backend, Default: agent.Spec.Model.Name, Models: []modelChoice{{Name: "", Label: "Agent default"}}}
 	var secret corev1.Secret
-	if agent.Spec.Model.CredentialKeyRef == "" {
-		result.Warning = "Model discovery unavailable: no credential key configured"
-		jsonOK(w, result)
-		return
-	}
+	key := agentsv1alpha1.ModelCredentialKey(agent.Spec.Model)
 	if h.APIReader == nil {
 		result.Warning = "Model discovery unavailable: Secret reader unavailable"
 		jsonOK(w, result)
 		return
 	}
-	if err := h.APIReader.Get(r.Context(), client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.ProviderTokensSecretName}, &secret); err != nil {
+	if err := h.APIReader.Get(r.Context(), client.ObjectKey{Namespace: agent.Namespace, Name: agentsv1alpha1.CredentialSecret(&agent)}, &secret); err != nil {
 		switch {
 		case apierrors.IsNotFound(err):
-			result.Warning = "Model discovery unavailable: provider token Secret not found"
+			result.Warning = "Model discovery unavailable: credential Secret not found"
 		case apierrors.IsForbidden(err):
-			result.Warning = "Model discovery unavailable: provider token Secret access denied"
+			result.Warning = "Model discovery unavailable: credential Secret access denied"
 		default:
-			result.Warning = "Model discovery unavailable: provider token Secret read failed"
+			result.Warning = "Model discovery unavailable: credential Secret read failed"
 		}
 		jsonOK(w, result)
 		return
 	}
-	if len(secret.Data[agent.Spec.Model.CredentialKeyRef]) == 0 {
+	if len(secret.Data[key]) == 0 {
 		result.Warning = "Model discovery unavailable: configured credential key missing"
 		jsonOK(w, result)
 		return
 	}
-	models, err := discoverModels(r.Context(), agent.Spec.Model, string(secret.Data[agent.Spec.Model.CredentialKeyRef]), h.ModelHTTPClient)
+	models, err := discoverModels(r.Context(), agent.Spec.Model, string(secret.Data[key]), h.ModelHTTPClient)
 	if err != nil {
 		result.Warning = "Model discovery unavailable: " + err.Error()
 	} else {

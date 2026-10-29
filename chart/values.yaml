@@ -58,6 +58,11 @@ operator:
   ingressNamespace: traefik
   # Prometheus Pods in this namespace may scrape the operator's metrics.
   prometheusNamespace: monitoring
+  # Agent credential Secrets the operator may get by name for forge probes,
+  # forge assignment checks and model discovery. Workers receive their
+  # Secret through kubelet regardless; empty gives the operator no Secret
+  # access and leaves those features unavailable.
+  credentialSecretNames: []
   resources:
     requests:
       memory: 64Mi

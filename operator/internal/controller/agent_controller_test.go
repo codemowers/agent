@@ -46,7 +46,7 @@ func TestAttachmentChangeReplacesWorkerBetweenTurns(t *testing.T) {
 	reviewFails := false
 	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		&agentsv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "linear", Namespace: "team"},
-			Spec: agentsv1alpha1.MCPServerSpec{URL: "https://mcp.linear.app/mcp", CredentialKeyRef: "linear"}},
+			Spec: agentsv1alpha1.MCPServerSpec{URL: "https://mcp.linear.app/mcp", Credential: true}},
 	).WithInterceptorFuncs(interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			if review, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
@@ -94,8 +94,8 @@ func TestRuntimeSettingsUseQueueWithoutReplacingPod(t *testing.T) {
 	}
 	idle := int32(30)
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team", Generation: 2},
-		Spec: agentsv1alpha1.TaskSpec{IdleSeconds: &idle, Model: &agentsv1alpha1.ModelSpec{Backend: "claude", Name: "model-b", CredentialKeyRef: "key"}}}
-	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Model: agentsv1alpha1.ModelSpec{Backend: "claude", Name: "model-a", CredentialKeyRef: "key"}}}
+		Spec: agentsv1alpha1.TaskSpec{IdleSeconds: &idle, Model: &agentsv1alpha1.ModelSpec{Backend: "claude", Name: "model-b"}}}
+	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Model: agentsv1alpha1.ModelSpec{Backend: "claude", Name: "model-a"}}}
 	initial := task.DeepCopy()
 	initial.Spec.IdleSeconds = int32Ptr(60)
 	initial.Spec.Model.Name = "model-a"
@@ -107,7 +107,7 @@ func TestRuntimeSettingsUseQueueWithoutReplacingPod(t *testing.T) {
 		t.Fatal("backend change would leave stale worker credentials")
 	}
 	opencode := task.DeepCopy()
-	opencode.Spec.Model = &agentsv1alpha1.ModelSpec{Backend: "opencode", Name: "gemma", BaseURL: "http://llama-a/v1", CredentialKeyRef: "key"}
+	opencode.Spec.Model = &agentsv1alpha1.ModelSpec{Backend: "opencode", Name: "gemma", BaseURL: "http://llama-a/v1"}
 	moved := opencode.DeepCopy()
 	moved.Spec.Model.BaseURL = "http://llama-b/v1"
 	if workerConfigHash(opencode, agent) == workerConfigHash(moved, agent) {
@@ -214,9 +214,10 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 	agent := &agentsv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "developer"},
 		Spec: agentsv1alpha1.AgentSpec{
-			Model:        agentsv1alpha1.ModelSpec{Backend: "claude", CredentialKeyRef: "agent-cred-model"},
-			IdleSeconds:  int32Ptr(60),
-			GitProviders: []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://github.com", CredentialKeyRef: "agent-cred-git"}},
+			CredentialSecretRef: agentsv1alpha1.CredentialSecretRef{Name: "developer-credentials"},
+			Model:               agentsv1alpha1.ModelSpec{Backend: "claude", CredentialKeyRef: "ANTHROPIC_DEVELOPER"},
+			IdleSeconds:         int32Ptr(60),
+			GitProviders:        []agentsv1alpha1.GitProvider{{Type: "github", ServerURL: "https://github.com"}},
 			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 				Containers:     []corev1.Container{{Name: "worker", Image: "codemowers/agent:latest"}, {Name: "helper", Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m")}}}},
 				InitContainers: []corev1.Container{{Name: "init"}},
@@ -224,7 +225,7 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 		},
 	}
 	pod := (&TaskReconciler{AMQPURL: "amqp://broker", WorkerImage: "registry/agent:build"}).buildWorkerPod("worker-pod", task, agent, "agent-worker", nil,
-		mcpServer{"driftmower", "http://driftmower-mcp/mcp", "driftmower-mcp.driftmower", ""})
+		mcpServer{"driftmower", "http://driftmower-mcp/mcp", "driftmower-mcp.driftmower", false})
 	if probe := pod.Spec.Containers[0].ReadinessProbe; probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/readyz" ||
 		len(pod.Spec.Containers[0].Ports) != 1 || pod.Spec.Containers[0].Ports[0].ContainerPort != agentsv1alpha1.WorkerMetricsPort {
 		t.Fatal("worker lacks its metrics port and readiness probe")
@@ -238,8 +239,12 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 	if len(pod.Spec.Containers[0].Env) == 0 {
 		t.Fatal("worker did not receive execution environment")
 	}
-	if len(pod.Spec.Containers[1].Env) != 0 || len(pod.Spec.InitContainers[0].Env) != 0 {
+	if len(pod.Spec.Containers[1].Env) != 0 || len(pod.Spec.InitContainers[0].Env) != 0 ||
+		len(pod.Spec.Containers[1].EnvFrom) != 0 || len(pod.Spec.InitContainers[0].EnvFrom) != 0 {
 		t.Fatal("execution credentials leaked to another container")
+	}
+	if from := pod.Spec.Containers[0].EnvFrom; len(from) != 1 || from[0].SecretRef == nil || from[0].SecretRef.Name != "developer-credentials" {
+		t.Fatalf("worker did not receive its Agent's credential Secret: %+v", from)
 	}
 	brokerToken := workerTokens(pod)["rabbitmq"] == agentsv1alpha1.RabbitMQAudience
 	queue := ""
@@ -258,10 +263,10 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 	gitCredential := false
 	modelCredential := false
 	for _, env := range pod.Spec.Containers[0].Env {
-		if env.Name == "GH_TOKEN" && env.ValueFrom != nil && env.ValueFrom.SecretKeyRef.Name == agentsv1alpha1.ProviderTokensSecretName && env.ValueFrom.SecretKeyRef.Key == "agent-cred-git" {
+		if env.Name == "GH_TOKEN" && env.ValueFrom != nil && env.ValueFrom.SecretKeyRef.Name == "developer-credentials" && env.ValueFrom.SecretKeyRef.Key == "GH_TOKEN" {
 			gitCredential = true
 		}
-		if env.Name == "ANTHROPIC_API_KEY" && env.ValueFrom != nil && env.ValueFrom.SecretKeyRef.Name == agentsv1alpha1.ProviderTokensSecretName && env.ValueFrom.SecretKeyRef.Key == "agent-cred-model" {
+		if env.Name == "ANTHROPIC_API_KEY" && env.ValueFrom != nil && env.ValueFrom.SecretKeyRef.Name == "developer-credentials" && env.ValueFrom.SecretKeyRef.Key == "ANTHROPIC_DEVELOPER" {
 			modelCredential = true
 		}
 	}
@@ -310,8 +315,8 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 	}
 	task.Spec.ExternalReferences[0].ServerURL = "https://github.com"
 	agent.Spec.GitProviders = append(agent.Spec.GitProviders,
-		agentsv1alpha1.GitProvider{Type: "github", ServerURL: "https://ghe.example.test", CredentialKeyRef: "enterprise-key"},
-		agentsv1alpha1.GitProvider{Type: "gitea", ServerURL: "https://gitea.com", CredentialKeyRef: "gitea-key"})
+		agentsv1alpha1.GitProvider{Type: "github", ServerURL: "https://ghe.example.test"},
+		agentsv1alpha1.GitProvider{Type: "gitea", ServerURL: "https://gitea.com"})
 	agent.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "GH_TOKEN", Value: "stale-template-value"}}
 	multiple := (&TaskReconciler{}).buildWorkerPod("multiple-pod", task, agent, "agent-worker", nil)
 	if multiple.Annotations[workerConfigHashAnnotation] == pod.Annotations[workerConfigHashAnnotation] {
@@ -319,18 +324,18 @@ func TestWorkerCredentialsStayInWorkerContainer(t *testing.T) {
 	}
 	names := map[string]string{}
 	for _, env := range multiple.Spec.Containers[0].Env {
-		if env.Name == "GH_TOKEN" {
-			t.Fatal("ambiguous GH_TOKEN survived on a multi-GitHub worker")
+		if env.Name == "GH_TOKEN" && env.ValueFrom == nil {
+			t.Fatal("template GH_TOKEN survived beside the operator's")
 		}
 		if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
 			names[env.Name] = env.ValueFrom.SecretKeyRef.Key
 		}
 	}
 	for name, key := range map[string]string{
-		"GH_TOKEN_GITHUB_COM":       "agent-cred-git",
-		"GH_TOKEN_GHE_EXAMPLE_TEST": "enterprise-key",
-		"GITEA_TOKEN":               "gitea-key",
-		"AGENT_FORGE_TOKEN":         "agent-cred-git",
+		"GH_TOKEN":            "GH_TOKEN",
+		"GH_ENTERPRISE_TOKEN": "GH_ENTERPRISE_TOKEN",
+		"GITEA_TOKEN":         "GITEA_TOKEN",
+		"AGENT_FORGE_TOKEN":   "GH_TOKEN",
 	} {
 		if names[name] != key {
 			t.Fatalf("missing or wrong %s: %v", name, names)
@@ -638,8 +643,8 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 	if !complete {
 		t.Fatal("successful lookups reported incomplete")
 	}
-	if len(servers) != 3 || servers[0] != (mcpServer{"codemowers", "https://mcp.codemowers.io/mcp", "", ""}) ||
-		servers[1].Audience != "agent-devices.harness" || servers[2] != (mcpServer{"driftmower", "http://drift.team.svc:3000/mcp", "drift.team", ""}) {
+	if len(servers) != 3 || servers[0] != (mcpServer{"codemowers", "https://mcp.codemowers.io/mcp", "", false}) ||
+		servers[1].Audience != "agent-devices.harness" || servers[2] != (mcpServer{"driftmower", "http://drift.team.svc:3000/mcp", "drift.team", false}) {
 		t.Fatalf("unexpected attachment: %+v", servers)
 	}
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
@@ -668,32 +673,23 @@ func TestAdvertisedMCPServersNeedUseAndGetOwnTokens(t *testing.T) {
 	}
 }
 
-// workerTokens maps each projected token path in the worker's token volume
-// to its audience.
-func TestCredentialedMCPServerGetsOnlyItsProviderKey(t *testing.T) {
+func TestCredentialedMCPServerReadsItsTokenFromTheWorkerEnvironment(t *testing.T) {
 	task := &agentsv1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "team"}}
-	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
-		Containers: []corev1.Container{{Name: "worker"}}}}}}
+	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{CredentialSecretRef: agentsv1alpha1.CredentialSecretRef{Name: "team-credentials"},
+		Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "worker"}}}}}}
 	pod := (&TaskReconciler{HarnessNamespace: "harness"}).buildWorkerPod("worker", task, agent, "worker", nil,
-		mcpServer{"linear", "https://mcp.linear.app/mcp", "", "linear"})
+		mcpServer{"linear", "https://mcp.linear.app/mcp", "", true})
 	if _, ok := workerTokens(pod)["mcp/linear"]; ok {
 		t.Fatal("credentialed server also received a ServiceAccount token")
 	}
-	var projected []corev1.KeyToPath
 	for _, volume := range pod.Spec.Volumes {
-		if volume.Name == "agent-tokens" {
+		if volume.Projected != nil {
 			for _, source := range volume.Projected.Sources {
 				if source.Secret != nil {
-					if source.Secret.Name != agentsv1alpha1.ProviderTokensSecretName || source.Secret.Optional == nil || !*source.Secret.Optional {
-						t.Fatalf("projected Secret %s", source.Secret.Name)
-					}
-					projected = append(projected, source.Secret.Items...)
+					t.Fatalf("credential Secret projected into a volume: %+v", source.Secret)
 				}
 			}
 		}
-	}
-	if len(projected) != 1 || projected[0] != (corev1.KeyToPath{Key: "linear", Path: "mcp/linear"}) {
-		t.Fatalf("unexpected projected keys: %+v", projected)
 	}
 	var endpoints []agentsv1alpha1.MCPEndpoint
 	for _, env := range pod.Spec.Containers[0].Env {
@@ -705,7 +701,7 @@ func TestCredentialedMCPServerGetsOnlyItsProviderKey(t *testing.T) {
 	}
 	for _, endpoint := range endpoints {
 		if endpoint.Name == "linear" {
-			if endpoint.URL != "https://mcp.linear.app/mcp" || endpoint.TokenFile != agentsv1alpha1.WorkerTokenDir+"/mcp/linear" {
+			if endpoint.URL != "https://mcp.linear.app/mcp" || endpoint.TokenEnv != "MCP_LINEAR_TOKEN" || endpoint.TokenFile != "" {
 				t.Fatalf("unexpected endpoint: %+v", endpoint)
 			}
 			return
@@ -714,6 +710,8 @@ func TestCredentialedMCPServerGetsOnlyItsProviderKey(t *testing.T) {
 	t.Fatalf("linear endpoint missing: %+v", endpoints)
 }
 
+// workerTokens maps each projected token path in the worker's token volume
+// to its audience.
 func workerTokens(pod *corev1.Pod) map[string]string {
 	tokens := map[string]string{}
 	for _, volume := range pod.Spec.Volumes {
